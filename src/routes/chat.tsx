@@ -1,19 +1,20 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sparkles, Send, Plus, Copy, LogOut, Shield, Check } from "lucide-react";
+import {
+  Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
+  Settings as SettingsIcon, HelpCircle, Search, Paperclip, Camera, Languages, User,
+} from "lucide-react";
 import { Footer } from "@/components/Footer";
+import { NotificationBell } from "@/components/NotificationBell";
+import { LANGUAGES, langLabel } from "@/lib/languages";
 
-export const Route = createFileRoute("/chat")({
-  component: ChatPage,
-});
+export const Route = createFileRoute("/chat")({ component: ChatPage });
 
+type Attachment = { name: string; url: string; type: string; size: number };
 type Msg = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  created_at: string;
-  provider?: string | null;
+  id: string; role: "user" | "assistant"; content: string;
+  created_at: string; provider?: string | null; attachments?: Attachment[];
 };
 type Conv = { id: string; title: string; updated_at: string };
 
@@ -21,23 +22,29 @@ function ChatPage() {
   const navigate = useNavigate();
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [plan, setPlan] = useState<string>("free");
+  const [language, setLanguage] = useState("en");
   const [conversations, setConversations] = useState<Conv[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [activeProvider, setActiveProvider] = useState<string>("gemini");
-  const [lastProvider, setLastProvider] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [translatingId, setTranslatingId] = useState<string | null>(null);
   const [typing, setTyping] = useState("");
+  const [search, setSearch] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        navigate({ to: "/auth" });
-        return;
-      }
+      if (!data.session) { navigate({ to: "/auth" }); return; }
       setUserId(data.session.user.id);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
@@ -49,46 +56,30 @@ function ChatPage() {
   useEffect(() => {
     if (!userId) return;
     (async () => {
-      const { data: roles } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", userId);
+      const [{ data: roles }, { data: profile }] = await Promise.all([
+        supabase.from("user_roles").select("role").eq("user_id", userId),
+        supabase.from("profiles").select("subscription_plan,language").eq("user_id", userId).maybeSingle(),
+      ]);
       setIsAdmin(!!roles?.some((r) => r.role === "admin"));
-
-      const { data: setting } = await supabase
-        .from("app_settings")
-        .select("value")
-        .eq("key", "active_provider")
-        .maybeSingle();
-      if (setting?.value) setActiveProvider(setting.value as string);
-
+      if (profile) { setPlan(profile.subscription_plan || "free"); setLanguage(profile.language || "en"); }
       await loadConversations();
     })();
+    // eslint-disable-next-line
   }, [userId]);
 
   const loadConversations = async () => {
-    const { data } = await supabase
-      .from("conversations")
-      .select("id,title,updated_at")
-      .order("updated_at", { ascending: false });
+    const { data } = await supabase.from("conversations")
+      .select("id,title,updated_at").order("updated_at", { ascending: false });
     setConversations(data ?? []);
-    if (data && data.length && !activeConvId) {
-      setActiveConvId(data[0].id);
-    }
+    if (data && data.length && !activeConvId) setActiveConvId(data[0].id);
   };
 
   useEffect(() => {
-    if (!activeConvId) {
-      setMessages([]);
-      return;
-    }
+    if (!activeConvId) { setMessages([]); return; }
     (async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", activeConvId)
-        .order("created_at", { ascending: true });
-      setMessages((data ?? []) as Msg[]);
+      const { data } = await supabase.from("messages").select("*")
+        .eq("conversation_id", activeConvId).order("created_at", { ascending: true });
+      setMessages((data ?? []) as unknown as Msg[]);
     })();
   }, [activeConvId]);
 
@@ -96,254 +87,279 @@ function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, typing]);
 
+  const filteredConvs = useMemo(() => {
+    if (!search.trim()) return conversations;
+    const q = search.toLowerCase();
+    return conversations.filter((c) => c.title.toLowerCase().includes(q));
+  }, [conversations, search]);
+
   const newChat = async () => {
     if (!userId) return;
-    const { data, error } = await supabase
-      .from("conversations")
-      .insert({ user_id: userId, title: "New Chat" })
-      .select()
-      .single();
+    const { data, error } = await supabase.from("conversations")
+      .insert({ user_id: userId, title: "New Chat" }).select().single();
     if (!error && data) {
       setConversations((c) => [data as Conv, ...c]);
-      setActiveConvId(data.id);
-      setMessages([]);
+      setActiveConvId(data.id); setMessages([]); setDrawerOpen(false);
     }
   };
 
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || !userId) return;
+    if (plan !== "premium") {
+      setError("File uploads require the Premium plan. Upgrade in Settings.");
+      return;
+    }
+    const uploads: Attachment[] = [];
+    for (const f of Array.from(files)) {
+      if (f.size > 20 * 1024 * 1024) { setError(`${f.name} exceeds 20MB`); continue; }
+      const path = `${userId}/${Date.now()}-${f.name}`;
+      const { error: upErr } = await supabase.storage.from("chat-uploads").upload(path, f);
+      if (upErr) { setError(upErr.message); continue; }
+      const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24);
+      uploads.push({ name: f.name, url: signed?.signedUrl || "", type: f.type, size: f.size });
+    }
+    setPendingFiles((p) => [...p, ...uploads]);
+  };
+
   const send = async () => {
-    if (!input.trim() || !userId || sending) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !userId || sending) return;
+    setError(null);
     let convId = activeConvId;
     if (!convId) {
-      const { data } = await supabase
-        .from("conversations")
-        .insert({ user_id: userId, title: input.slice(0, 40) })
-        .select()
-        .single();
+      const { data } = await supabase.from("conversations")
+        .insert({ user_id: userId, title: input.slice(0, 40) || "New Chat" }).select().single();
       if (!data) return;
-      convId = data.id;
-      setActiveConvId(convId);
+      convId = data.id; setActiveConvId(convId);
       setConversations((c) => [data as Conv, ...c]);
     }
     const text = input.trim();
-    setInput("");
-    setSending(true);
+    const attachments = pendingFiles;
+    setInput(""); setPendingFiles([]); setSending(true);
 
     const userMsg: Msg = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: text,
-      created_at: new Date().toISOString(),
+      id: crypto.randomUUID(), role: "user", content: text,
+      created_at: new Date().toISOString(), attachments,
     };
     setMessages((m) => [...m, userMsg]);
-
     await supabase.from("messages").insert({
-      conversation_id: convId,
-      user_id: userId,
-      role: "user",
-      content: text,
+      conversation_id: convId, user_id: userId, role: "user",
+      content: text, attachments: attachments as any,
     });
 
-    // Update title if first message
     if (messages.length === 0) {
-      await supabase.from("conversations").update({ title: text.slice(0, 40) }).eq("id", convId);
-      setConversations((cs) => cs.map((c) => (c.id === convId ? { ...c, title: text.slice(0, 40) } : c)));
+      const title = (text || attachments[0]?.name || "New Chat").slice(0, 40);
+      await supabase.from("conversations").update({ title }).eq("id", convId);
+      setConversations((cs) => cs.map((c) => (c.id === convId ? { ...c, title } : c)));
     }
 
     try {
-      const history = [...messages, userMsg].map((m) => ({ role: m.role, content: m.content }));
+      const attachContext = attachments.length
+        ? `\n\n[User attached ${attachments.length} file(s): ${attachments.map((a) => `${a.name} (${a.type})`).join(", ")}]`
+        : "";
+      const history = [...messages, { ...userMsg, content: text + attachContext }]
+        .map((m) => ({ role: m.role, content: m.content }));
       const { data, error } = await supabase.functions.invoke("chat", {
-        body: { messages: history },
+        body: { messages: history, language },
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       const reply: string = data.content || "(no response)";
       const provider: string = data.provider;
-      setLastProvider(provider);
 
-      // Typewriter effect
       const aid = crypto.randomUUID();
-      let i = 0;
-      setTyping("");
+      let i = 0; setTyping("");
       await new Promise<void>((resolve) => {
         const iv = setInterval(() => {
           i += Math.max(2, Math.floor(reply.length / 80));
           setTyping(reply.slice(0, i));
-          if (i >= reply.length) {
-            clearInterval(iv);
-            resolve();
-          }
+          if (i >= reply.length) { clearInterval(iv); resolve(); }
         }, 20);
       });
       setTyping("");
 
-      const aMsg: Msg = {
-        id: aid,
-        role: "assistant",
-        content: reply,
-        created_at: new Date().toISOString(),
-        provider,
-      };
+      const aMsg: Msg = { id: aid, role: "assistant", content: reply, created_at: new Date().toISOString(), provider };
       setMessages((m) => [...m, aMsg]);
       await supabase.from("messages").insert({
-        conversation_id: convId,
-        user_id: userId,
-        role: "assistant",
-        content: reply,
-        provider,
+        conversation_id: convId, user_id: userId, role: "assistant",
+        content: reply, provider,
       });
       await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId);
     } catch (e: any) {
-      setMessages((m) => [
-        ...m,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: `⚠️ ${e.message || "Failed to get response"}`,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setSending(false);
-    }
+      setError(e.message || "Failed to get response");
+      setMessages((m) => [...m, {
+        id: crypto.randomUUID(), role: "assistant",
+        content: `⚠️ ${e.message || "Failed to get response"}`,
+        created_at: new Date().toISOString(),
+      }]);
+    } finally { setSending(false); }
   };
 
   const copy = async (id: string, text: string) => {
     await navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 1500);
+    setCopiedId(id); setTimeout(() => setCopiedId(null), 1500);
   };
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
-    navigate({ to: "/" });
+  const translate = async (m: Msg) => {
+    setTranslatingId(m.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("chat", {
+        body: { messages: [{ role: "user", content: m.content }], language, mode: "translate" },
+      });
+      if (error || data?.error) throw new Error(data?.error || error?.message);
+      setTranslations((t) => ({ ...t, [m.id]: data.content }));
+    } catch (e: any) { setError(e.message); }
+    finally { setTranslatingId(null); }
   };
+
+  const signOut = async () => { await supabase.auth.signOut(); navigate({ to: "/" }); };
 
   const fmtTime = (s: string) =>
     new Date(s).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   if (!userId) return null;
 
+  const Sidebar = (
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-sidebar p-3">
+      <button onClick={newChat}
+        className="mb-3 inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">
+        <Plus className="h-4 w-4" /> New Chat
+      </button>
+      <div className="relative mb-2">
+        <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search chats…"
+          className="w-full rounded-md border border-input bg-background py-1.5 pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-ring" />
+      </div>
+      <div className="flex-1 space-y-1 overflow-y-auto">
+        {filteredConvs.map((c) => (
+          <button key={c.id} onClick={() => { setActiveConvId(c.id); setDrawerOpen(false); }}
+            className={`block w-full truncate rounded-md px-3 py-2 text-left text-sm transition ${
+              c.id === activeConvId ? "bg-accent text-accent-foreground" : "hover:bg-sidebar-accent"
+            }`}>
+            {c.title}
+          </button>
+        ))}
+        {filteredConvs.length === 0 && (
+          <p className="px-2 py-4 text-xs text-muted-foreground">{search ? "No matches." : "No chats yet."}</p>
+        )}
+      </div>
+    </aside>
+  );
+
   return (
     <div className="flex h-screen flex-col bg-background">
-      {/* Header */}
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
-        <Link to="/" className="flex items-center gap-2">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <span className="text-base font-bold tracking-tight">HI THERE</span>
-        </Link>
+      <header className="flex items-center justify-between border-b border-border px-3 py-2 sm:px-4 sm:py-3">
         <div className="flex items-center gap-2">
-          <span
-            title="Active AI provider"
-            className="hidden items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs sm:inline-flex"
-          >
-            <span className="h-2 w-2 rounded-full bg-primary" />
-            {lastProvider ? `Using: ${lastProvider}` : `Active: ${activeProvider}`}
-          </span>
+          <button onClick={() => setDrawerOpen(true)} className="md:hidden rounded-md p-1.5 hover:bg-accent">
+            <Menu className="h-5 w-5" />
+          </button>
+          <Link to="/" className="flex items-center gap-2">
+            <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <span className="text-base font-bold tracking-tight">HI THERE</span>
+          </Link>
+        </div>
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          <NotificationBell userId={userId} />
           {isAdmin && (
-            <Link
-              to="/admin"
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs hover:bg-accent"
-            >
-              <Shield className="h-3 w-3" /> Admin
+            <Link to="/admin"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs hover:bg-accent">
+              <Shield className="h-3 w-3" /> <span className="hidden sm:inline">Admin</span>
             </Link>
           )}
-          <button
-            onClick={signOut}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs hover:bg-accent"
-          >
-            <LogOut className="h-3 w-3" /> Sign out
-          </button>
+          <div className="relative">
+            <button onClick={() => setProfileOpen((v) => !v)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card hover:bg-accent">
+              <User className="h-4 w-4" />
+            </button>
+            {profileOpen && (
+              <div className="absolute right-0 top-10 z-50 w-48 rounded-xl border border-border bg-popover p-1.5 shadow-2xl">
+                <Link to="/settings" onClick={() => setProfileOpen(false)} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent">
+                  <SettingsIcon className="h-4 w-4" /> Settings
+                </Link>
+                <Link to="/faq" onClick={() => setProfileOpen(false)} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent">
+                  <HelpCircle className="h-4 w-4" /> FAQ
+                </Link>
+                <Link to="/contact" onClick={() => setProfileOpen(false)} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent">
+                  Contact
+                </Link>
+                <button onClick={signOut} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent">
+                  <LogOut className="h-4 w-4" /> Sign out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="hidden w-64 shrink-0 flex-col border-r border-border bg-sidebar p-3 md:flex">
-          <button
-            onClick={newChat}
-            className="mb-3 inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" /> New Chat
-          </button>
-          <div className="flex-1 space-y-1 overflow-y-auto">
-            {conversations.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setActiveConvId(c.id)}
-                className={`block w-full truncate rounded-md px-3 py-2 text-left text-sm transition ${
-                  c.id === activeConvId
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-sidebar-accent"
-                }`}
-              >
-                {c.title}
-              </button>
-            ))}
-            {conversations.length === 0 && (
-              <p className="px-2 py-4 text-xs text-muted-foreground">No chats yet.</p>
-            )}
+        <div className="hidden md:flex">{Sidebar}</div>
+        {drawerOpen && (
+          <div className="fixed inset-0 z-40 md:hidden" onClick={() => setDrawerOpen(false)}>
+            <div className="absolute inset-0 bg-black/50" />
+            <div className="absolute left-0 top-0 h-full" onClick={(e) => e.stopPropagation()}>
+              <div className="relative h-full">
+                {Sidebar}
+                <button onClick={() => setDrawerOpen(false)} className="absolute right-2 top-2 rounded-md p-1 hover:bg-accent">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
           </div>
-        </aside>
+        )}
 
-        {/* Main */}
         <main className="flex flex-1 flex-col">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-3xl space-y-4">
               {messages.length === 0 && !typing && (
-                <div className="rounded-2xl border border-border bg-card p-8 text-center">
+                <div className="rounded-2xl border border-border bg-card p-6 text-center sm:p-8">
                   <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent">
                     <Sparkles className="h-6 w-6 text-primary-foreground" />
                   </div>
                   <h2 className="text-2xl font-bold">Hi there 👋</h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Ask me anything. I'll switch AI providers automatically if one is unavailable.
+                    Welcome to HI THERE — your friendly AI companion. Ask anything!
                   </p>
-                  <div className="mt-6 flex md:hidden">
-                    <button
-                      onClick={newChat}
-                      className="mx-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
-                    >
-                      <Plus className="h-4 w-4" /> New Chat
-                    </button>
-                  </div>
                 </div>
               )}
 
               {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`group max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
-                      m.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "border border-border bg-card"
-                    }`}
-                  >
-                    <div className="whitespace-pre-wrap">{m.content}</div>
+                <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`group max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm sm:max-w-[85%] sm:px-4 sm:py-3 ${
+                    m.role === "user" ? "bg-primary text-primary-foreground" : "border border-border bg-card"
+                  }`}>
+                    <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {m.attachments.map((a, i) => (
+                          <a key={i} href={a.url} target="_blank" rel="noreferrer"
+                            className="block truncate rounded bg-black/10 px-2 py-1 text-xs underline">
+                            📎 {a.name}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {translations[m.id] && (
+                      <div className="mt-2 rounded-md border border-border/50 bg-background/40 p-2 text-xs">
+                        <p className="mb-1 font-semibold opacity-70">Translation ({langLabel(language)}):</p>
+                        <p className="whitespace-pre-wrap">{translations[m.id]}</p>
+                      </div>
+                    )}
                     <div className="mt-1.5 flex items-center justify-between gap-3 text-[10px] opacity-70">
-                      <span>
-                        {fmtTime(m.created_at)}
-                        {m.provider ? ` · ${m.provider}` : ""}
-                      </span>
+                      <span>{fmtTime(m.created_at)}</span>
                       {m.role === "assistant" && (
-                        <button
-                          onClick={() => copy(m.id, m.content)}
-                          className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent"
-                        >
-                          {copiedId === m.id ? (
-                            <>
-                              <Check className="h-3 w-3" /> Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3 w-3" /> Copy
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => translate(m)} disabled={translatingId === m.id}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            <Languages className="h-3 w-3" />
+                            {translatingId === m.id ? "…" : "Translate"}
+                          </button>
+                          <button onClick={() => copy(m.id, m.content)}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            {copiedId === m.id ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -360,7 +376,6 @@ function ChatPage() {
                   </div>
                 </div>
               )}
-
               {sending && !typing && (
                 <div className="flex justify-start">
                   <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
@@ -375,29 +390,52 @@ function ChatPage() {
             </div>
           </div>
 
-          {/* Composer */}
-          <div className="border-t border-border bg-background/80 p-3 backdrop-blur">
-            <div className="mx-auto flex max-w-3xl items-end gap-2">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                rows={1}
-                placeholder="Message HI THERE…"
-                className="max-h-40 min-h-[44px] flex-1 resize-none rounded-xl border border-input bg-card px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              />
-              <button
-                onClick={send}
-                disabled={sending || !input.trim()}
-                className="grid h-11 w-11 place-items-center rounded-xl bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
-              >
-                <Send className="h-4 w-4" />
-              </button>
+          {error && (
+            <div className="mx-3 mb-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive sm:mx-4">
+              {error}
+              <button onClick={() => setError(null)} className="ml-2 underline">dismiss</button>
+            </div>
+          )}
+
+          <div className="border-t border-border bg-background/80 p-2 backdrop-blur sm:p-3">
+            <div className="mx-auto max-w-3xl">
+              {pendingFiles.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {pendingFiles.map((f, i) => (
+                    <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs">
+                      📎 {f.name}
+                      <button onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))} className="hover:text-destructive">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-end gap-1.5 sm:gap-2">
+                <input ref={fileRef} type="file" multiple hidden
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,image/*"
+                  onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+                <input ref={cameraRef} type="file" hidden accept="image/*" capture="environment"
+                  onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+                <button onClick={() => fileRef.current?.click()}
+                  title="Attach file (Premium)"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent">
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <button onClick={() => cameraRef.current?.click()}
+                  title="Camera (Premium)"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent md:hidden">
+                  <Camera className="h-4 w-4" />
+                </button>
+                <textarea value={input} onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                  rows={1} placeholder="Message HI THERE…"
+                  className="max-h-40 min-h-[40px] flex-1 resize-none rounded-xl border border-input bg-card px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-ring sm:px-4 sm:py-3" />
+                <button onClick={send} disabled={sending || (!input.trim() && pendingFiles.length === 0)}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40">
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </div>
           <Footer />
