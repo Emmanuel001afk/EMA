@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Footer } from "@/components/Footer";
-import { Sparkles, Zap, ShieldCheck, MessageSquare } from "lucide-react";
+import { Sparkles, Zap, ShieldCheck, MessageSquare, ExternalLink } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   component: Landing,
@@ -43,8 +43,7 @@ function Landing() {
           HI THERE
         </h1>
         <p className="mt-4 max-w-xl text-lg text-muted-foreground">
-          A sleek AI chat platform powered by Gemini, Groq and Mistral — with seamless failover so
-          your conversations never stop.
+          A sleek, friendly AI chat platform — fast, reliable, and always here when you need it.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <Link
@@ -53,11 +52,19 @@ function Landing() {
           >
             Get started — it's free
           </Link>
+          <a
+            href="https://halwayin-connect.lovable.app"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-5 py-3 text-sm font-semibold hover:bg-accent"
+          >
+            Visit HALWAY IN Marketplace <ExternalLink className="h-4 w-4" />
+          </a>
         </div>
 
         <div className="mt-16 grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
           {[
-            { icon: Zap, title: "Always online", desc: "Auto-switches providers if one fails." },
+            { icon: Zap, title: "Always online", desc: "Reliable answers, around the clock." },
             { icon: ShieldCheck, title: "Private by design", desc: "Your chats stay in your account." },
             { icon: MessageSquare, title: "Full chat history", desc: "Pick up where you left off." },
           ].map((f) => (
