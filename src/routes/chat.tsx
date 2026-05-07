@@ -79,7 +79,7 @@ function ChatPage() {
     (async () => {
       const { data } = await supabase.from("messages").select("*")
         .eq("conversation_id", activeConvId).order("created_at", { ascending: true });
-      setMessages((data ?? []) as Msg[]);
+      setMessages((data ?? []) as unknown as Msg[]);
     })();
   }, [activeConvId]);
 
