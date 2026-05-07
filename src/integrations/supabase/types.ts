@@ -14,6 +14,30 @@ export type Database = {
   }
   public: {
     Tables: {
+      announcements: {
+        Row: {
+          body: string
+          created_at: string
+          created_by: string | null
+          id: string
+          title: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          title: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          title?: string
+        }
+        Relationships: []
+      }
       app_settings: {
         Row: {
           key: string
@@ -56,8 +80,44 @@ export type Database = {
         }
         Relationships: []
       }
+      message_translations: {
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          language: string
+          message_id: string
+          user_id: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          id?: string
+          language: string
+          message_id: string
+          user_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          language?: string
+          message_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "message_translations_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
+          attachments: Json
           content: string
           conversation_id: string
           created_at: string
@@ -67,6 +127,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          attachments?: Json
           content: string
           conversation_id: string
           created_at?: string
@@ -76,6 +137,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          attachments?: Json
           content?: string
           conversation_id?: string
           created_at?: string
@@ -94,26 +156,122 @@ export type Database = {
           },
         ]
       }
+      notifications: {
+        Row: {
+          body: string
+          created_at: string
+          id: string
+          kind: string
+          read: boolean
+          title: string
+          user_id: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          id?: string
+          kind?: string
+          read?: boolean
+          title: string
+          user_id: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          id?: string
+          kind?: string
+          read?: boolean
+          title?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
+          banned: boolean
           created_at: string
+          daily_count_reset_at: string
+          daily_message_count: number
           display_name: string | null
+          email: string | null
           id: string
+          language: string
+          last_active_at: string | null
+          subscription_expires_at: string | null
+          subscription_plan: string
+          theme: string
           updated_at: string
           user_id: string
         }
         Insert: {
+          banned?: boolean
           created_at?: string
+          daily_count_reset_at?: string
+          daily_message_count?: number
           display_name?: string | null
+          email?: string | null
           id?: string
+          language?: string
+          last_active_at?: string | null
+          subscription_expires_at?: string | null
+          subscription_plan?: string
+          theme?: string
           updated_at?: string
           user_id: string
         }
         Update: {
+          banned?: boolean
           created_at?: string
+          daily_count_reset_at?: string
+          daily_message_count?: number
           display_name?: string | null
+          email?: string | null
           id?: string
+          language?: string
+          last_active_at?: string | null
+          subscription_expires_at?: string | null
+          subscription_plan?: string
+          theme?: string
           updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      transactions: {
+        Row: {
+          amount_kobo: number
+          created_at: string
+          currency: string
+          id: string
+          plan: string
+          provider: string
+          raw: Json | null
+          reference: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          amount_kobo: number
+          created_at?: string
+          currency?: string
+          id?: string
+          plan: string
+          provider?: string
+          raw?: Json | null
+          reference?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          amount_kobo?: number
+          created_at?: string
+          currency?: string
+          id?: string
+          plan?: string
+          provider?: string
+          raw?: Json | null
+          reference?: string | null
+          status?: string
           user_id?: string
         }
         Relationships: []
