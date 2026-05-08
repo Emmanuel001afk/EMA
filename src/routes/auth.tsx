@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Sparkles } from "lucide-react";
 import { Footer } from "@/components/Footer";
+import { validatePassword } from "@/lib/password";
 
 export const Route = createFileRoute("/auth")({
   component: AuthPage,
@@ -26,17 +27,21 @@ function AuthPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setLoading(true);
     try {
       if (mode === "signup") {
+        const pwErr = validatePassword(password);
+        if (pwErr) { setError(pwErr); return; }
+        const ref = new URLSearchParams(window.location.search).get("ref") || "";
+        setLoading(true);
         const redirectUrl = `${window.location.origin}/chat`;
         const { error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: redirectUrl, data: { display_name: name || email.split("@")[0] } },
+          options: { emailRedirectTo: redirectUrl, data: { display_name: (name || "").trim() || email.split("@")[0], ref } },
         });
         if (error) throw error;
       } else {
+        setLoading(true);
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
       }
@@ -86,12 +91,15 @@ function AuthPage() {
             <input
               type="password"
               required
-              minLength={6}
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Password"
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
             />
+            {mode === "signup" && (
+              <p className="text-[11px] text-muted-foreground">8+ chars · uppercase · lowercase · number · 1 special character</p>
+            )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <button
               type="submit"

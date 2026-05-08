@@ -236,6 +236,7 @@ function AdminPage() {
                             <option value="free">Free</option>
                             <option value="basic">Basic</option>
                             <option value="premium">Premium</option>
+                            <option value="ultra">Ultra</option>
                           </select>
                         </td>
                         <td className="px-3 py-2 text-xs">{u.last_active_at ? new Date(u.last_active_at).toLocaleString() : "—"}</td>
@@ -312,12 +313,18 @@ function AdminPage() {
             <div className="space-y-4">
               <h2 className="text-lg font-semibold">Platform Settings</h2>
               <SettingRow label="Customer care email" value={settings.contact_email || ""} onSave={(v) => updateSetting("contact_email", v)} />
-              <SettingRow label="Customer care phone" value={settings.contact_phone || ""} onSave={(v) => updateSetting("contact_phone", v)} />
-              <SettingRow label="Paystack public key" value={settings.paystack_public_key || ""} onSave={(v) => updateSetting("paystack_public_key", v)} placeholder="pk_live_..." />
-              <SettingRow label="Paystack secret key" value={settings.paystack_secret_key || ""} onSave={(v) => updateSetting("paystack_secret_key", v)} placeholder="sk_live_..." secret />
+              <SettingRow label="Paystack mode (test or live)" value={String(settings.paystack_mode || "test")} onSave={(v) => updateSetting("paystack_mode", v === "live" ? "live" : "test")} placeholder="test" />
+              <SettingRow label="Paystack TEST public key" value={settings.paystack_test_public_key || ""} onSave={(v) => updateSetting("paystack_test_public_key", v)} placeholder="pk_test_..." />
+              <SettingRow label="Paystack TEST secret key" value={settings.paystack_test_secret_key || ""} onSave={(v) => updateSetting("paystack_test_secret_key", v)} placeholder="sk_test_..." secret />
+              <SettingRow label="Paystack LIVE public key" value={settings.paystack_live_public_key || ""} onSave={(v) => updateSetting("paystack_live_public_key", v)} placeholder="pk_live_..." />
+              <SettingRow label="Paystack LIVE secret key" value={settings.paystack_live_secret_key || ""} onSave={(v) => updateSetting("paystack_live_secret_key", v)} placeholder="sk_live_..." secret />
               <SettingRow label="Free daily message limit" value={String(settings.daily_free_limit ?? 20)} onSave={(v) => updateSetting("daily_free_limit", Number(v) || 20)} />
               <SettingRow label="Basic plan price (₦)" value={String(settings.basic_price_naira ?? 2000)} onSave={(v) => updateSetting("basic_price_naira", Number(v) || 2000)} />
               <SettingRow label="Premium plan price (₦)" value={String(settings.premium_price_naira ?? 5000)} onSave={(v) => updateSetting("premium_price_naira", Number(v) || 5000)} />
+              <SettingRow label="Ultra plan price (₦)" value={String(settings.ultra_price_naira ?? 8000)} onSave={(v) => updateSetting("ultra_price_naira", Number(v) || 8000)} />
+              <SettingRow label="Leaderboard enabled (true/false)" value={String(settings.leaderboard_enabled ?? true)} onSave={(v) => updateSetting("leaderboard_enabled", v === "true")} />
+              <SettingRow label="Music enabled (true/false)" value={String(settings.music_enabled ?? false)} onSave={(v) => updateSetting("music_enabled", v === "true")} />
+              <SettingRow label="Music YouTube playlist URLs (comma-separated)" value={(settings.music_playlists || []).join(",")} onSave={(v) => updateSetting("music_playlists", v.split(",").map(s => s.trim()).filter(Boolean))} placeholder="https://...,https://..." />
             </div>
           )}
         </main>
