@@ -4,7 +4,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { Footer } from "@/components/Footer";
 import { ArrowLeft, Sun, Moon, LogOut, Trash2, CreditCard, Check } from "lucide-react";
 import { useTheme } from "@/lib/theme";
-import { validatePassword } from "@/lib/password";
 import { LANGUAGES } from "@/lib/languages";
 
 export const Route = createFileRoute("/settings")({ component: Settings });
@@ -61,8 +60,7 @@ function Settings() {
     setNewEmail("");
   };
   const changePassword = async () => {
-    const err = validatePassword(newPassword);
-    if (err) return flash(err);
+    if (newPassword.length < 6) return flash("Password must be at least 6 characters");
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return flash(error.message);
     flash("Password updated"); setNewPassword("");

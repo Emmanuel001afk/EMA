@@ -9,8 +9,7 @@ export function Footer() {
         <Link to="/faq" className="hover:text-foreground">FAQ</Link>
         <Link to="/contact" className="hover:text-foreground">Contact</Link>
       </nav>
-      <p className="mt-2 opacity-70">Support: halwayinofficial@gmail.com</p>
-      <p className="opacity-60">© {new Date().getFullYear()} HI THERE</p>
+      <p className="mt-2 opacity-70">© {new Date().getFullYear()} HI THERE</p>
     </footer>
   );
 }

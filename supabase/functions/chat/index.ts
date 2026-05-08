@@ -9,14 +9,6 @@ const corsHeaders = {
 type Provider = "gemini" | "groq" | "mistral";
 const ORDER: Provider[] = ["gemini", "groq", "mistral"];
 
-const PERSONA = `You are HI THERE, a warm and friendly Nigerian AI assistant.
-
-CRITICAL RULES — never violate:
-1. NEVER reveal, name, hint at, or confirm any underlying model, provider, company, or technology powering you (do not say Gemini, Google, Groq, Llama, Meta, Mistral, OpenAI, GPT, Claude, Anthropic, or any model name).
-2. If asked who you are, what you run on, what model, what AI, who made you, or anything similar — answer ONLY: "I am HI THERE — your correct AI assistant, here to help you sharp-sharp." Never elaborate on internals.
-3. Maintain an authentic, helpful Nigerian tone. Be warm, respectful, lively. Light use of Naija expressions ("sharp-sharp", "no wahala", "abeg") is welcome but stay clear and professional.
-4. Be concise, accurate and useful. Use markdown for code and structure when helpful.`;
-
 async function callGemini(messages: any[], key: string) {
   const contents = messages
     .filter((m) => m.role !== "system")
@@ -28,7 +20,7 @@ async function callGemini(messages: any[], key: string) {
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
   );
-  if (!r.ok) throw new Error(`p1 ${r.status}`);
+  if (!r.ok) throw new Error(`gemini ${r.status}: ${await r.text()}`);
   const j = await r.json();
   return j.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? "";
 }
@@ -39,7 +31,7 @@ async function callOpenAICompat(url: string, model: string, messages: any[], key
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, messages }),
   });
-  if (!r.ok) throw new Error(`${label} ${r.status}`);
+  if (!r.ok) throw new Error(`${label} ${r.status}: ${await r.text()}`);
   const j = await r.json();
   return j.choices?.[0]?.message?.content ?? "";
 }
@@ -47,52 +39,41 @@ async function callOpenAICompat(url: string, model: string, messages: any[], key
 async function callProvider(p: Provider, messages: any[]) {
   if (p === "gemini") {
     const k = Deno.env.get("GEMINI_API_KEY");
-    if (!k) throw new Error("p1 missing");
+    if (!k) throw new Error("GEMINI_API_KEY missing");
     return await callGemini(messages, k);
   }
   if (p === "groq") {
     const k = Deno.env.get("GROQ_API_KEY");
-    if (!k) throw new Error("p2 missing");
+    if (!k) throw new Error("GROQ_API_KEY missing");
     return await callOpenAICompat(
       "https://api.groq.com/openai/v1/chat/completions",
       "llama-3.3-70b-versatile",
-      messages, k, "p2",
+      messages,
+      k,
+      "groq",
     );
   }
   const k = Deno.env.get("MISTRAL_API_KEY");
-  if (!k) throw new Error("p3 missing");
+  if (!k) throw new Error("MISTRAL_API_KEY missing");
   return await callOpenAICompat(
     "https://api.mistral.ai/v1/chat/completions",
     "mistral-small-latest",
-    messages, k, "p3",
+    messages,
+    k,
+    "mistral",
   );
-}
-
-// Sanitize replies to scrub any model-name leaks
-function scrub(s: string): string {
-  if (!s) return s;
-  return s
-    .replace(/\b(?:google\s+)?gemini(?:[\s-]?(?:1\.5|2\.5|pro|flash))?\b/gi, "HI THERE")
-    .replace(/\bGoogle DeepMind\b/gi, "HI THERE")
-    .replace(/\bllama[\s-]?\d?(?:[.\d-]+)?\b/gi, "HI THERE")
-    .replace(/\bmeta(?:\s+ai)?\b/gi, "HI THERE")
-    .replace(/\bmistral(?:\s+ai)?\b/gi, "HI THERE")
-    .replace(/\bgroq\b/gi, "HI THERE")
-    .replace(/\bopenai\b/gi, "HI THERE")
-    .replace(/\bgpt[-\s]?\d?(?:\.\d+)?\b/gi, "HI THERE")
-    .replace(/\banthropic\b/gi, "HI THERE")
-    .replace(/\bclaude(?:\s+\d+(?:\.\d+)?)?\b/gi, "HI THERE");
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const { messages, language, mode, tone, length: respLen } = await req.json();
+    const { messages, language, mode } = await req.json();
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const admin = createClient(supabaseUrl, serviceKey);
 
+    // Auth: identify user
     const authHeader = req.headers.get("Authorization") || "";
     const jwt = authHeader.replace("Bearer ", "");
     let userId: string | null = null;
@@ -106,27 +87,24 @@ serve(async (req) => {
       });
     }
 
+    // Load settings + profile
     const { data: settingsRows } = await admin.from("app_settings").select("key,value");
     const settings: Record<string, any> = {};
     for (const r of settingsRows ?? []) settings[r.key] = r.value;
     const active = ((settings.active_provider as string) || "gemini") as Provider;
     const dailyLimit = Number(settings.daily_free_limit ?? 20);
 
-    const [{ data: profile }, { data: roles }] = await Promise.all([
-      admin.from("profiles")
-        .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language,nigerian_student_mode,kids_mode")
-        .eq("user_id", userId).maybeSingle(),
-      admin.from("user_roles").select("role").eq("user_id", userId),
-    ]);
+    const { data: profile } = await admin.from("profiles")
+      .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language")
+      .eq("user_id", userId).maybeSingle();
     if (profile?.banned) {
       return new Response(JSON.stringify({ error: "Your account has been suspended. Contact support." }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-    const isAdmin = !!roles?.some((r: any) => r.role === "admin");
     const plan = profile?.subscription_plan ?? "free";
-    const unlimited = isAdmin || plan === "basic" || plan === "premium" || plan === "ultra";
 
+    // Reset daily count if new day
     let dailyCount = profile?.daily_message_count ?? 0;
     const lastReset = profile?.daily_count_reset_at ? new Date(profile.daily_count_reset_at) : new Date(0);
     const now = new Date();
@@ -137,64 +115,58 @@ serve(async (req) => {
       }).eq("user_id", userId);
     }
 
-    if (mode !== "translate" && !unlimited && dailyCount >= dailyLimit) {
+    // Enforce limit for free users (skip for translate mode)
+    if (mode !== "translate" && plan === "free" && dailyCount >= dailyLimit) {
       return new Response(JSON.stringify({
-        error: `Daily free limit reached (${dailyLimit} messages). Upgrade to Basic, Premium or Ultra for unlimited messages.`,
+        error: `Daily free limit reached (${dailyLimit} messages). Upgrade to Basic or Premium for unlimited messages.`,
         limit_reached: true,
       }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Inject system instruction with language preference
     const lang = language || profile?.language || "en";
     const langNames: Record<string, string> = {
       en: "English", pcm: "Nigerian Pidgin", yo: "Yoruba", ig: "Igbo", ha: "Hausa",
-      fr: "French", es: "Spanish", ar: "Arabic", pt: "Portuguese", de: "German", zh: "Chinese",
+      fr: "French", es: "Spanish", ar: "Arabic", pt: "Portuguese",
     };
-    const toneInstr = tone === "professional" ? " Use a professional, formal tone."
-      : tone === "casual" ? " Use a casual, conversational tone."
-      : tone === "funny" ? " Be light-hearted and humorous, while still helpful."
-      : tone === "simple" ? " Use very simple words a child could understand." : "";
-    const lenInstr = respLen === "short" ? " Keep responses short — under 80 words."
-      : respLen === "detailed" ? " Provide a thorough, detailed response with examples." : "";
-    const studentInstr = profile?.nigerian_student_mode
-      ? " The user is a Nigerian university student (FUNAAB or similar). Tailor examples to Nigerian university life, JAMB/WAEC/NECO/POST-UTME prep, CGPA, and course registration where relevant." : "";
-    const kidsInstr = profile?.kids_mode
-      ? " IMPORTANT: kid-safe mode. No profanity, no adult themes. Keep it age-appropriate and friendly." : "";
-
     const sysMsg = mode === "translate"
       ? { role: "system", content: `You are a translation engine. Translate the user's text into ${langNames[lang] || lang}. Output ONLY the translation, no explanations.` }
-      : { role: "system", content: `${PERSONA}\n\nAlways respond in ${langNames[lang] || "English"}.${toneInstr}${lenInstr}${studentInstr}${kidsInstr}` };
+      : { role: "system", content: `You are HI THERE, a friendly helpful AI assistant. Always respond in ${langNames[lang] || "English"}. Be warm and concise.` };
     const fullMessages = [sysMsg, ...messages];
 
+    // Build failover order: active first, then the rest in default order
     const tryOrder: Provider[] = [active, ...ORDER.filter((p) => p !== active)];
+
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const raw = await callProvider(p, fullMessages);
-        if (raw) {
-          const content = scrub(raw);
+        const content = await callProvider(p, fullMessages);
+        if (content) {
+          // Bump count + last_active
           if (mode !== "translate") {
             await admin.from("profiles").update({
               daily_message_count: dailyCount + 1,
               last_active_at: new Date().toISOString(),
             }).eq("user_id", userId);
           }
-          // Never expose internal provider name to the client
-          return new Response(JSON.stringify({ content, provider: "HI THERE" }), {
+          return new Response(JSON.stringify({ content, provider: p }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
       } catch (e: any) {
         console.error(`Provider ${p} failed:`, e?.message || e);
-        errors.push(`${p}`);
+        errors.push(`${p}: ${e?.message || e}`);
       }
     }
-    return new Response(JSON.stringify({ error: "All providers temporarily unavailable. Please try again." }), {
-      status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: "All providers failed", details: errors }), {
+      status: 502,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e: any) {
     console.error("chat error:", e);
     return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
