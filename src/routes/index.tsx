@@ -37,7 +37,7 @@ function Landing() {
       <main className="mx-auto flex max-w-4xl flex-1 flex-col items-center justify-center px-6 py-16 text-center">
         <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
           <span className="inline-block h-2 w-2 rounded-full bg-primary" />
-          Multi-provider AI · Auto failover
+          Smart AI · Always online
         </div>
         <h1 className="bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-5xl font-extrabold tracking-tight text-transparent sm:text-6xl">
           HI THERE

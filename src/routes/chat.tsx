@@ -8,6 +8,13 @@ import {
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
 import { LANGUAGES, langLabel } from "@/lib/languages";
+import { WelcomeModal } from "@/components/WelcomeModal";
+import { OfflineBanner } from "@/components/OfflineBanner";
+import { CalculatorModal } from "@/components/Calculator";
+import { StudyTimerModal } from "@/components/StudyTimer";
+import { AssignmentTrackerModal } from "@/components/AssignmentTracker";
+import { LeaderboardModal } from "@/components/Leaderboard";
+import { Calculator as CalcIcon, Timer, Calendar, Trophy } from "lucide-react";
 
 export const Route = createFileRoute("/chat")({ component: ChatPage });
 
@@ -38,6 +45,11 @@ function ChatPage() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [showCalc, setShowCalc] = useState(false);
+  const [showTimer, setShowTimer] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
+  const [showLeader, setShowLeader] = useState(false);
+  const [displayName, setDisplayName] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -58,10 +70,10 @@ function ChatPage() {
     (async () => {
       const [{ data: roles }, { data: profile }] = await Promise.all([
         supabase.from("user_roles").select("role").eq("user_id", userId),
-        supabase.from("profiles").select("subscription_plan,language").eq("user_id", userId).maybeSingle(),
+        supabase.from("profiles").select("subscription_plan,language,display_name").eq("user_id", userId).maybeSingle(),
       ]);
       setIsAdmin(!!roles?.some((r) => r.role === "admin"));
-      if (profile) { setPlan(profile.subscription_plan || "free"); setLanguage(profile.language || "en"); }
+      if (profile) { setPlan(profile.subscription_plan || "free"); setLanguage(profile.language || "en"); setDisplayName(profile.display_name || ""); }
       await loadConversations();
     })();
     // eslint-disable-next-line
