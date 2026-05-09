@@ -56,6 +56,36 @@ export type Database = {
         }
         Relationships: []
       }
+      assignments: {
+        Row: {
+          created_at: string
+          done: boolean
+          due_date: string
+          id: string
+          subject: string
+          title: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          done?: boolean
+          due_date: string
+          id?: string
+          subject: string
+          title: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          done?: boolean
+          due_date?: string
+          id?: string
+          subject?: string
+          title?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           created_at: string
@@ -76,6 +106,33 @@ export type Database = {
           id?: string
           title?: string
           updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      feedback: {
+        Row: {
+          comment: string | null
+          conversation_id: string | null
+          created_at: string
+          id: string
+          rating: number
+          user_id: string
+        }
+        Insert: {
+          comment?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          rating: number
+          user_id: string
+        }
+        Update: {
+          comment?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          rating?: number
           user_id?: string
         }
         Relationships: []
@@ -192,11 +249,19 @@ export type Database = {
           created_at: string
           daily_count_reset_at: string
           daily_message_count: number
+          dark_mode_end: string
+          dark_mode_schedule_enabled: boolean
+          dark_mode_start: string
           display_name: string | null
           email: string | null
           id: string
+          incognito_mode: boolean
+          kids_mode: boolean
           language: string
           last_active_at: string | null
+          nigerian_student_mode: boolean
+          referral_code: string | null
+          referred_by: string | null
           subscription_expires_at: string | null
           subscription_plan: string
           theme: string
@@ -208,11 +273,19 @@ export type Database = {
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
+          dark_mode_end?: string
+          dark_mode_schedule_enabled?: boolean
+          dark_mode_start?: string
           display_name?: string | null
           email?: string | null
           id?: string
+          incognito_mode?: boolean
+          kids_mode?: boolean
           language?: string
           last_active_at?: string | null
+          nigerian_student_mode?: boolean
+          referral_code?: string | null
+          referred_by?: string | null
           subscription_expires_at?: string | null
           subscription_plan?: string
           theme?: string
@@ -224,16 +297,90 @@ export type Database = {
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
+          dark_mode_end?: string
+          dark_mode_schedule_enabled?: boolean
+          dark_mode_start?: string
           display_name?: string | null
           email?: string | null
           id?: string
+          incognito_mode?: boolean
+          kids_mode?: boolean
           language?: string
           last_active_at?: string | null
+          nigerian_student_mode?: boolean
+          referral_code?: string | null
+          referred_by?: string | null
           subscription_expires_at?: string | null
           subscription_plan?: string
           theme?: string
           updated_at?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      referrals: {
+        Row: {
+          bonus_granted: boolean
+          created_at: string
+          id: string
+          referred_id: string
+          referrer_id: string
+        }
+        Insert: {
+          bonus_granted?: boolean
+          created_at?: string
+          id?: string
+          referred_id: string
+          referrer_id: string
+        }
+        Update: {
+          bonus_granted?: boolean
+          created_at?: string
+          id?: string
+          referred_id?: string
+          referrer_id?: string
+        }
+        Relationships: []
+      }
+      study_room_members: {
+        Row: {
+          joined_at: string
+          room_id: string
+          user_id: string
+        }
+        Insert: {
+          joined_at?: string
+          room_id: string
+          user_id: string
+        }
+        Update: {
+          joined_at?: string
+          room_id?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      study_rooms: {
+        Row: {
+          created_at: string
+          id: string
+          invite_code: string
+          name: string
+          owner_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invite_code?: string
+          name: string
+          owner_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invite_code?: string
+          name?: string
+          owner_id?: string
         }
         Relationships: []
       }
@@ -299,6 +446,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      gen_referral_code: { Args: never; Returns: string }
+      get_leaderboard: {
+        Args: never
+        Returns: {
+          display_name: string
+          messages: number
+          referrals: number
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
