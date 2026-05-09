@@ -26,6 +26,24 @@ function AuthPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (mode === "signup") {
+      const rules = [
+        { ok: password.length >= 8, msg: "at least 8 characters" },
+        { ok: /[A-Z]/.test(password), msg: "an uppercase letter" },
+        { ok: /[a-z]/.test(password), msg: "a lowercase letter" },
+        { ok: /[0-9]/.test(password), msg: "a number" },
+        { ok: /[^A-Za-z0-9]/.test(password), msg: "a special character" },
+      ];
+      const missing = rules.filter((r) => !r.ok).map((r) => r.msg);
+      if (missing.length) {
+        setError(`Password needs ${missing.join(", ")}.`);
+        return;
+      }
+      if (!name.trim()) {
+        setError("Please enter your display name.");
+        return;
+      }
+    }
     setLoading(true);
     try {
       if (mode === "signup") {
@@ -86,10 +104,10 @@ function AuthPage() {
             <input
               type="password"
               required
-              minLength={6}
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
+              placeholder={mode === "signup" ? "Password (8+ chars, A-a-1-!)" : "Password"}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
             />
             {error && <p className="text-sm text-destructive">{error}</p>}
