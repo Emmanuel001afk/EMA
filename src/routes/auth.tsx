@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { lovable } from "@/integrations/lovable";
 import { Sparkles } from "lucide-react";
 import { Footer } from "@/components/Footer";
 
@@ -68,11 +69,15 @@ function AuthPage() {
 
   const signInWithGoogle = async () => {
     setError(null);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/chat` },
+    const result = await lovable.auth.signInWithOAuth("google", {
+      redirect_uri: `${window.location.origin}/chat`,
     });
-    if (error) setError(error.message);
+    if (result.error) {
+      setError(result.error instanceof Error ? result.error.message : String(result.error));
+      return;
+    }
+    if (result.redirected) return;
+    navigate({ to: "/chat" });
   };
 
   return (
