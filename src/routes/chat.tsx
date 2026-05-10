@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
-  Settings as SettingsIcon, HelpCircle, Search, Paperclip, Camera, Languages, User,
+  Settings as SettingsIcon, HelpCircle, Search, Paperclip, Camera, Languages, User, Pencil,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -32,6 +32,8 @@ function ChatPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [translatingId, setTranslatingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
   const [typing, setTyping] = useState("");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -199,6 +201,15 @@ function ChatPage() {
     setCopiedId(id); setTimeout(() => setCopiedId(null), 1500);
   };
 
+  const startEdit = (m: Msg) => { setEditingId(m.id); setEditingText(m.content); };
+  const saveEdit = async (m: Msg) => {
+    const text = editingText.trim();
+    if (!text || text === m.content) { setEditingId(null); return; }
+    await supabase.from("messages").update({ content: text }).eq("id", m.id);
+    setMessages((ms) => ms.map((x) => x.id === m.id ? { ...x, content: text } : x));
+    setEditingId(null);
+  };
+
   const translate = async (m: Msg) => {
     setTranslatingId(m.id);
     try {
@@ -330,6 +341,17 @@ function ChatPage() {
                     m.role === "user" ? "bg-primary text-primary-foreground" : "border border-border bg-card"
                   }`}>
                     <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                    {m.role === "user" && editingId === m.id && (
+                      <div className="mt-2 space-y-1">
+                        <textarea value={editingText} onChange={(e) => setEditingText(e.target.value)}
+                          rows={3}
+                          className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground" />
+                        <div className="flex justify-end gap-1">
+                          <button onClick={() => setEditingId(null)} className="rounded px-2 py-0.5 text-[11px] hover:bg-accent">Cancel</button>
+                          <button onClick={() => saveEdit(m)} className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground">Save</button>
+                        </div>
+                      </div>
+                    )}
                     {m.attachments && m.attachments.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {m.attachments.map((a, i) => (
@@ -348,7 +370,7 @@ function ChatPage() {
                     )}
                     <div className="mt-1.5 flex items-center justify-between gap-3 text-[10px] opacity-70">
                       <span>{fmtTime(m.created_at)}</span>
-                      {m.role === "assistant" && (
+                      {m.role === "assistant" ? (
                         <div className="flex items-center gap-1">
                           <button onClick={() => translate(m)} disabled={translatingId === m.id}
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
@@ -357,6 +379,17 @@ function ChatPage() {
                           </button>
                           <button onClick={() => copy(m.id, m.content)}
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            {copiedId === m.id ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => startEdit(m)}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/15">
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
+                          <button onClick={() => copy(m.id, m.content)}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/15">
                             {copiedId === m.id ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
                           </button>
                         </div>

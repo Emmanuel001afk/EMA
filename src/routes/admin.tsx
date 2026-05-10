@@ -91,7 +91,9 @@ function AdminPage() {
 
   const updateSetting = async (key: string, value: any) => {
     setSaving(key);
-    const { error } = await supabase.from("app_settings").update({ value }).eq("key", key);
+    const { error } = await supabase
+      .from("app_settings")
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
     setSaving(null);
     if (!error) {
       setSettings((s) => ({ ...s, [key]: value }));
@@ -313,8 +315,22 @@ function AdminPage() {
               <h2 className="text-lg font-semibold">Platform Settings</h2>
               <SettingRow label="Customer care email" value={settings.contact_email || ""} onSave={(v) => updateSetting("contact_email", v)} />
               <SettingRow label="Customer care phone" value={settings.contact_phone || ""} onSave={(v) => updateSetting("contact_phone", v)} />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Paystack</h3>
               <SettingRow label="Paystack public key" value={settings.paystack_public_key || ""} onSave={(v) => updateSetting("paystack_public_key", v)} placeholder="pk_live_..." />
               <SettingRow label="Paystack secret key" value={settings.paystack_secret_key || ""} onSave={(v) => updateSetting("paystack_secret_key", v)} placeholder="sk_live_..." secret />
+              <SettingRow label="Paystack webhook secret" value={settings.paystack_webhook_secret || ""} onSave={(v) => updateSetting("paystack_webhook_secret", v)} secret />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Flutterwave</h3>
+              <SettingRow label="Flutterwave public key" value={settings.flutterwave_public_key || ""} onSave={(v) => updateSetting("flutterwave_public_key", v)} placeholder="FLWPUBK-..." />
+              <SettingRow label="Flutterwave secret key" value={settings.flutterwave_secret_key || ""} onSave={(v) => updateSetting("flutterwave_secret_key", v)} placeholder="FLWSECK-..." secret />
+              <SettingRow label="Flutterwave webhook secret hash" value={settings.flutterwave_webhook_secret || ""} onSave={(v) => updateSetting("flutterwave_webhook_secret", v)} secret />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Custom API Keys</h3>
+              <SettingRow label="Custom slot 1 — name" value={settings.custom_api_1_name || ""} onSave={(v) => updateSetting("custom_api_1_name", v)} />
+              <SettingRow label="Custom slot 1 — key" value={settings.custom_api_1_key || ""} onSave={(v) => updateSetting("custom_api_1_key", v)} secret />
+              <SettingRow label="Custom slot 2 — name" value={settings.custom_api_2_name || ""} onSave={(v) => updateSetting("custom_api_2_name", v)} />
+              <SettingRow label="Custom slot 2 — key" value={settings.custom_api_2_key || ""} onSave={(v) => updateSetting("custom_api_2_key", v)} secret />
+              <SettingRow label="Custom slot 3 — name" value={settings.custom_api_3_name || ""} onSave={(v) => updateSetting("custom_api_3_name", v)} />
+              <SettingRow label="Custom slot 3 — key" value={settings.custom_api_3_key || ""} onSave={(v) => updateSetting("custom_api_3_key", v)} secret />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Limits & Pricing</h3>
               <SettingRow label="Free daily message limit" value={String(settings.daily_free_limit ?? 20)} onSave={(v) => updateSetting("daily_free_limit", Number(v) || 20)} />
               <SettingRow label="Basic plan price (₦)" value={String(settings.basic_price_naira ?? 2000)} onSave={(v) => updateSetting("basic_price_naira", Number(v) || 2000)} />
               <SettingRow label="Premium plan price (₦)" value={String(settings.premium_price_naira ?? 5000)} onSave={(v) => updateSetting("premium_price_naira", Number(v) || 5000)} />

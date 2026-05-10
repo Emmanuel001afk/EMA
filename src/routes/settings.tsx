@@ -8,6 +8,14 @@ import { LANGUAGES } from "@/lib/languages";
 
 export const Route = createFileRoute("/settings")({ component: Settings });
 
+const VOICES = [
+  { id: "default", label: "System default" },
+  { id: "naija-female", label: "Naija Female (warm)" },
+  { id: "naija-male", label: "Naija Male (deep)" },
+  { id: "uk-female", label: "UK Female" },
+  { id: "us-male", label: "US Male" },
+];
+
 function Settings() {
   const navigate = useNavigate();
   const { theme, setTheme } = useTheme();
@@ -16,6 +24,7 @@ function Settings() {
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState("en");
   const [plan, setPlan] = useState("free");
+  const [voiceName, setVoiceName] = useState("default");
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [newPassword, setNewPassword] = useState("");
   const [newEmail, setNewEmail] = useState("");
@@ -35,6 +44,7 @@ function Settings() {
         setLanguage(p.language || "en");
         setPlan(p.subscription_plan || "free");
         setTheme((p.theme as any) || "dark");
+        setVoiceName((p as any).voice_name || "default");
       }
       const { data: settingsRows } = await supabase.from("app_settings").select("key,value");
       const map: Record<string, any> = {};
@@ -48,7 +58,13 @@ function Settings() {
 
   const saveProfile = async () => {
     if (!userId) return;
-    await supabase.from("profiles").update({ display_name: displayName, language, theme }).eq("user_id", userId);
+    const { error } = await supabase
+      .from("profiles")
+      .upsert(
+        { user_id: userId, display_name: displayName, language, theme, voice_name: voiceName },
+        { onConflict: "user_id" },
+      );
+    if (error) return flash(error.message);
     flash("Profile saved");
   };
 
@@ -127,6 +143,11 @@ function Settings() {
           <Field label="Language (AI responds in this language)">
             <select value={language} onChange={(e) => setLanguage(e.target.value)} className="input">
               {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Voice (for read-aloud)">
+            <select value={voiceName} onChange={(e) => setVoiceName(e.target.value)} className="input">
+              {VOICES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
           </Field>
           <button onClick={saveProfile} className="btn-primary">Save profile</button>
