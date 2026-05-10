@@ -91,7 +91,9 @@ function AdminPage() {
 
   const updateSetting = async (key: string, value: any) => {
     setSaving(key);
-    const { error } = await supabase.from("app_settings").update({ value }).eq("key", key);
+    const { error } = await supabase
+      .from("app_settings")
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
     setSaving(null);
     if (!error) {
       setSettings((s) => ({ ...s, [key]: value }));
