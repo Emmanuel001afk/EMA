@@ -259,6 +259,7 @@ export type Database = {
           kids_mode: boolean
           language: string
           last_active_at: string | null
+          memories: Json
           nigerian_student_mode: boolean
           referral_code: string | null
           referred_by: string | null
@@ -267,6 +268,7 @@ export type Database = {
           theme: string
           updated_at: string
           user_id: string
+          voice_name: string
         }
         Insert: {
           banned?: boolean
@@ -283,6 +285,7 @@ export type Database = {
           kids_mode?: boolean
           language?: string
           last_active_at?: string | null
+          memories?: Json
           nigerian_student_mode?: boolean
           referral_code?: string | null
           referred_by?: string | null
@@ -291,6 +294,7 @@ export type Database = {
           theme?: string
           updated_at?: string
           user_id: string
+          voice_name?: string
         }
         Update: {
           banned?: boolean
@@ -307,6 +311,7 @@ export type Database = {
           kids_mode?: boolean
           language?: string
           last_active_at?: string | null
+          memories?: Json
           nigerian_student_mode?: boolean
           referral_code?: string | null
           referred_by?: string | null
@@ -315,6 +320,7 @@ export type Database = {
           theme?: string
           updated_at?: string
           user_id?: string
+          voice_name?: string
         }
         Relationships: []
       }
