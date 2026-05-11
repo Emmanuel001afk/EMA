@@ -365,3 +365,65 @@ function SettingRow({ label, value, onSave, placeholder, secret }:
     </div>
   );
 }
+
+const FUNCTIONS = [
+  { id: "", label: "— Disabled —" },
+  { id: "all", label: "All / General" },
+  { id: "math", label: "Math & Coding" },
+  { id: "naija", label: "Nigerian Languages" },
+  { id: "news", label: "News & Search" },
+  { id: "fast", label: "Fast / Simple Chat" },
+  { id: "general", label: "General Conversation" },
+];
+
+function CustomSlot({ idx, settings, updateSetting }:
+  { idx: number; settings: Record<string, any>; updateSetting: (k: string, v: any) => void }) {
+  const k = (s: string) => `custom_api_${idx}_${s}`;
+  const [name, setName] = useState(settings[k("name")] || "");
+  const [key, setKey] = useState(settings[k("key")] || "");
+  const [url, setUrl] = useState(settings[k("url")] || "");
+  const [model, setModel] = useState(settings[k("model")] || "");
+  const [fn, setFn] = useState(settings[k("function")] || "");
+  useEffect(() => { setName(settings[k("name")] || ""); setKey(settings[k("key")] || "");
+    setUrl(settings[k("url")] || ""); setModel(settings[k("model")] || "");
+    setFn(settings[k("function")] || ""); }, [settings]); // eslint-disable-line
+
+  const saveAll = () => {
+    updateSetting(k("name"), name); updateSetting(k("key"), key);
+    updateSetting(k("url"), url); updateSetting(k("model"), model);
+    updateSetting(k("function"), fn);
+  };
+  const clearAll = () => {
+    setName(""); setKey(""); setUrl(""); setModel(""); setFn("");
+    updateSetting(k("name"), ""); updateSetting(k("key"), "");
+    updateSetting(k("url"), ""); updateSetting(k("model"), ""); updateSetting(k("function"), "");
+  };
+  const active = !!(settings[k("key")] && settings[k("url")] && settings[k("model")] && settings[k("function")]);
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold">Custom slot {idx}</h4>
+        {active && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">Active</span>}
+      </div>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Provider name (e.g. Anthropic)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="OpenAI-compatible base URL (e.g. https://api.x.com/v1/chat/completions)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model id (e.g. gpt-4o-mini)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <select value={fn} onChange={(e) => setFn(e.target.value)}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+        {FUNCTIONS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+      </select>
+      <div className="flex gap-2">
+        <button onClick={saveAll}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Save</button>
+        <button onClick={clearAll}
+          className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10">Delete</button>
+      </div>
+    </div>
+  );
+}
