@@ -362,12 +362,16 @@ serve(async (req) => {
       try {
         const content = await callProvider(p, fullMessages, customs);
         if (content) {
-          // Bump count + last_active
+          // Bump count + last_active; consume bonus when over limit
           if (mode !== "translate") {
-            await admin.from("profiles").update({
+            const bonus = profile?.bonus_messages ?? 0;
+            const overLimit = plan === "free" && dailyCount >= dailyLimit;
+            const update: any = {
               daily_message_count: dailyCount + 1,
               last_active_at: new Date().toISOString(),
-            }).eq("user_id", userId);
+            };
+            if (overLimit && bonus > 0) update.bonus_messages = bonus - 1;
+            await admin.from("profiles").update(update).eq("user_id", userId);
           }
           // Never expose provider name to client (identity lock)
           return new Response(JSON.stringify({ content, provider: "hi-there" }), {
