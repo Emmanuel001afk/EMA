@@ -17,14 +17,16 @@ function Contact() {
     if (!message.trim()) return;
     setSending(true);
     const { data: s } = await supabase.auth.getSession();
-    // Store as a notification to admins (uses announcements fanout? no — store in a simple admin notification)
-    // Insert into notifications for the user to confirm; admin receives via dashboard inbox via app_settings? Keep simple: store as notification on own profile + flag.
     const userId = s.session?.user.id;
+    const email = s.session?.user.email;
+    await supabase.from("support_tickets").insert({
+      user_id: userId, name: name || null, email: email || null, message,
+    });
     if (userId) {
       await supabase.from("notifications").insert({
         user_id: userId,
         title: "Support request received",
-        body: `Thanks${name ? ` ${name}` : ""}! Our team will reply via email shortly.\n\nYour message: ${message.slice(0, 500)}`,
+        body: `Thanks${name ? ` ${name}` : ""}! Our team will get back to you soon.`,
         kind: "support",
       });
     }

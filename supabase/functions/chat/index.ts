@@ -14,7 +14,10 @@ type Provider =
   | "openai"
   | "cerebras"
   | "huggingface"
-  | "openrouter";
+  | "openrouter"
+  | "custom1"
+  | "custom2"
+  | "custom3";
 
 // Default fallback order when smart routing has no preference
 const DEFAULT_ORDER: Provider[] = [
@@ -79,7 +82,14 @@ async function callHuggingFaceNATLaS(messages: any[], key: string) {
   throw new Error("huggingface: empty response");
 }
 
-async function callProvider(p: Provider, messages: any[]) {
+type CustomCfg = { key: string; url: string; model: string; name: string };
+
+async function callProvider(p: Provider, messages: any[], customs: Record<string, CustomCfg>) {
+  if (p === "custom1" || p === "custom2" || p === "custom3") {
+    const c = customs[p];
+    if (!c?.key || !c?.url || !c?.model) throw new Error(`${p} not configured`);
+    return await callOpenAICompat(c.url, c.model, messages, c.key, c.name || p);
+  }
   if (p === "gemini") {
     const k = Deno.env.get("GEMINI_API_KEY");
     if (!k) throw new Error("GEMINI_API_KEY missing");
@@ -159,31 +169,28 @@ async function callProvider(p: Provider, messages: any[]) {
 }
 
 // Smart router: pick provider order from message intent + language
-function routeProviders(userText: string, language: string): Provider[] {
+type Intent = "math" | "naija" | "news" | "fast" | "image" | "general";
+
+function detectIntent(userText: string, language: string): Intent {
   const t = (userText || "").toLowerCase();
   const naijaLangs = ["yo", "ig", "ha", "pcm"];
-
-  // Nigerian languages -> HF Awarri N-ATLaS first
-  if (naijaLangs.includes(language)) {
-    return ["huggingface", "gemini", "openai", "groq", "openrouter"];
-  }
-  // Math / coding -> DeepSeek
+  if (naijaLangs.includes(language)) return "naija";
   const codeMath = /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
-  if (codeMath.test(t)) {
-    return ["deepseek", "openai", "gemini", "groq", "openrouter"];
-  }
-  // News / web search -> Gemini
+  if (codeMath.test(t)) return "math";
   const news = /\b(news|latest|today|recent|search|google|breaking|current|headline|update on|what.?s happening)\b/i;
-  if (news.test(t)) {
-    return ["gemini", "openai", "groq", "openrouter"];
+  if (news.test(t)) return "news";
+  if (t.length <= 80) return "fast";
+  return "general";
+}
+
+function routeForIntent(intent: Intent): Provider[] {
+  switch (intent) {
+    case "naija": return ["huggingface", "gemini", "openai", "groq", "openrouter"];
+    case "math":  return ["deepseek", "openai", "gemini", "groq", "openrouter"];
+    case "news":  return ["gemini", "openai", "groq", "openrouter"];
+    case "fast":  return ["groq", "cerebras", "gemini", "openai", "openrouter"];
+    default:      return ["gemini", "openai", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
   }
-  // Image generation -> HF FLUX (handled in mode==='image' below); skip here
-  // Short / fast simple chat -> Groq or Cerebras
-  if (t.length <= 80) {
-    return ["groq", "cerebras", "gemini", "openai", "openrouter"];
-  }
-  // General -> Gemini, OpenAI
-  return ["gemini", "openai", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
 }
 
 async function generateImageFLUX(prompt: string): Promise<{ b64: string }> {
@@ -231,7 +238,7 @@ serve(async (req) => {
     const dailyLimit = Number(settings.daily_free_limit ?? 20);
 
     const { data: profile } = await admin.from("profiles")
-      .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language")
+      .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language,cooldown_count,cooldown_until,bonus_messages")
       .eq("user_id", userId).maybeSingle();
     if (profile?.banned) {
       return new Response(JSON.stringify({ error: "Your account has been suspended. Contact support." }), {
@@ -252,11 +259,38 @@ serve(async (req) => {
     }
 
     // Enforce limit for free users (skip for translate mode)
-    if (mode !== "translate" && plan === "free" && dailyCount >= dailyLimit) {
-      return new Response(JSON.stringify({
-        error: `Daily free limit reached (${dailyLimit} messages). Upgrade to Basic or Premium for unlimited messages.`,
-        limit_reached: true,
-      }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (mode !== "translate" && plan === "free") {
+      const bonus = profile?.bonus_messages ?? 0;
+      const cdUntil = profile?.cooldown_until ? new Date(profile.cooldown_until) : null;
+      const inCooldown = cdUntil && cdUntil > now;
+
+      if (inCooldown && bonus <= 0) {
+        const remainingMs = cdUntil!.getTime() - now.getTime();
+        return new Response(JSON.stringify({
+          error: `Cooldown active. Try again in ${Math.ceil(remainingMs / 60000)} minutes.`,
+          limit_reached: true,
+          cooldown_until: profile?.cooldown_until,
+          bonus_messages: bonus,
+        }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (!inCooldown && dailyCount >= dailyLimit && bonus <= 0) {
+        // Trigger next cooldown step
+        const cdCount = (profile?.cooldown_count ?? 0) + 1;
+        const hours = cdCount === 1 ? 3 : cdCount === 2 ? 6 : 12;
+        const until = new Date(now.getTime() + hours * 3600 * 1000).toISOString();
+        await admin.from("profiles").update({
+          cooldown_count: cdCount,
+          cooldown_until: until,
+          bonus_messages: 3,
+        }).eq("user_id", userId);
+        return new Response(JSON.stringify({
+          error: `Daily free limit reached. Cooldown of ${hours} hours started. You'll get 3 bonus messages after.`,
+          limit_reached: true,
+          cooldown_until: until,
+          cooldown_hours: hours,
+        }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
     }
 
     // Inject system instruction with language preference
@@ -301,7 +335,24 @@ serve(async (req) => {
 
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
-    let tryOrder = routeProviders(lastUserMsg, lang);
+    const intent = detectIntent(lastUserMsg, lang);
+    let tryOrder = routeForIntent(intent);
+
+    // Custom providers: prepend slots whose function matches this intent
+    const customs: Record<string, CustomCfg> = {};
+    for (const i of [1, 2, 3]) {
+      const key = settings[`custom_api_${i}_key`];
+      const url = settings[`custom_api_${i}_url`];
+      const model = settings[`custom_api_${i}_model`];
+      const fn = settings[`custom_api_${i}_function`];
+      const name = settings[`custom_api_${i}_name`] || `custom${i}`;
+      if (key && url && model && fn) {
+        customs[`custom${i}`] = { key, url, model, name };
+        if (fn === intent || fn === "all") {
+          tryOrder = [`custom${i}` as Provider, ...tryOrder];
+        }
+      }
+    }
     if (!tryOrder.includes("openrouter")) tryOrder.push("openrouter");
     // Dedup
     tryOrder = Array.from(new Set(tryOrder));
@@ -309,14 +360,18 @@ serve(async (req) => {
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const content = await callProvider(p, fullMessages);
+        const content = await callProvider(p, fullMessages, customs);
         if (content) {
-          // Bump count + last_active
+          // Bump count + last_active; consume bonus when over limit
           if (mode !== "translate") {
-            await admin.from("profiles").update({
+            const bonus = profile?.bonus_messages ?? 0;
+            const overLimit = plan === "free" && dailyCount >= dailyLimit;
+            const update: any = {
               daily_message_count: dailyCount + 1,
               last_active_at: new Date().toISOString(),
-            }).eq("user_id", userId);
+            };
+            if (overLimit && bonus > 0) update.bonus_messages = bonus - 1;
+            await admin.from("profiles").update(update).eq("user_id", userId);
           }
           // Never expose provider name to client (identity lock)
           return new Response(JSON.stringify({ content, provider: "hi-there" }), {

@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
   Settings as SettingsIcon, HelpCircle, Search, Paperclip, Camera, Languages, User, Pencil,
+  Volume2, VolumeX, Share2, Flag,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -34,6 +35,8 @@ function ChatPage() {
   const [translatingId, setTranslatingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [voiceName, setVoiceName] = useState<string>("default");
   const [typing, setTyping] = useState("");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -60,10 +63,15 @@ function ChatPage() {
     (async () => {
       const [{ data: roles }, { data: profile }] = await Promise.all([
         supabase.from("user_roles").select("role").eq("user_id", userId),
-        supabase.from("profiles").select("subscription_plan,language").eq("user_id", userId).maybeSingle(),
+        supabase.from("profiles").select("subscription_plan,language,voice_name").eq("user_id", userId).maybeSingle(),
       ]);
       setIsAdmin(!!roles?.some((r) => r.role === "admin"));
-      if (profile) { setPlan(profile.subscription_plan || "free"); setLanguage(profile.language || "en"); }
+      if (profile) {
+        setPlan(profile.subscription_plan || "free");
+        setLanguage(profile.language || "en");
+        // @ts-ignore voice_name field
+        setVoiceName((profile as any).voice_name || "default");
+      }
       await loadConversations();
     })();
     // eslint-disable-next-line
@@ -208,6 +216,48 @@ function ChatPage() {
     await supabase.from("messages").update({ content: text }).eq("id", m.id);
     setMessages((ms) => ms.map((x) => x.id === m.id ? { ...x, content: text } : x));
     setEditingId(null);
+  };
+
+  const speak = (m: Msg) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      setError("Speech not supported in this browser"); return;
+    }
+    if (speakingId === m.id) {
+      window.speechSynthesis.cancel(); setSpeakingId(null); return;
+    }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(m.content);
+    const voices = window.speechSynthesis.getVoices();
+    const wantFemale = voiceName.toLowerCase().includes("female");
+    const wantMale = voiceName.toLowerCase().includes("male");
+    const pick = voices.find((v) => v.name.toLowerCase().includes(voiceName.toLowerCase()))
+      ?? voices.find((v) => wantFemale && /female|samantha|victoria|zira|karen|tessa/i.test(v.name))
+      ?? voices.find((v) => wantMale && /male|daniel|alex|david|fred/i.test(v.name))
+      ?? voices[0];
+    if (pick) u.voice = pick;
+    u.onend = () => setSpeakingId(null);
+    u.onerror = () => setSpeakingId(null);
+    setSpeakingId(m.id);
+    window.speechSynthesis.speak(u);
+  };
+
+  const share = async (m: Msg) => {
+    const text = `From HI THERE:\n\n${m.content}`;
+    if ((navigator as any).share) {
+      try { await (navigator as any).share({ title: "HI THERE", text }); return; } catch {}
+    }
+    await navigator.clipboard.writeText(text);
+    setCopiedId(m.id); setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  const report = async (m: Msg) => {
+    const reason = window.prompt("Why are you reporting this response? (optional)");
+    if (reason === null) return;
+    await supabase.from("reports").insert({
+      user_id: userId!, message_id: m.id, conversation_id: activeConvId,
+      content: m.content, reason: reason || null,
+    });
+    alert("Thanks — your report was sent to our team.");
   };
 
   const translate = async (m: Msg) => {
@@ -376,6 +426,18 @@ function ChatPage() {
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
                             <Languages className="h-3 w-3" />
                             {translatingId === m.id ? "…" : "Translate"}
+                          </button>
+                          <button onClick={() => speak(m)} title="Read aloud"
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            {speakingId === m.id ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+                          </button>
+                          <button onClick={() => share(m)} title="Share"
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            <Share2 className="h-3 w-3" />
+                          </button>
+                          <button onClick={() => report(m)} title="Report"
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+                            <Flag className="h-3 w-3" />
                           </button>
                           <button onClick={() => copy(m.id, m.content)}
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">

@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sparkles, ArrowLeft, Check, Users, Megaphone, CreditCard, Settings as Cog, Activity } from "lucide-react";
+import { Sparkles, ArrowLeft, Check, Users, Megaphone, CreditCard, Settings as Cog, Activity, Flag, Inbox } from "lucide-react";
 import { Footer } from "@/components/Footer";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -12,7 +12,7 @@ const PROVIDERS = [
   { id: "mistral", name: "Provider C" },
 ] as const;
 
-type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions";
+type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions" | "reports" | "support";
 
 function AdminPage() {
   const navigate = useNavigate();
@@ -36,6 +36,8 @@ function AdminPage() {
     totalUsers: 0, msgsToday: 0, totalMsgs: 0, totalRevenue: 0, txCount: 0,
   });
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [reports, setReports] = useState<any[]>([]);
+  const [supportMsgs, setSupportMsgs] = useState<any[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -51,7 +53,7 @@ function AdminPage() {
   }, [navigate]);
 
   const loadAll = async () => {
-    await Promise.all([loadSettings(), loadUsers(), loadAnnouncements(), loadMetrics(), loadTransactions()]);
+    await Promise.all([loadSettings(), loadUsers(), loadAnnouncements(), loadMetrics(), loadTransactions(), loadReports(), loadSupport()]);
   };
 
   const loadSettings = async () => {
@@ -87,6 +89,14 @@ function AdminPage() {
   const loadTransactions = async () => {
     const { data } = await supabase.from("transactions").select("*").order("created_at", { ascending: false }).limit(50);
     setTransactions(data ?? []);
+  };
+  const loadReports = async () => {
+    const { data } = await supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(100);
+    setReports(data ?? []);
+  };
+  const loadSupport = async () => {
+    const { data } = await supabase.from("support_tickets").select("*").order("created_at", { ascending: false }).limit(100);
+    setSupportMsgs(data ?? []);
   };
 
   const updateSetting = async (key: string, value: any) => {
@@ -165,6 +175,8 @@ function AdminPage() {
             { id: "users", label: "Users", icon: Users },
             { id: "announce", label: "Announcements", icon: Megaphone },
             { id: "transactions", label: "Revenue", icon: CreditCard },
+            { id: "reports", label: "Reports", icon: Flag },
+            { id: "support", label: "Support Inbox", icon: Inbox },
             { id: "settings", label: "Settings", icon: Cog },
           ].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id as Tab)}
@@ -310,6 +322,55 @@ function AdminPage() {
             </div>
           )}
 
+          {tab === "reports" && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">User Reports ({reports.length})</h2>
+              <div className="space-y-2">
+                {reports.map((r) => (
+                  <div key={r.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{new Date(r.created_at).toLocaleString()}</span>
+                      {r.resolved && <span className="rounded bg-primary/15 px-2 py-0.5 text-primary">Resolved</span>}
+                    </div>
+                    {r.reason && <p className="mt-1 text-xs italic">Reason: {r.reason}</p>}
+                    <p className="mt-2 whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs">{r.content}</p>
+                    {!r.resolved && (
+                      <button onClick={async () => {
+                        await supabase.from("reports").update({ resolved: true }).eq("id", r.id);
+                        await loadReports();
+                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                    )}
+                  </div>
+                ))}
+                {reports.length === 0 && <p className="text-xs text-muted-foreground">No reports yet.</p>}
+              </div>
+            </div>
+          )}
+
+          {tab === "support" && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">Support Messages ({supportMsgs.length})</h2>
+              <div className="space-y-2">
+                {supportMsgs.map((m) => (
+                  <div key={m.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{m.name || "Anonymous"} {m.email ? `(${m.email})` : ""}</span>
+                      <span>{new Date(m.created_at).toLocaleString()}</span>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-xs">{m.message}</p>
+                    {!m.resolved && (
+                      <button onClick={async () => {
+                        await supabase.from("support_tickets").update({ resolved: true }).eq("id", m.id);
+                        await loadSupport();
+                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                    )}
+                  </div>
+                ))}
+                {supportMsgs.length === 0 && <p className="text-xs text-muted-foreground">No support messages yet.</p>}
+              </div>
+            </div>
+          )}
+
           {tab === "settings" && (
             <div className="space-y-4">
               <h2 className="text-lg font-semibold">Platform Settings</h2>
@@ -324,12 +385,9 @@ function AdminPage() {
               <SettingRow label="Flutterwave secret key" value={settings.flutterwave_secret_key || ""} onSave={(v) => updateSetting("flutterwave_secret_key", v)} placeholder="FLWSECK-..." secret />
               <SettingRow label="Flutterwave webhook secret hash" value={settings.flutterwave_webhook_secret || ""} onSave={(v) => updateSetting("flutterwave_webhook_secret", v)} secret />
               <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Custom API Keys</h3>
-              <SettingRow label="Custom slot 1 — name" value={settings.custom_api_1_name || ""} onSave={(v) => updateSetting("custom_api_1_name", v)} />
-              <SettingRow label="Custom slot 1 — key" value={settings.custom_api_1_key || ""} onSave={(v) => updateSetting("custom_api_1_key", v)} secret />
-              <SettingRow label="Custom slot 2 — name" value={settings.custom_api_2_name || ""} onSave={(v) => updateSetting("custom_api_2_name", v)} />
-              <SettingRow label="Custom slot 2 — key" value={settings.custom_api_2_key || ""} onSave={(v) => updateSetting("custom_api_2_key", v)} secret />
-              <SettingRow label="Custom slot 3 — name" value={settings.custom_api_3_name || ""} onSave={(v) => updateSetting("custom_api_3_name", v)} />
-              <SettingRow label="Custom slot 3 — key" value={settings.custom_api_3_key || ""} onSave={(v) => updateSetting("custom_api_3_key", v)} secret />
+              {[1, 2, 3].map((i) => (
+                <CustomSlot key={i} idx={i} settings={settings} updateSetting={updateSetting} />
+              ))}
               <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Limits & Pricing</h3>
               <SettingRow label="Free daily message limit" value={String(settings.daily_free_limit ?? 20)} onSave={(v) => updateSetting("daily_free_limit", Number(v) || 20)} />
               <SettingRow label="Basic plan price (₦)" value={String(settings.basic_price_naira ?? 2000)} onSave={(v) => updateSetting("basic_price_naira", Number(v) || 2000)} />
@@ -364,6 +422,68 @@ function SettingRow({ label, value, onSave, placeholder, secret }:
           className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm" />
         <button onClick={() => onSave(v)}
           className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Save</button>
+      </div>
+    </div>
+  );
+}
+
+const FUNCTIONS = [
+  { id: "", label: "— Disabled —" },
+  { id: "all", label: "All / General" },
+  { id: "math", label: "Math & Coding" },
+  { id: "naija", label: "Nigerian Languages" },
+  { id: "news", label: "News & Search" },
+  { id: "fast", label: "Fast / Simple Chat" },
+  { id: "general", label: "General Conversation" },
+];
+
+function CustomSlot({ idx, settings, updateSetting }:
+  { idx: number; settings: Record<string, any>; updateSetting: (k: string, v: any) => void }) {
+  const k = (s: string) => `custom_api_${idx}_${s}`;
+  const [name, setName] = useState(settings[k("name")] || "");
+  const [key, setKey] = useState(settings[k("key")] || "");
+  const [url, setUrl] = useState(settings[k("url")] || "");
+  const [model, setModel] = useState(settings[k("model")] || "");
+  const [fn, setFn] = useState(settings[k("function")] || "");
+  useEffect(() => { setName(settings[k("name")] || ""); setKey(settings[k("key")] || "");
+    setUrl(settings[k("url")] || ""); setModel(settings[k("model")] || "");
+    setFn(settings[k("function")] || ""); }, [settings]); // eslint-disable-line
+
+  const saveAll = () => {
+    updateSetting(k("name"), name); updateSetting(k("key"), key);
+    updateSetting(k("url"), url); updateSetting(k("model"), model);
+    updateSetting(k("function"), fn);
+  };
+  const clearAll = () => {
+    setName(""); setKey(""); setUrl(""); setModel(""); setFn("");
+    updateSetting(k("name"), ""); updateSetting(k("key"), "");
+    updateSetting(k("url"), ""); updateSetting(k("model"), ""); updateSetting(k("function"), "");
+  };
+  const active = !!(settings[k("key")] && settings[k("url")] && settings[k("model")] && settings[k("function")]);
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold">Custom slot {idx}</h4>
+        {active && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">Active</span>}
+      </div>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Provider name (e.g. Anthropic)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="OpenAI-compatible base URL (e.g. https://api.x.com/v1/chat/completions)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model id (e.g. gpt-4o-mini)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+      <select value={fn} onChange={(e) => setFn(e.target.value)}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+        {FUNCTIONS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+      </select>
+      <div className="flex gap-2">
+        <button onClick={saveAll}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Save</button>
+        <button onClick={clearAll}
+          className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10">Delete</button>
       </div>
     </div>
   );

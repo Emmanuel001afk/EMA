@@ -246,6 +246,9 @@ export type Database = {
       profiles: {
         Row: {
           banned: boolean
+          bonus_messages: number
+          cooldown_count: number
+          cooldown_until: string | null
           created_at: string
           daily_count_reset_at: string
           daily_message_count: number
@@ -272,6 +275,9 @@ export type Database = {
         }
         Insert: {
           banned?: boolean
+          bonus_messages?: number
+          cooldown_count?: number
+          cooldown_until?: string | null
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
@@ -298,6 +304,9 @@ export type Database = {
         }
         Update: {
           banned?: boolean
+          bonus_messages?: number
+          cooldown_count?: number
+          cooldown_until?: string | null
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
@@ -348,6 +357,39 @@ export type Database = {
         }
         Relationships: []
       }
+      reports: {
+        Row: {
+          content: string
+          conversation_id: string | null
+          created_at: string
+          id: string
+          message_id: string | null
+          reason: string | null
+          resolved: boolean
+          user_id: string
+        }
+        Insert: {
+          content: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          reason?: string | null
+          resolved?: boolean
+          user_id: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          reason?: string | null
+          resolved?: boolean
+          user_id?: string
+        }
+        Relationships: []
+      }
       study_room_members: {
         Row: {
           joined_at: string
@@ -387,6 +429,36 @@ export type Database = {
           invite_code?: string
           name?: string
           owner_id?: string
+        }
+        Relationships: []
+      }
+      support_tickets: {
+        Row: {
+          created_at: string
+          email: string | null
+          id: string
+          message: string
+          name: string | null
+          resolved: boolean
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          email?: string | null
+          id?: string
+          message: string
+          name?: string | null
+          resolved?: boolean
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          email?: string | null
+          id?: string
+          message?: string
+          name?: string | null
+          resolved?: boolean
+          user_id?: string | null
         }
         Relationships: []
       }
