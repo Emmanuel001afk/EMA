@@ -322,6 +322,50 @@ function AdminPage() {
             </div>
           )}
 
+          {tab === "reports" && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">User Reports ({reports.length})</h2>
+              <div className="space-y-2">
+                {reports.map((r) => (
+                  <div key={r.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{new Date(r.created_at).toLocaleString()}</span>
+                      {r.resolved && <span className="rounded bg-primary/15 px-2 py-0.5 text-primary">Resolved</span>}
+                    </div>
+                    {r.reason && <p className="mt-1 text-xs italic">Reason: {r.reason}</p>}
+                    <p className="mt-2 whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs">{r.content}</p>
+                    {!r.resolved && (
+                      <button onClick={async () => {
+                        await supabase.from("reports").update({ resolved: true }).eq("id", r.id);
+                        await loadReports();
+                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                    )}
+                  </div>
+                ))}
+                {reports.length === 0 && <p className="text-xs text-muted-foreground">No reports yet.</p>}
+              </div>
+            </div>
+          )}
+
+          {tab === "support" && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">Support Messages ({supportMsgs.length})</h2>
+              <div className="space-y-2">
+                {supportMsgs.map((m) => (
+                  <div key={m.id} className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span className="font-mono">{m.user_id?.slice(0, 8)}…</span>
+                      <span>{new Date(m.created_at).toLocaleString()}</span>
+                    </div>
+                    <p className="mt-1 font-semibold">{m.title}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-xs">{m.body}</p>
+                  </div>
+                ))}
+                {supportMsgs.length === 0 && <p className="text-xs text-muted-foreground">No support messages yet.</p>}
+              </div>
+            </div>
+          )}
+
           {tab === "settings" && (
             <div className="space-y-4">
               <h2 className="text-lg font-semibold">Platform Settings</h2>
