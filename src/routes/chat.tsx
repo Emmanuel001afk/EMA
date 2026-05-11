@@ -63,7 +63,7 @@ function ChatPage() {
     (async () => {
       const [{ data: roles }, { data: profile }] = await Promise.all([
         supabase.from("user_roles").select("role").eq("user_id", userId),
-        supabase.from("profiles").select("subscription_plan,language").eq("user_id", userId).maybeSingle(),
+        supabase.from("profiles").select("subscription_plan,language,voice_name").eq("user_id", userId).maybeSingle(),
       ]);
       setIsAdmin(!!roles?.some((r) => r.role === "admin"));
       if (profile) {
