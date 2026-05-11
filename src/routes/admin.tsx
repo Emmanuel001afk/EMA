@@ -95,7 +95,7 @@ function AdminPage() {
     setReports(data ?? []);
   };
   const loadSupport = async () => {
-    const { data } = await supabase.from("notifications").select("*").eq("kind", "support").order("created_at", { ascending: false }).limit(100);
+    const { data } = await supabase.from("support_tickets").select("*").order("created_at", { ascending: false }).limit(100);
     setSupportMsgs(data ?? []);
   };
 
@@ -354,11 +354,16 @@ function AdminPage() {
                 {supportMsgs.map((m) => (
                   <div key={m.id} className="rounded-lg border border-border bg-card p-3 text-sm">
                     <div className="flex justify-between text-xs text-muted-foreground">
-                      <span className="font-mono">{m.user_id?.slice(0, 8)}…</span>
+                      <span>{m.name || "Anonymous"} {m.email ? `(${m.email})` : ""}</span>
                       <span>{new Date(m.created_at).toLocaleString()}</span>
                     </div>
-                    <p className="mt-1 font-semibold">{m.title}</p>
-                    <p className="mt-1 whitespace-pre-wrap text-xs">{m.body}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-xs">{m.message}</p>
+                    {!m.resolved && (
+                      <button onClick={async () => {
+                        await supabase.from("support_tickets").update({ resolved: true }).eq("id", m.id);
+                        await loadSupport();
+                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                    )}
                   </div>
                 ))}
                 {supportMsgs.length === 0 && <p className="text-xs text-muted-foreground">No support messages yet.</p>}
