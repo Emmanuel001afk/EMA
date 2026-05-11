@@ -238,7 +238,7 @@ serve(async (req) => {
     const dailyLimit = Number(settings.daily_free_limit ?? 20);
 
     const { data: profile } = await admin.from("profiles")
-      .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language")
+      .select("subscription_plan,banned,daily_message_count,daily_count_reset_at,language,cooldown_count,cooldown_until,bonus_messages")
       .eq("user_id", userId).maybeSingle();
     if (profile?.banned) {
       return new Response(JSON.stringify({ error: "Your account has been suspended. Contact support." }), {
@@ -259,11 +259,38 @@ serve(async (req) => {
     }
 
     // Enforce limit for free users (skip for translate mode)
-    if (mode !== "translate" && plan === "free" && dailyCount >= dailyLimit) {
-      return new Response(JSON.stringify({
-        error: `Daily free limit reached (${dailyLimit} messages). Upgrade to Basic or Premium for unlimited messages.`,
-        limit_reached: true,
-      }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (mode !== "translate" && plan === "free") {
+      const bonus = profile?.bonus_messages ?? 0;
+      const cdUntil = profile?.cooldown_until ? new Date(profile.cooldown_until) : null;
+      const inCooldown = cdUntil && cdUntil > now;
+
+      if (inCooldown && bonus <= 0) {
+        const remainingMs = cdUntil!.getTime() - now.getTime();
+        return new Response(JSON.stringify({
+          error: `Cooldown active. Try again in ${Math.ceil(remainingMs / 60000)} minutes.`,
+          limit_reached: true,
+          cooldown_until: profile?.cooldown_until,
+          bonus_messages: bonus,
+        }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (!inCooldown && dailyCount >= dailyLimit && bonus <= 0) {
+        // Trigger next cooldown step
+        const cdCount = (profile?.cooldown_count ?? 0) + 1;
+        const hours = cdCount === 1 ? 3 : cdCount === 2 ? 6 : 12;
+        const until = new Date(now.getTime() + hours * 3600 * 1000).toISOString();
+        await admin.from("profiles").update({
+          cooldown_count: cdCount,
+          cooldown_until: until,
+          bonus_messages: 3,
+        }).eq("user_id", userId);
+        return new Response(JSON.stringify({
+          error: `Daily free limit reached. Cooldown of ${hours} hours started. You'll get 3 bonus messages after.`,
+          limit_reached: true,
+          cooldown_until: until,
+          cooldown_hours: hours,
+        }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
     }
 
     // Inject system instruction with language preference
