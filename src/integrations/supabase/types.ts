@@ -246,6 +246,9 @@ export type Database = {
       profiles: {
         Row: {
           banned: boolean
+          bonus_messages: number
+          cooldown_count: number
+          cooldown_until: string | null
           created_at: string
           daily_count_reset_at: string
           daily_message_count: number
@@ -272,6 +275,9 @@ export type Database = {
         }
         Insert: {
           banned?: boolean
+          bonus_messages?: number
+          cooldown_count?: number
+          cooldown_until?: string | null
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
@@ -298,6 +304,9 @@ export type Database = {
         }
         Update: {
           banned?: boolean
+          bonus_messages?: number
+          cooldown_count?: number
+          cooldown_until?: string | null
           created_at?: string
           daily_count_reset_at?: string
           daily_message_count?: number
@@ -345,6 +354,39 @@ export type Database = {
           id?: string
           referred_id?: string
           referrer_id?: string
+        }
+        Relationships: []
+      }
+      reports: {
+        Row: {
+          content: string
+          conversation_id: string | null
+          created_at: string
+          id: string
+          message_id: string | null
+          reason: string | null
+          resolved: boolean
+          user_id: string
+        }
+        Insert: {
+          content: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          reason?: string | null
+          resolved?: boolean
+          user_id: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          message_id?: string | null
+          reason?: string | null
+          resolved?: boolean
+          user_id?: string
         }
         Relationships: []
       }
