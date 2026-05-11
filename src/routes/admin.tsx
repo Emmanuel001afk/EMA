@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sparkles, ArrowLeft, Check, Users, Megaphone, CreditCard, Settings as Cog, Activity } from "lucide-react";
+import { Sparkles, ArrowLeft, Check, Users, Megaphone, CreditCard, Settings as Cog, Activity, Flag, Inbox } from "lucide-react";
 import { Footer } from "@/components/Footer";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -12,7 +12,7 @@ const PROVIDERS = [
   { id: "mistral", name: "Provider C" },
 ] as const;
 
-type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions";
+type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions" | "reports" | "support";
 
 function AdminPage() {
   const navigate = useNavigate();
@@ -36,6 +36,8 @@ function AdminPage() {
     totalUsers: 0, msgsToday: 0, totalMsgs: 0, totalRevenue: 0, txCount: 0,
   });
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [reports, setReports] = useState<any[]>([]);
+  const [supportMsgs, setSupportMsgs] = useState<any[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -51,7 +53,7 @@ function AdminPage() {
   }, [navigate]);
 
   const loadAll = async () => {
-    await Promise.all([loadSettings(), loadUsers(), loadAnnouncements(), loadMetrics(), loadTransactions()]);
+    await Promise.all([loadSettings(), loadUsers(), loadAnnouncements(), loadMetrics(), loadTransactions(), loadReports(), loadSupport()]);
   };
 
   const loadSettings = async () => {
@@ -87,6 +89,14 @@ function AdminPage() {
   const loadTransactions = async () => {
     const { data } = await supabase.from("transactions").select("*").order("created_at", { ascending: false }).limit(50);
     setTransactions(data ?? []);
+  };
+  const loadReports = async () => {
+    const { data } = await supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(100);
+    setReports(data ?? []);
+  };
+  const loadSupport = async () => {
+    const { data } = await supabase.from("notifications").select("*").eq("kind", "support").order("created_at", { ascending: false }).limit(100);
+    setSupportMsgs(data ?? []);
   };
 
   const updateSetting = async (key: string, value: any) => {
@@ -165,6 +175,8 @@ function AdminPage() {
             { id: "users", label: "Users", icon: Users },
             { id: "announce", label: "Announcements", icon: Megaphone },
             { id: "transactions", label: "Revenue", icon: CreditCard },
+            { id: "reports", label: "Reports", icon: Flag },
+            { id: "support", label: "Support Inbox", icon: Inbox },
             { id: "settings", label: "Settings", icon: Cog },
           ].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id as Tab)}
