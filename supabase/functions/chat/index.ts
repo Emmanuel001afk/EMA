@@ -14,7 +14,10 @@ type Provider =
   | "openai"
   | "cerebras"
   | "huggingface"
-  | "openrouter";
+  | "openrouter"
+  | "custom1"
+  | "custom2"
+  | "custom3";
 
 // Default fallback order when smart routing has no preference
 const DEFAULT_ORDER: Provider[] = [
@@ -79,7 +82,14 @@ async function callHuggingFaceNATLaS(messages: any[], key: string) {
   throw new Error("huggingface: empty response");
 }
 
-async function callProvider(p: Provider, messages: any[]) {
+type CustomCfg = { key: string; url: string; model: string; name: string };
+
+async function callProvider(p: Provider, messages: any[], customs: Record<string, CustomCfg>) {
+  if (p === "custom1" || p === "custom2" || p === "custom3") {
+    const c = customs[p];
+    if (!c?.key || !c?.url || !c?.model) throw new Error(`${p} not configured`);
+    return await callOpenAICompat(c.url, c.model, messages, c.key, c.name || p);
+  }
   if (p === "gemini") {
     const k = Deno.env.get("GEMINI_API_KEY");
     if (!k) throw new Error("GEMINI_API_KEY missing");
@@ -159,31 +169,28 @@ async function callProvider(p: Provider, messages: any[]) {
 }
 
 // Smart router: pick provider order from message intent + language
-function routeProviders(userText: string, language: string): Provider[] {
+type Intent = "math" | "naija" | "news" | "fast" | "image" | "general";
+
+function detectIntent(userText: string, language: string): Intent {
   const t = (userText || "").toLowerCase();
   const naijaLangs = ["yo", "ig", "ha", "pcm"];
-
-  // Nigerian languages -> HF Awarri N-ATLaS first
-  if (naijaLangs.includes(language)) {
-    return ["huggingface", "gemini", "openai", "groq", "openrouter"];
-  }
-  // Math / coding -> DeepSeek
+  if (naijaLangs.includes(language)) return "naija";
   const codeMath = /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
-  if (codeMath.test(t)) {
-    return ["deepseek", "openai", "gemini", "groq", "openrouter"];
-  }
-  // News / web search -> Gemini
+  if (codeMath.test(t)) return "math";
   const news = /\b(news|latest|today|recent|search|google|breaking|current|headline|update on|what.?s happening)\b/i;
-  if (news.test(t)) {
-    return ["gemini", "openai", "groq", "openrouter"];
+  if (news.test(t)) return "news";
+  if (t.length <= 80) return "fast";
+  return "general";
+}
+
+function routeForIntent(intent: Intent): Provider[] {
+  switch (intent) {
+    case "naija": return ["huggingface", "gemini", "openai", "groq", "openrouter"];
+    case "math":  return ["deepseek", "openai", "gemini", "groq", "openrouter"];
+    case "news":  return ["gemini", "openai", "groq", "openrouter"];
+    case "fast":  return ["groq", "cerebras", "gemini", "openai", "openrouter"];
+    default:      return ["gemini", "openai", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
   }
-  // Image generation -> HF FLUX (handled in mode==='image' below); skip here
-  // Short / fast simple chat -> Groq or Cerebras
-  if (t.length <= 80) {
-    return ["groq", "cerebras", "gemini", "openai", "openrouter"];
-  }
-  // General -> Gemini, OpenAI
-  return ["gemini", "openai", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
 }
 
 async function generateImageFLUX(prompt: string): Promise<{ b64: string }> {
@@ -301,7 +308,24 @@ serve(async (req) => {
 
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
     const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
-    let tryOrder = routeProviders(lastUserMsg, lang);
+    const intent = detectIntent(lastUserMsg, lang);
+    let tryOrder = routeForIntent(intent);
+
+    // Custom providers: prepend slots whose function matches this intent
+    const customs: Record<string, CustomCfg> = {};
+    for (const i of [1, 2, 3]) {
+      const key = settings[`custom_api_${i}_key`];
+      const url = settings[`custom_api_${i}_url`];
+      const model = settings[`custom_api_${i}_model`];
+      const fn = settings[`custom_api_${i}_function`];
+      const name = settings[`custom_api_${i}_name`] || `custom${i}`;
+      if (key && url && model && fn) {
+        customs[`custom${i}`] = { key, url, model, name };
+        if (fn === intent || fn === "all") {
+          tryOrder = [`custom${i}` as Provider, ...tryOrder];
+        }
+      }
+    }
     if (!tryOrder.includes("openrouter")) tryOrder.push("openrouter");
     // Dedup
     tryOrder = Array.from(new Set(tryOrder));
@@ -309,7 +333,7 @@ serve(async (req) => {
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const content = await callProvider(p, fullMessages);
+        const content = await callProvider(p, fullMessages, customs);
         if (content) {
           // Bump count + last_active
           if (mode !== "translate") {
