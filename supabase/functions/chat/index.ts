@@ -348,7 +348,7 @@ serve(async (req) => {
     if (mode === "image" || autoImage) {
       const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
       try {
-        const img = await generateImageFLUX(lastUser?.content || "an image");
+        const img = await generateImageFLUX(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
         if (mode !== "translate") {
           await admin.from("profiles").update({
             daily_message_count: dailyCount + 1,
