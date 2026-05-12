@@ -213,8 +213,8 @@ function routeForIntent(intent: Intent): Provider[] {
   }
 }
 
-async function generateImageFLUX(prompt: string): Promise<{ b64: string }> {
-  const k = Deno.env.get("HUGGINGFACE_API_KEY");
+async function generateImageFLUX(prompt: string, keyOverride?: string): Promise<{ b64: string }> {
+  const k = keyOverride || Deno.env.get("HUGGINGFACE_API_KEY");
   if (!k) throw new Error("HUGGINGFACE_API_KEY missing");
   const r = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
     method: "POST",
