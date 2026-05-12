@@ -29,13 +29,17 @@ const DEFAULT_ORDER: Provider[] = [
   "deepseek",
 ];
 
-async function callGemini(messages: any[], key: string) {
+async function callGemini(messages: any[], key: string, opts: { webSearch?: boolean } = {}) {
   const contents = messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   const sys = messages.find((m) => m.role === "system")?.content;
   const body: any = { contents };
   if (sys) body.systemInstruction = { parts: [{ text: sys }] };
+  if (opts.webSearch) {
+    // Enable Google Search grounding so Gemini fetches live web results
+    body.tools = [{ google_search: {} }];
+  }
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -67,36 +71,49 @@ async function callOpenAICompat(
   return j.choices?.[0]?.message?.content ?? "";
 }
 
-async function callHuggingFaceNATLaS(messages: any[], key: string) {
-  // Awarri N-ATLaS via HF Inference API (text-generation)
+async function callHuggingFaceText(messages: any[], key: string, model: string) {
+  // Try several community Nigerian-language fine-tunes; first that responds wins.
   const prompt = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n") + "\nASSISTANT:";
-  const r = await fetch("https://api-inference.huggingface.co/models/awarri/n-atlas", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: 512, return_full_text: false } }),
-  });
-  if (!r.ok) throw new Error(`huggingface ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  if (Array.isArray(j) && j[0]?.generated_text) return j[0].generated_text;
-  if (j?.generated_text) return j.generated_text;
-  throw new Error("huggingface: empty response");
+  const candidates = [model, "Davlan/afro-xlmr-large", "castorini/afriberta_large", "google/mt5-base"];
+  let lastErr = "";
+  for (const m of candidates) {
+    try {
+      const r = await fetch(`https://api-inference.huggingface.co/models/${m}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: 512, return_full_text: false } }),
+      });
+      if (!r.ok) { lastErr = `${m} ${r.status}`; continue; }
+      const j = await r.json();
+      if (Array.isArray(j) && j[0]?.generated_text) return j[0].generated_text;
+      if (j?.generated_text) return j.generated_text;
+    } catch (e: any) { lastErr = `${m} ${e?.message || e}`; }
+  }
+  throw new Error(`huggingface: ${lastErr || "empty response"}`);
 }
 
 type CustomCfg = { key: string; url: string; model: string; name: string };
 
-async function callProvider(p: Provider, messages: any[], customs: Record<string, CustomCfg>) {
+async function callProvider(
+  p: Provider,
+  messages: any[],
+  customs: Record<string, CustomCfg>,
+  intent: Intent,
+  overrides: Record<string, string>,
+) {
+  const getKey = (envName: string) => overrides[envName] || Deno.env.get(envName) || "";
   if (p === "custom1" || p === "custom2" || p === "custom3") {
     const c = customs[p];
     if (!c?.key || !c?.url || !c?.model) throw new Error(`${p} not configured`);
     return await callOpenAICompat(c.url, c.model, messages, c.key, c.name || p);
   }
   if (p === "gemini") {
-    const k = Deno.env.get("GEMINI_API_KEY");
+    const k = getKey("GEMINI_API_KEY");
     if (!k) throw new Error("GEMINI_API_KEY missing");
-    return await callGemini(messages, k);
+    return await callGemini(messages, k, { webSearch: intent === "news" });
   }
   if (p === "groq") {
-    const k = Deno.env.get("GROQ_API_KEY");
+    const k = getKey("GROQ_API_KEY");
     if (!k) throw new Error("GROQ_API_KEY missing");
     return await callOpenAICompat(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -107,29 +124,29 @@ async function callProvider(p: Provider, messages: any[], customs: Record<string
     );
   }
   if (p === "mistral") {
-    const k = Deno.env.get("MISTRAL_API_KEY");
+    const k = getKey("MISTRAL_API_KEY");
     if (!k) throw new Error("MISTRAL_API_KEY missing");
     return await callOpenAICompat(
       "https://api.mistral.ai/v1/chat/completions",
-      "mistral-small-latest",
+      intent === "summarize" ? "mistral-large-latest" : "mistral-small-latest",
       messages,
       k,
       "mistral",
     );
   }
   if (p === "deepseek") {
-    const k = Deno.env.get("DEEPSEEK_API_KEY");
+    const k = getKey("DEEPSEEK_API_KEY");
     if (!k) throw new Error("DEEPSEEK_API_KEY missing");
     return await callOpenAICompat(
       "https://api.deepseek.com/v1/chat/completions",
-      "deepseek-chat",
+      intent === "math" ? "deepseek-reasoner" : "deepseek-chat",
       messages,
       k,
       "deepseek",
     );
   }
   if (p === "openai") {
-    const k = Deno.env.get("OPENAI_API_KEY");
+    const k = getKey("OPENAI_API_KEY");
     if (!k) throw new Error("OPENAI_API_KEY missing");
     return await callOpenAICompat(
       "https://api.openai.com/v1/chat/completions",
@@ -140,7 +157,7 @@ async function callProvider(p: Provider, messages: any[], customs: Record<string
     );
   }
   if (p === "cerebras") {
-    const k = Deno.env.get("CEREBRAS_API_KEY");
+    const k = getKey("CEREBRAS_API_KEY");
     if (!k) throw new Error("CEREBRAS_API_KEY missing");
     return await callOpenAICompat(
       "https://api.cerebras.ai/v1/chat/completions",
@@ -151,12 +168,12 @@ async function callProvider(p: Provider, messages: any[], customs: Record<string
     );
   }
   if (p === "huggingface") {
-    const k = Deno.env.get("HUGGINGFACE_API_KEY");
+    const k = getKey("HUGGINGFACE_API_KEY");
     if (!k) throw new Error("HUGGINGFACE_API_KEY missing");
-    return await callHuggingFaceNATLaS(messages, k);
+    return await callHuggingFaceText(messages, k, "Davlan/afro-xlmr-large");
   }
   // openrouter — universal failover
-  const k = Deno.env.get("OPENROUTER_API_KEY");
+  const k = getKey("OPENROUTER_API_KEY");
   if (!k) throw new Error("OPENROUTER_API_KEY missing");
   return await callOpenAICompat(
     "https://openrouter.ai/api/v1/chat/completions",
@@ -169,7 +186,7 @@ async function callProvider(p: Provider, messages: any[], customs: Record<string
 }
 
 // Smart router: pick provider order from message intent + language
-type Intent = "math" | "naija" | "news" | "fast" | "image" | "general";
+type Intent = "math" | "naija" | "news" | "fast" | "image" | "summarize" | "general";
 
 function detectIntent(userText: string, language: string): Intent {
   const t = (userText || "").toLowerCase();
@@ -177,24 +194,27 @@ function detectIntent(userText: string, language: string): Intent {
   if (naijaLangs.includes(language)) return "naija";
   const codeMath = /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
   if (codeMath.test(t)) return "math";
-  const news = /\b(news|latest|today|recent|search|google|breaking|current|headline|update on|what.?s happening)\b/i;
+  const news = /\b(news|latest|today|recent|search|google|breaking|current|headline|update on|what.?s happening|live|now|price of|weather|score|stock)\b/i;
   if (news.test(t)) return "news";
+  const summarize = /\b(summari[sz]e|summary|tl;?dr|key points|main ideas|abstract|long document)\b/i;
+  if (summarize.test(t) || t.length > 1500) return "summarize";
   if (t.length <= 80) return "fast";
   return "general";
 }
 
 function routeForIntent(intent: Intent): Provider[] {
   switch (intent) {
-    case "naija": return ["huggingface", "gemini", "openai", "groq", "openrouter"];
-    case "math":  return ["deepseek", "openai", "gemini", "groq", "openrouter"];
-    case "news":  return ["gemini", "openai", "groq", "openrouter"];
-    case "fast":  return ["groq", "cerebras", "gemini", "openai", "openrouter"];
-    default:      return ["gemini", "openai", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
+    case "naija":     return ["huggingface", "gemini", "openai", "openrouter"];
+    case "math":      return ["deepseek", "openai", "gemini", "openrouter"];
+    case "news":      return ["gemini", "openai", "openrouter"];
+    case "fast":      return ["cerebras", "groq", "gemini", "openai", "openrouter"];
+    case "summarize": return ["mistral", "gemini", "openai", "deepseek", "openrouter"];
+    default:          return ["openai", "gemini", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
   }
 }
 
-async function generateImageFLUX(prompt: string): Promise<{ b64: string }> {
-  const k = Deno.env.get("HUGGINGFACE_API_KEY");
+async function generateImageFLUX(prompt: string, keyOverride?: string): Promise<{ b64: string }> {
+  const k = keyOverride || Deno.env.get("HUGGINGFACE_API_KEY");
   if (!k) throw new Error("HUGGINGFACE_API_KEY missing");
   const r = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
     method: "POST",
@@ -312,11 +332,23 @@ serve(async (req) => {
       : { role: "system", content: `${identityLock} Always respond in ${langNames[lang] || "English"}.` };
     const fullMessages = [sysMsg, ...messages];
 
+    // Detect "search images of X" requests as image mode automatically
+    const lastUserText = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
+    const imageSearchRegex = /\b(image|picture|photo|pic|drawing|illustration|wallpaper)s?\s+(of|for|showing|with)\b|\b(generate|draw|create|make|show me)\b.*\b(image|picture|photo|pic)/i;
+    const autoImage = mode !== "translate" && imageSearchRegex.test(lastUserText);
+
+    // Read admin-panel API key overrides from app_settings (any provider key added there auto-activates)
+    const overrides: Record<string, string> = {};
+    for (const name of ["GEMINI_API_KEY","GROQ_API_KEY","MISTRAL_API_KEY","DEEPSEEK_API_KEY","OPENAI_API_KEY","CEREBRAS_API_KEY","HUGGINGFACE_API_KEY","OPENROUTER_API_KEY"]) {
+      const v = settings[name.toLowerCase()] ?? settings[name];
+      if (typeof v === "string" && v.length > 0) overrides[name] = v;
+    }
+
     // Image generation mode -> FLUX
-    if (mode === "image") {
+    if (mode === "image" || autoImage) {
       const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
       try {
-        const img = await generateImageFLUX(lastUser?.content || "an image");
+        const img = await generateImageFLUX(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
         if (mode !== "translate") {
           await admin.from("profiles").update({
             daily_message_count: dailyCount + 1,
@@ -334,8 +366,7 @@ serve(async (req) => {
     }
 
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
-    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
-    const intent = detectIntent(lastUserMsg, lang);
+    const intent = detectIntent(lastUserText, lang);
     let tryOrder = routeForIntent(intent);
 
     // Custom providers: prepend slots whose function matches this intent
@@ -360,7 +391,7 @@ serve(async (req) => {
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const content = await callProvider(p, fullMessages, customs);
+        const content = await callProvider(p, fullMessages, customs, intent, overrides);
         if (content) {
           // Bump count + last_active; consume bonus when over limit
           if (mode !== "translate") {
