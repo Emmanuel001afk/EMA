@@ -7,9 +7,14 @@ import { Footer } from "@/components/Footer";
 export const Route = createFileRoute("/admin")({ component: AdminPage });
 
 const PROVIDERS = [
-  { id: "gemini", name: "Provider A" },
-  { id: "groq", name: "Provider B" },
-  { id: "mistral", name: "Provider C" },
+  { id: "gemini",      name: "Gemini",       env: "GEMINI_API_KEY",       role: "News & web search (Google grounding)" },
+  { id: "groq",        name: "Groq",         env: "GROQ_API_KEY",         role: "Fast chat (Llama 3.3 70B)" },
+  { id: "cerebras",    name: "Cerebras",     env: "CEREBRAS_API_KEY",     role: "Ultra-fast short replies" },
+  { id: "deepseek",    name: "DeepSeek",     env: "DEEPSEEK_API_KEY",     role: "Math & coding (Reasoner)" },
+  { id: "mistral",     name: "Mistral",      env: "MISTRAL_API_KEY",      role: "Summarization (Large)" },
+  { id: "openai",      name: "OpenAI",       env: "OPENAI_API_KEY",       role: "General conversation (GPT-4o-mini)" },
+  { id: "huggingface", name: "Hugging Face", env: "HUGGINGFACE_API_KEY",  role: "Nigerian languages + image gen (FLUX)" },
+  { id: "openrouter",  name: "OpenRouter",   env: "OPENROUTER_API_KEY",   role: "Universal failover for all intents" },
 ] as const;
 
 type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions" | "reports" | "support";
@@ -204,22 +209,34 @@ function AdminPage() {
 
           {tab === "providers" && (
             <div className="space-y-3">
-              <h2 className="text-lg font-semibold">AI Provider</h2>
-              <p className="text-xs text-muted-foreground">The active provider is tried first; failures auto-failover to the next.</p>
+              <div className="rounded-xl border border-primary/40 bg-primary/5 p-4">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  <h2 className="text-lg font-semibold">Smart Router — Active</h2>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary"><Check className="h-3 w-3" /> Live</span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Every message is auto-routed to the best AI based on intent (math, news, languages, summarization, fast chat, images). Any provider with a key in Settings or Lovable Cloud is instantly added to the pool. OpenRouter is the universal failover.
+                </p>
+              </div>
+              <h3 className="pt-2 text-sm font-semibold text-muted-foreground">Connected providers (8)</h3>
               {PROVIDERS.map((p) => {
-                const isActive = p.id === active;
+                const overrideKey = settings[p.env.toLowerCase()] ?? settings[p.env];
+                const hasOverride = typeof overrideKey === "string" && overrideKey.length > 0;
                 return (
-                  <div key={p.id} className={`flex items-center justify-between gap-4 rounded-xl border p-4 ${isActive ? "border-primary bg-card shadow-lg" : "border-border bg-card/60"}`}>
-                    <div>
-                      <div className="flex items-center gap-2">
+                  <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
                         <h3 className="font-semibold">{p.name}</h3>
-                        {isActive && <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary"><Check className="h-3 w-3" /> Active</span>}
+                        <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+                          <Check className="h-3 w-3" /> Active
+                        </span>
+                        {hasOverride && (
+                          <span className="rounded-full bg-accent px-2 py-0.5 text-xs">Admin key</span>
+                        )}
                       </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{p.role}</p>
                     </div>
-                    <button disabled={isActive || saving === p.id} onClick={() => switchProvider(p.id)}
-                      className="rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-40">
-                      {isActive ? "Active" : saving === "active_provider" ? "…" : "Switch"}
-                    </button>
                   </div>
                 );
               })}
