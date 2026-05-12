@@ -49,6 +49,10 @@ async function callGemini(messages: any[], key: string, opts: { webSearch?: bool
   return j.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("") ?? "";
 }
 
+function sanitizeHeaderValue(v: string) {
+  return (v || "").replace(/[\r\n]+/g, "").replace(/[^\x20-\x7E]/g, "").trim();
+}
+
 async function callOpenAICompat(
   url: string,
   model: string,
@@ -57,12 +61,15 @@ async function callOpenAICompat(
   label: string,
   extraHeaders: Record<string, string> = {},
 ) {
+  const safeKey = sanitizeHeaderValue(key);
+  const safeExtra: Record<string, string> = {};
+  for (const [k, v] of Object.entries(extraHeaders)) safeExtra[k] = sanitizeHeaderValue(v);
   const r = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${safeKey}`,
       "Content-Type": "application/json",
-      ...extraHeaders,
+      ...safeExtra,
     },
     body: JSON.stringify({ model, messages }),
   });
@@ -76,11 +83,12 @@ async function callHuggingFaceText(messages: any[], key: string, model: string) 
   const prompt = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n") + "\nASSISTANT:";
   const candidates = [model, "Davlan/afro-xlmr-large", "castorini/afriberta_large", "google/mt5-base"];
   let lastErr = "";
+  const safeKey = sanitizeHeaderValue(key);
   for (const m of candidates) {
     try {
       const r = await fetch(`https://api-inference.huggingface.co/models/${m}`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${safeKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: 512, return_full_text: false } }),
       });
       if (!r.ok) { lastErr = `${m} ${r.status}`; continue; }
@@ -214,7 +222,7 @@ function routeForIntent(intent: Intent): Provider[] {
 }
 
 async function generateImageFLUX(prompt: string, keyOverride?: string): Promise<{ b64: string }> {
-  const k = keyOverride || Deno.env.get("HUGGINGFACE_API_KEY");
+  const k = sanitizeHeaderValue(keyOverride || Deno.env.get("HUGGINGFACE_API_KEY") || "");
   if (!k) throw new Error("HUGGINGFACE_API_KEY missing");
   const r = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
     method: "POST",
