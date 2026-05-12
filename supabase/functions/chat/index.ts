@@ -40,8 +40,9 @@ async function callGemini(messages: any[], key: string, opts: { webSearch?: bool
     // Enable Google Search grounding so Gemini fetches live web results
     body.tools = [{ google_search: {} }];
   }
+  const model = opts.webSearch ? "gemini-2.5-flash" : "gemini-2.5-flash";
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
   );
   if (!r.ok) throw new Error(`gemini ${r.status}: ${await r.text()}`);
@@ -202,7 +203,7 @@ function detectIntent(userText: string, language: string): Intent {
   if (naijaLangs.includes(language)) return "naija";
   const codeMath = /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
   if (codeMath.test(t)) return "math";
-  const news = /\b(news|latest|today|recent|search|google|breaking|current|headline|update on|what.?s happening|live|now|price of|weather|score|stock)\b/i;
+  const news = /\b(news|latest|today|recent|search|google|browse|web ?search|look ?up|find online|breaking|current|currently|headline|update on|what.?s happening|live|now|price of|weather|score|stock|market|election|forecast|trending|this (week|month|year)|in 20\d\d)\b|^\/(search|web)\b/i;
   if (news.test(t)) return "news";
   const summarize = /\b(summari[sz]e|summary|tl;?dr|key points|main ideas|abstract|long document)\b/i;
   if (summarize.test(t) || t.length > 1500) return "summarize";
