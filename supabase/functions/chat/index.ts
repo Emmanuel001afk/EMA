@@ -332,8 +332,20 @@ serve(async (req) => {
       : { role: "system", content: `${identityLock} Always respond in ${langNames[lang] || "English"}.` };
     const fullMessages = [sysMsg, ...messages];
 
+    // Detect "search images of X" requests as image mode automatically
+    const lastUserText = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
+    const imageSearchRegex = /\b(image|picture|photo|pic|drawing|illustration|wallpaper)s?\s+(of|for|showing|with)\b|\b(generate|draw|create|make|show me)\b.*\b(image|picture|photo|pic)/i;
+    const autoImage = mode !== "translate" && imageSearchRegex.test(lastUserText);
+
+    // Read admin-panel API key overrides from app_settings (any provider key added there auto-activates)
+    const overrides: Record<string, string> = {};
+    for (const name of ["GEMINI_API_KEY","GROQ_API_KEY","MISTRAL_API_KEY","DEEPSEEK_API_KEY","OPENAI_API_KEY","CEREBRAS_API_KEY","HUGGINGFACE_API_KEY","OPENROUTER_API_KEY"]) {
+      const v = settings[name.toLowerCase()] ?? settings[name];
+      if (typeof v === "string" && v.length > 0) overrides[name] = v;
+    }
+
     // Image generation mode -> FLUX
-    if (mode === "image") {
+    if (mode === "image" || autoImage) {
       const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
       try {
         const img = await generateImageFLUX(lastUser?.content || "an image");
@@ -354,8 +366,7 @@ serve(async (req) => {
     }
 
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
-    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
-    const intent = detectIntent(lastUserMsg, lang);
+    const intent = detectIntent(lastUserText, lang);
     let tryOrder = routeForIntent(intent);
 
     // Custom providers: prepend slots whose function matches this intent
@@ -380,7 +391,7 @@ serve(async (req) => {
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const content = await callProvider(p, fullMessages, customs);
+        const content = await callProvider(p, fullMessages, customs, intent, overrides);
         if (content) {
           // Bump count + last_active; consume bonus when over limit
           if (mode !== "translate") {
