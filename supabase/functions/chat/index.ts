@@ -29,10 +29,26 @@ const DEFAULT_ORDER: Provider[] = [
   "deepseek",
 ];
 
-async function callGemini(messages: any[], key: string, opts: { webSearch?: boolean } = {}) {
+type ImagePart = { mimeType: string; data: string };
+async function callGemini(
+  messages: any[],
+  key: string,
+  opts: { webSearch?: boolean; vision?: ImagePart[] } = {},
+) {
   const contents = messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+  // Attach vision images to the last user turn so Gemini can actually see them.
+  if (opts.vision && opts.vision.length) {
+    for (let i = contents.length - 1; i >= 0; i--) {
+      if (contents[i].role === "user") {
+        for (const img of opts.vision) {
+          (contents[i].parts as any[]).push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+        }
+        break;
+      }
+    }
+  }
   const sys = messages.find((m) => m.role === "system")?.content;
   const body: any = { contents };
   if (sys) body.systemInstruction = { parts: [{ text: sys }] };
@@ -40,7 +56,7 @@ async function callGemini(messages: any[], key: string, opts: { webSearch?: bool
     // Enable Google Search grounding so Gemini fetches live web results
     body.tools = [{ google_search: {} }];
   }
-  const model = opts.webSearch ? "gemini-2.5-flash" : "gemini-2.5-flash";
+  const model = "gemini-2.5-flash";
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -109,6 +125,7 @@ async function callProvider(
   customs: Record<string, CustomCfg>,
   intent: Intent,
   overrides: Record<string, string>,
+  vision: ImagePart[] = [],
 ) {
   const getKey = (envName: string) => overrides[envName] || Deno.env.get(envName) || "";
   if (p === "custom1" || p === "custom2" || p === "custom3") {
@@ -119,7 +136,7 @@ async function callProvider(
   if (p === "gemini") {
     const k = getKey("GEMINI_API_KEY");
     if (!k) throw new Error("GEMINI_API_KEY missing");
-    return await callGemini(messages, k, { webSearch: intent === "news" });
+    return await callGemini(messages, k, { webSearch: intent === "news", vision });
   }
   if (p === "groq") {
     const k = getKey("GROQ_API_KEY");
@@ -273,7 +290,7 @@ async function generateImageWithFallback(prompt: string, hfKeyOverride?: string)
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const { messages, language, mode } = await req.json();
+    const { messages, language, mode, attachments } = await req.json();
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -374,6 +391,23 @@ serve(async (req) => {
       : { role: "system", content: `${identityLock} Always respond in ${langNames[lang] || "English"}.` };
     const fullMessages = [sysMsg, ...messages];
 
+    // Fetch any image attachments (uploads) as base64 so Gemini can see them.
+    const vision: ImagePart[] = [];
+    if (Array.isArray(attachments)) {
+      for (const a of attachments.slice(0, 4)) {
+        if (!a?.url || !a?.type?.startsWith("image/")) continue;
+        try {
+          const r = await fetch(a.url);
+          if (!r.ok) continue;
+          const buf = new Uint8Array(await r.arrayBuffer());
+          if (buf.byteLength > 6 * 1024 * 1024) continue; // skip huge
+          let bin = "";
+          for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+          vision.push({ mimeType: a.type, data: btoa(bin) });
+        } catch (_e) { /* skip */ }
+      }
+    }
+
     // Detect "search images of X" requests as image mode automatically
     const lastUserText = [...messages].reverse().find((m: any) => m.role === "user")?.content ?? "";
     const imageSearchRegex = /\b(image|picture|photo|pic|drawing|illustration|wallpaper)s?\s+(of|for|showing|with)\b|\b(generate|draw|create|make|show me)\b.*\b(image|picture|photo|pic)/i;
@@ -413,6 +447,8 @@ serve(async (req) => {
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
     const intent = detectIntent(lastUserText, lang);
     let tryOrder = routeForIntent(intent);
+    // If the user attached images, gemini (vision-capable) must go first.
+    if (vision.length) tryOrder = ["gemini", ...tryOrder.filter((p) => p !== "gemini")];
 
     // Custom providers: prepend slots whose function matches this intent
     const customs: Record<string, CustomCfg> = {};
@@ -436,7 +472,8 @@ serve(async (req) => {
     const errors: string[] = [];
     for (const p of tryOrder) {
       try {
-        const content = await callProvider(p, fullMessages, customs, intent, overrides);
+        // When the user attached images, prefer gemini (vision-capable) first.
+        const content = await callProvider(p, fullMessages, customs, intent, overrides, vision);
         if (content) {
           // Bump count + last_active; consume bonus when over limit
           if (mode !== "translate") {
