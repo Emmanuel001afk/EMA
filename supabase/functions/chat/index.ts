@@ -447,6 +447,8 @@ serve(async (req) => {
     // Smart routing: pick order based on intent, then ALWAYS append openrouter as universal failover
     const intent = detectIntent(lastUserText, lang);
     let tryOrder = routeForIntent(intent);
+    // If the user attached images, gemini (vision-capable) must go first.
+    if (vision.length) tryOrder = ["gemini", ...tryOrder.filter((p) => p !== "gemini")];
 
     // Custom providers: prepend slots whose function matches this intent
     const customs: Record<string, CustomCfg> = {};
