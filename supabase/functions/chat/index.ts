@@ -390,19 +390,22 @@ serve(async (req) => {
     if (mode === "image" || autoImage) {
       const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
       try {
-        const img = await generateImageFLUX(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
+        const img = await generateImageWithFallback(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
         if (mode !== "translate") {
           await admin.from("profiles").update({
             daily_message_count: dailyCount + 1,
             last_active_at: new Date().toISOString(),
           }).eq("user_id", userId);
         }
-        return new Response(JSON.stringify({ image_b64: img.b64, provider: "huggingface-flux" }), {
+        return new Response(JSON.stringify({ image_b64: img.b64, provider: "hi-there-image" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (e: any) {
-        return new Response(JSON.stringify({ error: e?.message || "Image generation failed" }), {
-          status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        return new Response(JSON.stringify({
+          error: "Image generation is temporarily unavailable. Please try again in a moment.",
+          details: e?.message || String(e),
+        }), {
+          status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
