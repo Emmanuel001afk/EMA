@@ -115,16 +115,19 @@ function ChatPage() {
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || !userId) return;
-    if (plan !== "premium") {
-      setError("File uploads require the Premium plan. Upgrade in Settings.");
-      return;
-    }
     const uploads: Attachment[] = [];
     for (const f of Array.from(files)) {
       if (f.size > 20 * 1024 * 1024) { setError(`${f.name} exceeds 20MB`); continue; }
       const path = `${userId}/${Date.now()}-${f.name}`;
       const { error: upErr } = await supabase.storage.from("chat-uploads").upload(path, f);
-      if (upErr) { setError(upErr.message); continue; }
+      if (upErr) {
+        setError(
+          !navigator.onLine
+            ? "You're offline. Reconnect to upload files."
+            : `Couldn't upload ${f.name}. Please try again.`,
+        );
+        continue;
+      }
       const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24);
       uploads.push({ name: f.name, url: signed?.signedUrl || "", type: f.type, size: f.size });
     }
