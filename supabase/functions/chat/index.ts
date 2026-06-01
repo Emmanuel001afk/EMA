@@ -237,6 +237,39 @@ async function generateImageFLUX(prompt: string, keyOverride?: string): Promise<
   return { b64: btoa(bin) };
 }
 
+async function generateImageLovableGateway(prompt: string, model: string): Promise<{ b64: string }> {
+  const k = sanitizeHeaderValue(Deno.env.get("LOVABLE_API_KEY") || "");
+  if (!k) throw new Error("LOVABLE_API_KEY missing");
+  const isOpenAI = model.startsWith("openai/");
+  const body: any = isOpenAI
+    ? { model, prompt, quality: "low", size: "1024x1024", n: 1 }
+    : { model, messages: [{ role: "user", content: prompt }], modalities: ["image", "text"] };
+  const r = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${k}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${model} ${r.status}: ${await r.text()}`);
+  const j = await r.json();
+  const b64 = j?.data?.[0]?.b64_json;
+  if (!b64) throw new Error(`${model}: no image data`);
+  return { b64 };
+}
+
+async function generateImageWithFallback(prompt: string, hfKeyOverride?: string): Promise<{ b64: string; via: string }> {
+  const errors: string[] = [];
+  // 1) Best quality: OpenAI gpt-image-2 via Lovable AI Gateway
+  try { return { ...(await generateImageLovableGateway(prompt, "openai/gpt-image-2")), via: "gpt-image-2" }; }
+  catch (e: any) { errors.push(`gpt-image-2: ${e?.message || e}`); }
+  // 2) Gemini Nano Banana
+  try { return { ...(await generateImageLovableGateway(prompt, "google/gemini-2.5-flash-image")), via: "gemini-image" }; }
+  catch (e: any) { errors.push(`gemini-image: ${e?.message || e}`); }
+  // 3) HuggingFace FLUX
+  try { return { ...(await generateImageFLUX(prompt, hfKeyOverride)), via: "flux" }; }
+  catch (e: any) { errors.push(`flux: ${e?.message || e}`); }
+  throw new Error(errors.join(" | "));
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
@@ -357,19 +390,22 @@ serve(async (req) => {
     if (mode === "image" || autoImage) {
       const lastUser = [...messages].reverse().find((m: any) => m.role === "user");
       try {
-        const img = await generateImageFLUX(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
+        const img = await generateImageWithFallback(lastUser?.content || "an image", overrides["HUGGINGFACE_API_KEY"]);
         if (mode !== "translate") {
           await admin.from("profiles").update({
             daily_message_count: dailyCount + 1,
             last_active_at: new Date().toISOString(),
           }).eq("user_id", userId);
         }
-        return new Response(JSON.stringify({ image_b64: img.b64, provider: "huggingface-flux" }), {
+        return new Response(JSON.stringify({ image_b64: img.b64, provider: "hi-there-image" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       } catch (e: any) {
-        return new Response(JSON.stringify({ error: e?.message || "Image generation failed" }), {
-          status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        return new Response(JSON.stringify({
+          error: "Image generation is temporarily unavailable. Please try again in a moment.",
+          details: e?.message || String(e),
+        }), {
+          status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
     }
@@ -423,8 +459,11 @@ serve(async (req) => {
         errors.push(`${p}: ${e?.message || e}`);
       }
     }
-    return new Response(JSON.stringify({ error: "All providers failed", details: errors }), {
-      status: 502,
+    return new Response(JSON.stringify({
+      error: "The AI is taking a quick break — please try again in a moment.",
+      details: errors,
+    }), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e: any) {

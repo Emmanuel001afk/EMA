@@ -21,6 +21,28 @@ type Conv = { id: string; title: string; updated_at: string };
 
 function ChatPage() {
   const navigate = useNavigate();
+  const friendlyError = (e: any): string => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      return "You're offline. Check your internet connection and try again.";
+    }
+    const raw = (e?.message || e?.error || "").toString().toLowerCase();
+    if (raw.includes("failed to fetch") || raw.includes("networkerror") || raw.includes("network request failed")) {
+      return "Network hiccup — please check your connection and try again.";
+    }
+    if (raw.includes("429") || raw.includes("rate") || raw.includes("cooldown") || raw.includes("limit reached")) {
+      return e?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan.";
+    }
+    if (raw.includes("402") || raw.includes("payment") || raw.includes("quota") || raw.includes("insufficient")) {
+      return "Our AI usage is temporarily exhausted. The team has been notified — please try again shortly.";
+    }
+    if (raw.includes("401") || raw.includes("not authenticated") || raw.includes("unauthorized")) {
+      return "Your session expired. Please sign in again.";
+    }
+    if (raw.includes("non-2xx") || raw.includes("all providers failed") || raw.includes("502") || raw.includes("503")) {
+      return "The AI is taking a quick break. Please try again in a moment.";
+    }
+    return e?.message || "Something went wrong. Please try again.";
+  };
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [plan, setPlan] = useState<string>("free");
@@ -115,16 +137,19 @@ function ChatPage() {
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || !userId) return;
-    if (plan !== "premium") {
-      setError("File uploads require the Premium plan. Upgrade in Settings.");
-      return;
-    }
     const uploads: Attachment[] = [];
     for (const f of Array.from(files)) {
       if (f.size > 20 * 1024 * 1024) { setError(`${f.name} exceeds 20MB`); continue; }
       const path = `${userId}/${Date.now()}-${f.name}`;
       const { error: upErr } = await supabase.storage.from("chat-uploads").upload(path, f);
-      if (upErr) { setError(upErr.message); continue; }
+      if (upErr) {
+        setError(
+          !navigator.onLine
+            ? "You're offline. Reconnect to upload files."
+            : `Couldn't upload ${f.name}. Please try again.`,
+        );
+        continue;
+      }
       const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24);
       uploads.push({ name: f.name, url: signed?.signedUrl || "", type: f.type, size: f.size });
     }
@@ -195,10 +220,11 @@ function ChatPage() {
       });
       await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId);
     } catch (e: any) {
-      setError(e.message || "Failed to get response");
+      const friendly = friendlyError(e);
+      setError(friendly);
       setMessages((m) => [...m, {
         id: crypto.randomUUID(), role: "assistant",
-        content: `⚠️ ${e.message || "Failed to get response"}`,
+        content: `⚠️ ${friendly}`,
         created_at: new Date().toISOString(),
       }]);
     } finally { setSending(false); }
@@ -268,7 +294,7 @@ function ChatPage() {
       });
       if (error || data?.error) throw new Error(data?.error || error?.message);
       setTranslations((t) => ({ ...t, [m.id]: data.content }));
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) { setError(friendlyError(e)); }
     finally { setTranslatingId(null); }
   };
 
