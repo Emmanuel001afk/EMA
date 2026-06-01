@@ -220,10 +220,11 @@ function ChatPage() {
       });
       await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId);
     } catch (e: any) {
-      setError(e.message || "Failed to get response");
+      const friendly = friendlyError(e);
+      setError(friendly);
       setMessages((m) => [...m, {
         id: crypto.randomUUID(), role: "assistant",
-        content: `⚠️ ${e.message || "Failed to get response"}`,
+        content: `⚠️ ${friendly}`,
         created_at: new Date().toISOString(),
       }]);
     } finally { setSending(false); }
@@ -293,7 +294,7 @@ function ChatPage() {
       });
       if (error || data?.error) throw new Error(data?.error || error?.message);
       setTranslations((t) => ({ ...t, [m.id]: data.content }));
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) { setError(friendlyError(e)); }
     finally { setTranslatingId(null); }
   };
 
