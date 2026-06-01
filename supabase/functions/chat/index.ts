@@ -459,8 +459,11 @@ serve(async (req) => {
         errors.push(`${p}: ${e?.message || e}`);
       }
     }
-    return new Response(JSON.stringify({ error: "All providers failed", details: errors }), {
-      status: 502,
+    return new Response(JSON.stringify({
+      error: "The AI is taking a quick break — please try again in a moment.",
+      details: errors,
+    }), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e: any) {
