@@ -9,6 +9,11 @@ import {
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
 import { LANGUAGES, langLabel } from "@/lib/languages";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 export const Route = createFileRoute("/chat")({ component: ChatPage });
 
@@ -68,6 +73,19 @@ function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+
+  // Renders assistant/user text as markdown (with GFM tables, math via KaTeX,
+  // and inline images from data URLs returned by the image-generation flow).
+  const MD = ({ text, dark }: { text: string; dark?: boolean }) => (
+    <div className={`prose prose-sm max-w-none break-words ${dark ? "prose-invert" : "dark:prose-invert"} prose-p:my-2 prose-pre:my-2 prose-headings:my-2 prose-img:my-2 prose-img:rounded-lg`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -193,24 +211,47 @@ function ChatPage() {
         : "";
       const history = [...messages, { ...userMsg, content: text + attachContext }]
         .map((m) => ({ role: m.role, content: m.content }));
+      // Detect explicit image-generation intent on the client too, so the
+      // server doesn't have to guess. Triggers: leading "/image ", or natural
+      // phrasing like "generate/create/draw/make an image/picture/photo of …".
+      const lowered = text.toLowerCase().trim();
+      const wantsImage =
+        lowered.startsWith("/image ") ||
+        /\b(generate|create|draw|make|design|render|produce|show me)\b.*\b(image|picture|photo|pic|logo|illustration|wallpaper|art|drawing|painting)\b/i.test(lowered);
+      const cleanedText = lowered.startsWith("/image ") ? text.replace(/^\/image\s+/i, "") : text;
+      if (wantsImage) {
+        history[history.length - 1] = { role: "user", content: cleanedText };
+      }
       const { data, error } = await supabase.functions.invoke("chat", {
-        body: { messages: history, language },
+        body: {
+          messages: history,
+          language,
+          mode: wantsImage ? "image" : undefined,
+          attachments: attachments.map((a) => ({ url: a.url, type: a.type, name: a.name })),
+        },
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
-      const reply: string = data.content || "(no response)";
+      // Image generation: server returns { image_b64 }. Inline it as a markdown
+      // image so the renderer (ReactMarkdown) shows it directly in the bubble.
+      const reply: string = data.image_b64
+        ? `![generated image](data:image/png;base64,${data.image_b64})`
+        : (data.content || "(no response)");
       const provider: string = data.provider;
 
       const aid = crypto.randomUUID();
-      let i = 0; setTyping("");
-      await new Promise<void>((resolve) => {
-        const iv = setInterval(() => {
-          i += Math.max(2, Math.floor(reply.length / 80));
-          setTyping(reply.slice(0, i));
-          if (i >= reply.length) { clearInterval(iv); resolve(); }
-        }, 20);
-      });
-      setTyping("");
+      // Skip typewriter for image replies (don't reveal base64 char-by-char).
+      if (!data.image_b64) {
+        let i = 0; setTyping("");
+        await new Promise<void>((resolve) => {
+          const iv = setInterval(() => {
+            i += Math.max(2, Math.floor(reply.length / 80));
+            setTyping(reply.slice(0, i));
+            if (i >= reply.length) { clearInterval(iv); resolve(); }
+          }, 20);
+        });
+        setTyping("");
+      }
 
       const aMsg: Msg = { id: aid, role: "assistant", content: reply, created_at: new Date().toISOString(), provider };
       setMessages((m) => [...m, aMsg]);
@@ -416,7 +457,7 @@ function ChatPage() {
                   <div className={`group max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm sm:max-w-[85%] sm:px-4 sm:py-3 ${
                     m.role === "user" ? "bg-primary text-primary-foreground" : "border border-border bg-card"
                   }`}>
-                    <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                    <MD text={m.content} dark={m.role === "user"} />
                     {m.role === "user" && editingId === m.id && (
                       <div className="mt-2 space-y-1">
                         <textarea value={editingText} onChange={(e) => setEditingText(e.target.value)}
