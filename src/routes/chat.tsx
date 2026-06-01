@@ -21,6 +21,28 @@ type Conv = { id: string; title: string; updated_at: string };
 
 function ChatPage() {
   const navigate = useNavigate();
+  const friendlyError = (e: any): string => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      return "You're offline. Check your internet connection and try again.";
+    }
+    const raw = (e?.message || e?.error || "").toString().toLowerCase();
+    if (raw.includes("failed to fetch") || raw.includes("networkerror") || raw.includes("network request failed")) {
+      return "Network hiccup — please check your connection and try again.";
+    }
+    if (raw.includes("429") || raw.includes("rate") || raw.includes("cooldown") || raw.includes("limit reached")) {
+      return e?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan.";
+    }
+    if (raw.includes("402") || raw.includes("payment") || raw.includes("quota") || raw.includes("insufficient")) {
+      return "Our AI usage is temporarily exhausted. The team has been notified — please try again shortly.";
+    }
+    if (raw.includes("401") || raw.includes("not authenticated") || raw.includes("unauthorized")) {
+      return "Your session expired. Please sign in again.";
+    }
+    if (raw.includes("non-2xx") || raw.includes("all providers failed") || raw.includes("502") || raw.includes("503")) {
+      return "The AI is taking a quick break. Please try again in a moment.";
+    }
+    return e?.message || "Something went wrong. Please try again.";
+  };
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [plan, setPlan] = useState<string>("free");
