@@ -663,6 +663,29 @@ function ChatPage() {
     }
   };
 
+  const downloadConversation = (id = activeConvId) => {
+    if (!id) return;
+    const conv = conversations.find((c) => c.id === id);
+    const rows = id === activeConvId ? messages : [];
+    const body = rows.length
+      ? rows
+          .map((m) => {
+            const files = m.attachments?.length
+              ? `\nFiles:\n${m.attachments.map((a) => `- ${a.name}: ${a.url}`).join("\n")}`
+              : "";
+            return `## ${m.role === "assistant" ? "HI THERE" : "You"} — ${new Date(m.created_at).toLocaleString()}\n\n${m.content}${files}`;
+          })
+          .join("\n\n---\n\n")
+      : `Open this chat first to export its full messages.`;
+    const blob = new Blob([`# ${conv?.title || "HI THERE chat"}\n\n${body}`], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(conv?.title || "hi-there-chat").replace(/[^a-z0-9]+/gi, "-").slice(0, 50)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const startEdit = (m: Msg) => {
     setEditingId(m.id);
     setEditingText(m.content);
