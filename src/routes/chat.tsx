@@ -631,12 +631,9 @@ function ChatPage() {
                       </div>
                     )}
                     {m.attachments && m.attachments.length > 0 && (
-                      <div className="mt-2 space-y-1">
+                      <div className="mt-2 space-y-2">
                         {m.attachments.map((a, i) => (
-                          <a key={i} href={a.url} target="_blank" rel="noreferrer"
-                            className="block truncate rounded bg-black/10 px-2 py-1 text-xs underline">
-                            📎 {a.name}
-                          </a>
+                          <AttachmentPreview key={`${a.name}-${i}`} attachment={a} />
                         ))}
                       </div>
                     )}
@@ -667,6 +664,10 @@ function ChatPage() {
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
                             <Flag className="h-3 w-3" />
                           </button>
+                          <button onClick={() => deleteMessage(m)} title="Delete"
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-destructive/10 hover:text-destructive">
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                           <button onClick={() => copy(m.id, m.content)}
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
                             {copiedId === m.id ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
@@ -681,6 +682,10 @@ function ChatPage() {
                           <button onClick={() => copy(m.id, m.content)}
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/15">
                             {copiedId === m.id ? <><Check className="h-3 w-3" /> Copied</> : <><Copy className="h-3 w-3" /> Copy</>}
+                          </button>
+                          <button onClick={() => deleteMessage(m)} title="Delete"
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/15">
+                            <Trash2 className="h-3 w-3" />
                           </button>
                         </div>
                       )}
