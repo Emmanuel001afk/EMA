@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
-import { LANGUAGES, langLabel } from "@/lib/languages";
+import { langLabel } from "@/lib/languages";
 import type { Json } from "@/integrations/supabase/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -252,7 +252,6 @@ function ChatPage() {
   };
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [plan, setPlan] = useState<string>("free");
   const [language, setLanguage] = useState("en");
   const [conversations, setConversations] = useState<Conv[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
@@ -359,10 +358,8 @@ function ChatPage() {
       ]);
       setIsAdmin(!!roles?.some((r) => r.role === "admin"));
       if (profile) {
-        setPlan(profile.subscription_plan || "free");
         setLanguage(profile.language || "en");
-        // @ts-ignore voice_name field
-        setVoiceName((profile as any).voice_name || "default");
+        setVoiceName((profile as { voice_name?: string }).voice_name || "default");
       }
       await loadConversations();
     })();
