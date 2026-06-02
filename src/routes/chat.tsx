@@ -316,9 +316,10 @@ function ChatPage() {
     };
     setMessages((m) => [...m, userMsg]);
     await supabase.from("messages").insert({
+      id: userMsg.id,
       conversation_id: convId, user_id: userId, role: "user",
       content: text, attachments: storedAttachments as any,
-    });
+    } as any);
 
     if (messages.length === 0) {
       const title = (text || attachments[0]?.name || "New Chat").slice(0, 40);
@@ -394,9 +395,10 @@ function ChatPage() {
       const aMsg: Msg = { id: aid, role: "assistant", content: reply, created_at: new Date().toISOString(), provider, attachments: assistantAttachments };
       setMessages((m) => [...m, aMsg]);
       await supabase.from("messages").insert({
+        id: aid,
         conversation_id: convId, user_id: userId, role: "assistant",
         content: reply, provider, attachments: storedAssistantAttachments as any,
-      });
+      } as any);
       await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId);
     } catch (e: any) {
       const friendly = friendlyError(e);
