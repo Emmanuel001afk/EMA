@@ -17,20 +17,18 @@ import "katex/dist/katex.min.css";
 
 export const Route = createFileRoute("/chat")({ component: ChatPage });
 
-type Attachment = { name: string; url: string; type: string; size: number };
+type Attachment = { name: string; url: string; type: string; size: number; path?: string; data?: string };
 type Msg = {
   id: string; role: "user" | "assistant"; content: string;
   created_at: string; provider?: string | null; attachments?: Attachment[];
 };
 type Conv = { id: string; title: string; updated_at: string };
 
-type LocalAttachment = Attachment & { path?: string; data?: string };
-
 const isImageAttachment = (a: Attachment) => a.type?.startsWith("image/");
 const isVideoAttachment = (a: Attachment) => a.type?.startsWith("video/");
 const isAudioAttachment = (a: Attachment) => a.type?.startsWith("audio/");
 const isPdfAttachment = (a: Attachment) => a.type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
-const stripLocalData = (attachments: LocalAttachment[]): Attachment[] =>
+const stripLocalData = (attachments: Attachment[]): Attachment[] =>
   attachments.map(({ data: _data, ...rest }) => rest);
 
 async function fileToBase64(file: File): Promise<string> {
