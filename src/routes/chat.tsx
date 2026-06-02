@@ -824,6 +824,15 @@ function ChatPage() {
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
+            {c.id === activeConvId && (
+              <button
+                onClick={() => downloadConversation(c.id)}
+                title="Download chat"
+                className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded opacity-70 hover:bg-accent sm:opacity-0 sm:group-hover:opacity-100"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         ))}
         {filteredConvs.length === 0 && (
@@ -887,6 +896,17 @@ function ChatPage() {
                 >
                   <Plus className="h-4 w-4" /> New chat
                 </button>
+                {activeConvId && (
+                  <button
+                    onClick={() => {
+                      setProfileOpen(false);
+                      downloadConversation(activeConvId);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent"
+                  >
+                    <Download className="h-4 w-4" /> Download current chat
+                  </button>
+                )}
                 {activeConvId && (
                   <button
                     onClick={() => {
