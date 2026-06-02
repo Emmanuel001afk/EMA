@@ -227,7 +227,9 @@ function ChatPage() {
       raw.includes("cooldown") ||
       raw.includes("limit reached")
     ) {
-      return err?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan.";
+      return (
+        err?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan."
+      );
     }
     if (
       raw.includes("402") ||
