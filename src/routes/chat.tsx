@@ -307,6 +307,7 @@ function ChatPage() {
     }
     const text = input.trim();
     const attachments = pendingFiles;
+    const storedAttachments = stripLocalData(attachments);
     setInput(""); setPendingFiles([]); setSending(true);
 
     const userMsg: Msg = {
@@ -316,7 +317,7 @@ function ChatPage() {
     setMessages((m) => [...m, userMsg]);
     await supabase.from("messages").insert({
       conversation_id: convId, user_id: userId, role: "user",
-      content: text, attachments: attachments as any,
+      content: text, attachments: storedAttachments as any,
     });
 
     if (messages.length === 0) {
@@ -347,17 +348,33 @@ function ChatPage() {
           messages: history,
           language,
           mode: wantsImage ? "image" : undefined,
-          attachments: attachments.map((a) => ({ url: a.url, type: a.type, name: a.name })),
+          attachments: attachments.map((a) => ({ url: a.url, type: a.type, name: a.name, data: a.data })),
         },
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
-      // Image generation: server returns { image_b64 }. Inline it as a markdown
-      // image so the renderer (ReactMarkdown) shows it directly in the bubble.
+      let assistantAttachments: Attachment[] = [];
+      let storedAssistantAttachments: Attachment[] = [];
       const reply: string = data.image_b64
-        ? `![generated image](data:image/png;base64,${data.image_b64})`
+        ? "Here’s the image I created:"
         : (data.content || "(no response)");
       const provider: string = data.provider;
+
+      if (data.image_b64) {
+        const filename = `generated-${Date.now()}.png`;
+        const path = `${userId}/generated/${filename}`;
+        try {
+          const blob = base64ToBlob(data.image_b64, "image/png");
+          const { error: imgErr } = await supabase.storage.from("chat-uploads").upload(path, blob, { contentType: "image/png", upsert: true });
+          if (imgErr) throw imgErr;
+          const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24 * 7);
+          assistantAttachments = [{ name: filename, type: "image/png", size: blob.size, path, url: signed?.signedUrl || "", data: data.image_b64 }];
+          storedAssistantAttachments = stripLocalData(assistantAttachments);
+        } catch {
+          assistantAttachments = [{ name: filename, type: "image/png", size: data.image_b64.length, url: `data:image/png;base64,${data.image_b64}`, data: data.image_b64 }];
+          storedAssistantAttachments = assistantAttachments;
+        }
+      }
 
       const aid = crypto.randomUUID();
       // Skip typewriter for image replies (don't reveal base64 char-by-char).
@@ -373,11 +390,11 @@ function ChatPage() {
         setTyping("");
       }
 
-      const aMsg: Msg = { id: aid, role: "assistant", content: reply, created_at: new Date().toISOString(), provider };
+      const aMsg: Msg = { id: aid, role: "assistant", content: reply, created_at: new Date().toISOString(), provider, attachments: assistantAttachments };
       setMessages((m) => [...m, aMsg]);
       await supabase.from("messages").insert({
         conversation_id: convId, user_id: userId, role: "assistant",
-        content: reply, provider,
+        content: reply, provider, attachments: storedAssistantAttachments as any,
       });
       await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", convId);
     } catch (e: any) {
