@@ -327,8 +327,9 @@ function ChatPage() {
     }
 
     try {
+      const hasImages = attachments.some(isImageAttachment);
       const attachContext = attachments.length
-        ? `\n\n[User attached ${attachments.length} file(s): ${attachments.map((a) => `${a.name} (${a.type})`).join(", ")}]`
+        ? `\n\n[User attached ${attachments.length} file(s): ${attachments.map((a) => `${a.name} (${a.type})`).join(", ")}. ${hasImages ? "The image data is attached; inspect it directly and describe what you see." : "Use the visible file details when relevant."}]`
         : "";
       const history = [...messages, { ...userMsg, content: text + attachContext }]
         .map((m) => ({ role: m.role, content: m.content }));
@@ -728,30 +729,31 @@ function ChatPage() {
           <div className="border-t border-border bg-background/80 p-2 backdrop-blur sm:p-3">
             <div className="mx-auto max-w-3xl">
               {pendingFiles.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
+              <div className="mb-2 grid gap-2 sm:grid-cols-2">
                   {pendingFiles.map((f, i) => (
-                    <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs">
-                      📎 {f.name}
-                      <button onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))} className="hover:text-destructive">
-                        <X className="h-3 w-3" />
+                    <div key={i} className="relative">
+                      <AttachmentPreview attachment={f} />
+                      <button onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}
+                        className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full border border-border bg-background/90 text-foreground shadow-sm hover:text-destructive">
+                        <X className="h-3.5 w-3.5" />
                       </button>
-                    </span>
+                    </div>
                   ))}
                 </div>
               )}
               <div className="flex items-end gap-1.5 sm:gap-2">
                 <input ref={fileRef} type="file" multiple hidden
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,image/*"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*"
                   onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
                 <input ref={cameraRef} type="file" hidden accept="image/*" capture="environment"
                   onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
                 <button onClick={() => fileRef.current?.click()}
-                  title="Attach file (Premium)"
+                  title="Attach file"
                   className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent">
                   <Paperclip className="h-4 w-4" />
                 </button>
                 <button onClick={() => cameraRef.current?.click()}
-                  title="Camera (Premium)"
+                  title="Camera"
                   className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent md:hidden">
                   <Camera className="h-4 w-4" />
                 </button>
