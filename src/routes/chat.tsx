@@ -32,6 +32,7 @@ import {
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
 import { LANGUAGES, langLabel } from "@/lib/languages";
+import type { Json } from "@/integrations/supabase/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -80,11 +81,6 @@ function base64ToBlob(base64: string, type: string) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type });
-}
-
-function extractGeneratedDataImage(content: string) {
-  const match = content.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/);
-  return match?.[0] || null;
 }
 
 function AttachmentPreview({ attachment }: { attachment: Attachment }) {
@@ -212,11 +208,12 @@ function AttachmentPreview({ attachment }: { attachment: Attachment }) {
 
 function ChatPage() {
   const navigate = useNavigate();
-  const friendlyError = (e: any): string => {
+  const friendlyError = (e: unknown): string => {
+    const err = e as { message?: string; error?: string };
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       return "You're offline. Check your internet connection and try again.";
     }
-    const raw = (e?.message || e?.error || "").toString().toLowerCase();
+    const raw = (err?.message || err?.error || "").toString().toLowerCase();
     if (
       raw.includes("failed to fetch") ||
       raw.includes("networkerror") ||
@@ -230,7 +227,7 @@ function ChatPage() {
       raw.includes("cooldown") ||
       raw.includes("limit reached")
     ) {
-      return e?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan.";
+      return err?.message || "You've hit today's free limit. Please wait a bit or upgrade your plan.";
     }
     if (
       raw.includes("402") ||
@@ -251,7 +248,7 @@ function ChatPage() {
     ) {
       return "The AI is taking a quick break. Please try again in a moment.";
     }
-    return e?.message || "Something went wrong. Please try again.";
+    return err?.message || "Something went wrong. Please try again.";
   };
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
