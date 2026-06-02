@@ -398,12 +398,13 @@ serve(async (req) => {
     const vision: ImagePart[] = [];
     if (Array.isArray(attachments)) {
       for (const a of attachments.slice(0, 4)) {
-        if (!a?.url || !a?.type?.startsWith("image/")) continue;
+        if (!a?.type?.startsWith("image/")) continue;
         try {
           if (typeof a.data === "string" && a.data.length) {
             vision.push({ mimeType: a.type, data: cleanBase64(a.data) });
             continue;
           }
+          if (!a.url) continue;
           const r = await fetch(a.url);
           if (!r.ok) continue;
           const buf = new Uint8Array(await r.arrayBuffer());
