@@ -45,6 +45,76 @@ function extractGeneratedDataImage(content: string) {
   return match?.[0] || null;
 }
 
+function AttachmentPreview({ attachment }: { attachment: Attachment }) {
+  const src = attachment.data && isImageAttachment(attachment)
+    ? `data:${attachment.type};base64,${attachment.data}`
+    : attachment.url;
+
+  if (isImageAttachment(attachment)) {
+    return (
+      <figure className="overflow-hidden rounded-xl border border-border bg-background/70">
+        <img src={src} alt={attachment.name} className="max-h-80 w-full object-contain" loading="lazy" />
+        <figcaption className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          <span className="truncate"><ImageIcon className="mr-1 inline h-3 w-3" />{attachment.name}</span>
+          <a href={src} download={attachment.name} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent">
+            <Download className="h-3 w-3" /> Download
+          </a>
+        </figcaption>
+      </figure>
+    );
+  }
+
+  if (isVideoAttachment(attachment)) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border bg-background/70">
+        <video src={src} controls playsInline preload="metadata" className="max-h-80 w-full bg-background" />
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          <span className="truncate"><Film className="mr-1 inline h-3 w-3" />{attachment.name}</span>
+          <a href={src} download={attachment.name} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent">
+            <Download className="h-3 w-3" /> Download
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (isAudioAttachment(attachment)) {
+    return (
+      <div className="rounded-xl border border-border bg-background/70 p-2">
+        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span className="truncate">{attachment.name}</span>
+          <a href={src} download={attachment.name} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent">
+            <Download className="h-3 w-3" /> Download
+          </a>
+        </div>
+        <audio src={src} controls className="w-full" />
+      </div>
+    );
+  }
+
+  if (isPdfAttachment(attachment)) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-border bg-background/70">
+        <iframe title={attachment.name} src={src} className="h-72 w-full bg-background" />
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+          <span className="truncate"><FileText className="mr-1 inline h-3 w-3" />{attachment.name}</span>
+          <a href={src} download={attachment.name} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent">
+            <Download className="h-3 w-3" /> Download
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <a href={src} target="_blank" rel="noreferrer" download={attachment.name}
+      className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs hover:bg-accent">
+      <span className="truncate"><FileText className="mr-1 inline h-3 w-3" />{attachment.name}</span>
+      <Download className="h-3 w-3 shrink-0" />
+    </a>
+  );
+}
+
 function ChatPage() {
   const navigate = useNavigate();
   const friendlyError = (e: any): string => {
