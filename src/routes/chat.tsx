@@ -40,6 +40,13 @@ async function fileToBase64(file: File): Promise<string> {
   });
 }
 
+function base64ToBlob(base64: string, type: string) {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
 function extractGeneratedDataImage(content: string) {
   const match = content.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/);
   return match?.[0] || null;
@@ -270,8 +277,9 @@ function ChatPage() {
     const uploads: Attachment[] = [];
     for (const f of Array.from(files)) {
       if (f.size > 20 * 1024 * 1024) { setError(`${f.name} exceeds 20MB`); continue; }
-      const path = `${userId}/${Date.now()}-${f.name}`;
-      const { error: upErr } = await supabase.storage.from("chat-uploads").upload(path, f);
+      const path = `${userId}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+      const previewData = f.type.startsWith("image/") && f.size <= 6 * 1024 * 1024 ? await fileToBase64(f) : undefined;
+      const { error: upErr } = await supabase.storage.from("chat-uploads").upload(path, f, { contentType: f.type, upsert: true });
       if (upErr) {
         setError(
           !navigator.onLine
@@ -280,8 +288,8 @@ function ChatPage() {
         );
         continue;
       }
-      const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24);
-      uploads.push({ name: f.name, url: signed?.signedUrl || "", type: f.type, size: f.size });
+      const { data: signed } = await supabase.storage.from("chat-uploads").createSignedUrl(path, 60 * 60 * 24 * 7);
+      uploads.push({ name: f.name, url: signed?.signedUrl || "", type: f.type || "application/octet-stream", size: f.size, path, data: previewData });
     }
     setPendingFiles((p) => [...p, ...uploads]);
   };
