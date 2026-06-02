@@ -284,7 +284,7 @@ function ChatPage() {
       className={`prose prose-sm max-w-none break-words ${dark ? "prose-invert" : "dark:prose-invert"} prose-p:my-2 prose-pre:my-2 prose-headings:my-2 prose-img:my-2 prose-img:rounded-lg`}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex]}
         components={{
           a: ({ href, children, ...props }) => (
