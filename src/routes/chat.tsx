@@ -413,6 +413,23 @@ function ChatPage() {
     setCopiedId(id); setTimeout(() => setCopiedId(null), 1500);
   };
 
+  const deleteMessage = async (m: Msg) => {
+    if (!window.confirm("Delete this message?")) return;
+    await supabase.from("messages").delete().eq("id", m.id);
+    setMessages((ms) => ms.filter((x) => x.id !== m.id));
+  };
+
+  const deleteConversation = async (id: string) => {
+    if (!window.confirm("Delete this whole chat?")) return;
+    await supabase.from("conversations").delete().eq("id", id);
+    setConversations((cs) => cs.filter((c) => c.id !== id));
+    if (activeConvId === id) {
+      const next = conversations.find((c) => c.id !== id)?.id ?? null;
+      setActiveConvId(next);
+      if (!next) setMessages([]);
+    }
+  };
+
   const startEdit = (m: Msg) => { setEditingId(m.id); setEditingText(m.content); };
   const saveEdit = async (m: Msg) => {
     const text = editingText.trim();
@@ -446,7 +463,8 @@ function ChatPage() {
   };
 
   const share = async (m: Msg) => {
-    const text = `From HI THERE:\n\n${m.content}`;
+    const media = m.attachments?.[0]?.url ? `\n\nMedia: ${m.attachments[0].url}` : "";
+    const text = `From HI THERE:\n\n${m.content}${media}`;
     if ((navigator as any).share) {
       try { await (navigator as any).share({ title: "HI THERE", text }); return; } catch {}
     }
