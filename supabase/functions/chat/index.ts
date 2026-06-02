@@ -30,6 +30,9 @@ const DEFAULT_ORDER: Provider[] = [
 ];
 
 type ImagePart = { mimeType: string; data: string };
+function cleanBase64(input: string) {
+  return (input || "").replace(/^data:[^,]+,/, "").replace(/\s/g, "");
+}
 async function callGemini(
   messages: any[],
   key: string,
@@ -397,6 +400,10 @@ serve(async (req) => {
       for (const a of attachments.slice(0, 4)) {
         if (!a?.url || !a?.type?.startsWith("image/")) continue;
         try {
+          if (typeof a.data === "string" && a.data.length) {
+            vision.push({ mimeType: a.type, data: cleanBase64(a.data) });
+            continue;
+          }
           const r = await fetch(a.url);
           if (!r.ok) continue;
           const buf = new Uint8Array(await r.arrayBuffer());
