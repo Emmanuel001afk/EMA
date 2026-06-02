@@ -490,8 +490,8 @@ function ChatPage() {
       user_id: userId,
       role: "user",
       content: text,
-      attachments: storedAttachments as any,
-    } as any);
+      attachments: storedAttachments as unknown as Json,
+    });
 
     if (messages.length === 0) {
       const title = (text || attachments[0]?.name || "New Chat").slice(0, 40);
@@ -615,13 +615,13 @@ function ChatPage() {
         role: "assistant",
         content: reply,
         provider,
-        attachments: storedAssistantAttachments as any,
-      } as any);
+        attachments: storedAssistantAttachments as unknown as Json,
+      });
       await supabase
         .from("conversations")
         .update({ updated_at: new Date().toISOString() })
         .eq("id", convId);
-    } catch (e: any) {
+    } catch (e: unknown) {
       const friendly = friendlyError(e);
       setError(friendly);
       setMessages((m) => [
@@ -706,11 +706,14 @@ function ChatPage() {
   const share = async (m: Msg) => {
     const media = m.attachments?.[0]?.url ? `\n\nMedia: ${m.attachments[0].url}` : "";
     const text = `From HI THERE:\n\n${m.content}${media}`;
-    if ((navigator as any).share) {
+    const nav = navigator as Navigator & { share?: (data: ShareData) => Promise<void> };
+    if (nav.share) {
       try {
-        await (navigator as any).share({ title: "HI THERE", text });
+        await nav.share({ title: "HI THERE", text });
         return;
-      } catch {}
+      } catch {
+        // Fall back to copying when native sharing is cancelled or unavailable.
+      }
     }
     await navigator.clipboard.writeText(text);
     setCopiedId(m.id);
@@ -738,7 +741,7 @@ function ChatPage() {
       });
       if (error || data?.error) throw new Error(data?.error || error?.message);
       setTranslations((t) => ({ ...t, [m.id]: data.content }));
-    } catch (e: any) {
+    } catch (e: unknown) {
       setError(friendlyError(e));
     } finally {
       setTranslatingId(null);
