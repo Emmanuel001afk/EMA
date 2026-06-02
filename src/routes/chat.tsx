@@ -172,11 +172,32 @@ function ChatPage() {
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
+        components={{
+          a: ({ href, children, ...props }) => (
+            <a href={href} target="_blank" rel="noreferrer" className="break-all underline underline-offset-2" {...props}>{href || children}</a>
+          ),
+          img: ({ src, alt }) => src ? (
+            <img src={src} alt={alt || "generated media"} className="max-h-96 w-full rounded-xl object-contain" loading="lazy" />
+          ) : null,
+        }}
       >
         {text}
       </ReactMarkdown>
     </div>
   );
+
+  const refreshAttachmentUrls = async (rows: Msg[]): Promise<Msg[]> => {
+    const refreshed = await Promise.all(rows.map(async (m) => {
+      if (!m.attachments?.length) return m;
+      const attachments = await Promise.all(m.attachments.map(async (a) => {
+        if (!a.path || a.url?.startsWith("data:")) return a;
+        const { data } = await supabase.storage.from("chat-uploads").createSignedUrl(a.path, 60 * 60 * 24 * 7);
+        return { ...a, url: data?.signedUrl || a.url };
+      }));
+      return { ...m, attachments };
+    }));
+    return refreshed;
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -220,7 +241,7 @@ function ChatPage() {
     (async () => {
       const { data } = await supabase.from("messages").select("*")
         .eq("conversation_id", activeConvId).order("created_at", { ascending: true });
-      setMessages((data ?? []) as unknown as Msg[]);
+      setMessages(await refreshAttachmentUrls((data ?? []) as unknown as Msg[]));
     })();
   }, [activeConvId]);
 
