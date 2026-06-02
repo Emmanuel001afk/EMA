@@ -1,23 +1,62 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sparkles, ArrowLeft, Check, Users, Megaphone, CreditCard, Settings as Cog, Activity, Flag, Inbox } from "lucide-react";
+import {
+  Sparkles,
+  ArrowLeft,
+  Check,
+  Users,
+  Megaphone,
+  CreditCard,
+  Settings as Cog,
+  Activity,
+  Flag,
+  Inbox,
+} from "lucide-react";
 import { Footer } from "@/components/Footer";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
 
 const PROVIDERS = [
-  { id: "gemini",      name: "Gemini",       env: "GEMINI_API_KEY",       role: "News & web search (Google grounding)" },
-  { id: "groq",        name: "Groq",         env: "GROQ_API_KEY",         role: "Fast chat (Llama 3.3 70B)" },
-  { id: "cerebras",    name: "Cerebras",     env: "CEREBRAS_API_KEY",     role: "Ultra-fast short replies" },
-  { id: "deepseek",    name: "DeepSeek",     env: "DEEPSEEK_API_KEY",     role: "Math & coding (Reasoner)" },
-  { id: "mistral",     name: "Mistral",      env: "MISTRAL_API_KEY",      role: "Summarization (Large)" },
-  { id: "openai",      name: "OpenAI",       env: "OPENAI_API_KEY",       role: "General conversation (GPT-4o-mini)" },
-  { id: "huggingface", name: "Hugging Face", env: "HUGGINGFACE_API_KEY",  role: "Nigerian languages + image gen (FLUX)" },
-  { id: "openrouter",  name: "OpenRouter",   env: "OPENROUTER_API_KEY",   role: "Universal failover for all intents" },
+  {
+    id: "gemini",
+    name: "Gemini",
+    env: "GEMINI_API_KEY",
+    role: "News & web search (Google grounding)",
+  },
+  { id: "groq", name: "Groq", env: "GROQ_API_KEY", role: "Fast chat (Llama 3.3 70B)" },
+  { id: "cerebras", name: "Cerebras", env: "CEREBRAS_API_KEY", role: "Ultra-fast short replies" },
+  { id: "deepseek", name: "DeepSeek", env: "DEEPSEEK_API_KEY", role: "Math & coding (Reasoner)" },
+  { id: "mistral", name: "Mistral", env: "MISTRAL_API_KEY", role: "Summarization (Large)" },
+  {
+    id: "openai",
+    name: "OpenAI",
+    env: "OPENAI_API_KEY",
+    role: "General conversation (GPT-4o-mini)",
+  },
+  {
+    id: "huggingface",
+    name: "Hugging Face",
+    env: "HUGGINGFACE_API_KEY",
+    role: "Nigerian languages + image gen (FLUX)",
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    env: "OPENROUTER_API_KEY",
+    role: "Universal failover for all intents",
+  },
 ] as const;
 
-type Tab = "overview" | "providers" | "users" | "announce" | "settings" | "transactions" | "reports" | "support";
+type Tab =
+  | "overview"
+  | "providers"
+  | "users"
+  | "announce"
+  | "settings"
+  | "transactions"
+  | "reports"
+  | "support";
 
 function AdminPage() {
   const navigate = useNavigate();
@@ -38,7 +77,11 @@ function AdminPage() {
   const [announcements, setAnnouncements] = useState<any[]>([]);
   // metrics
   const [metrics, setMetrics] = useState({
-    totalUsers: 0, msgsToday: 0, totalMsgs: 0, totalRevenue: 0, txCount: 0,
+    totalUsers: 0,
+    msgsToday: 0,
+    totalMsgs: 0,
+    totalRevenue: 0,
+    txCount: 0,
   });
   const [transactions, setTransactions] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
@@ -47,8 +90,14 @@ function AdminPage() {
   useEffect(() => {
     (async () => {
       const { data: s } = await supabase.auth.getSession();
-      if (!s.session) { navigate({ to: "/auth" }); return; }
-      const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", s.session.user.id);
+      if (!s.session) {
+        navigate({ to: "/auth" });
+        return;
+      }
+      const { data: roles } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", s.session.user.id);
       const ok = !!roles?.some((r) => r.role === "admin");
       setAuthorized(ok);
       if (ok) await loadAll();
@@ -58,7 +107,15 @@ function AdminPage() {
   }, [navigate]);
 
   const loadAll = async () => {
-    await Promise.all([loadSettings(), loadUsers(), loadAnnouncements(), loadMetrics(), loadTransactions(), loadReports(), loadSupport()]);
+    await Promise.all([
+      loadSettings(),
+      loadUsers(),
+      loadAnnouncements(),
+      loadMetrics(),
+      loadTransactions(),
+      loadReports(),
+      loadSupport(),
+    ]);
   };
 
   const loadSettings = async () => {
@@ -68,39 +125,66 @@ function AdminPage() {
     setSettings(map);
   };
   const loadUsers = async () => {
-    const { data } = await supabase.from("profiles")
-      .select("user_id,display_name,email,subscription_plan,banned,last_active_at,daily_message_count,created_at")
+    const { data } = await supabase
+      .from("profiles")
+      .select(
+        "user_id,display_name,email,subscription_plan,banned,last_active_at,daily_message_count,created_at",
+      )
       .order("created_at", { ascending: false });
     setUsers(data ?? []);
   };
   const loadAnnouncements = async () => {
-    const { data } = await supabase.from("announcements").select("*").order("created_at", { ascending: false }).limit(20);
+    const { data } = await supabase
+      .from("announcements")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(20);
     setAnnouncements(data ?? []);
   };
   const loadMetrics = async () => {
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
     const [u, mTotal, mToday, txAll] = await Promise.all([
       supabase.from("profiles").select("user_id", { count: "exact", head: true }),
       supabase.from("messages").select("id", { count: "exact", head: true }),
-      supabase.from("messages").select("id", { count: "exact", head: true }).gte("created_at", todayStart.toISOString()),
-      supabase.from("transactions").select("amount_kobo,status").eq("status","success"),
+      supabase
+        .from("messages")
+        .select("id", { count: "exact", head: true })
+        .gte("created_at", todayStart.toISOString()),
+      supabase.from("transactions").select("amount_kobo,status").eq("status", "success"),
     ]);
-    const totalRevenue = (txAll.data ?? []).reduce((s, t: any) => s + (t.amount_kobo || 0), 0) / 100;
+    const totalRevenue =
+      (txAll.data ?? []).reduce((s, t: any) => s + (t.amount_kobo || 0), 0) / 100;
     setMetrics({
-      totalUsers: u.count ?? 0, totalMsgs: mTotal.count ?? 0,
-      msgsToday: mToday.count ?? 0, totalRevenue, txCount: (txAll.data ?? []).length,
+      totalUsers: u.count ?? 0,
+      totalMsgs: mTotal.count ?? 0,
+      msgsToday: mToday.count ?? 0,
+      totalRevenue,
+      txCount: (txAll.data ?? []).length,
     });
   };
   const loadTransactions = async () => {
-    const { data } = await supabase.from("transactions").select("*").order("created_at", { ascending: false }).limit(50);
+    const { data } = await supabase
+      .from("transactions")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(50);
     setTransactions(data ?? []);
   };
   const loadReports = async () => {
-    const { data } = await supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(100);
+    const { data } = await supabase
+      .from("reports")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(100);
     setReports(data ?? []);
   };
   const loadSupport = async () => {
-    const { data } = await supabase.from("support_tickets").select("*").order("created_at", { ascending: false }).limit(100);
+    const { data } = await supabase
+      .from("support_tickets")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(100);
     setSupportMsgs(data ?? []);
   };
 
@@ -112,7 +196,8 @@ function AdminPage() {
     setSaving(null);
     if (!error) {
       setSettings((s) => ({ ...s, [key]: value }));
-      setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2000);
+      setSavedAt(Date.now());
+      setTimeout(() => setSavedAt(null), 2000);
     }
   };
 
@@ -121,7 +206,9 @@ function AdminPage() {
   const sendAnnouncement = async () => {
     if (!annTitle.trim() || !annBody.trim()) return;
     await supabase.from("announcements").insert({ title: annTitle, body: annBody });
-    setAnnTitle(""); setAnnBody(""); await loadAnnouncements();
+    setAnnTitle("");
+    setAnnBody("");
+    await loadAnnouncements();
   };
 
   const setUserPlan = async (uid: string, plan: string) => {
@@ -133,7 +220,10 @@ function AdminPage() {
     await loadUsers();
   };
   const deleteUser = async (uid: string) => {
-    if (!confirm("Delete this user's profile and data? Auth account remains until purged separately.")) return;
+    if (
+      !confirm("Delete this user's profile and data? Auth account remains until purged separately.")
+    )
+      return;
     await supabase.from("messages").delete().eq("user_id", uid);
     await supabase.from("conversations").delete().eq("user_id", uid);
     await supabase.from("notifications").delete().eq("user_id", uid);
@@ -142,26 +232,39 @@ function AdminPage() {
   };
 
   if (loading) {
-    return <div className="grid min-h-screen place-items-center bg-background text-muted-foreground">Loading…</div>;
+    return (
+      <div className="grid min-h-screen place-items-center bg-background text-muted-foreground">
+        Loading…
+      </div>
+    );
   }
   if (!authorized) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 text-center">
         <h1 className="text-2xl font-bold">Admins only</h1>
         <p className="mt-2 text-sm text-muted-foreground">You don't have access to this page.</p>
-        <Link to="/chat" className="mt-6 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+        <Link
+          to="/chat"
+          className="mt-6 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
+        >
           Back to chat
         </Link>
       </div>
     );
   }
 
-  const active = (settings.active_provider as string) || "gemini";
+  const active =
+    settings.smart_router_enabled !== false
+      ? "Smart router"
+      : (settings.active_provider as string) || "gemini";
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <header className="flex items-center justify-between border-b border-border px-3 py-3 sm:px-4">
-        <Link to="/chat" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+        <Link
+          to="/chat"
+          className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+        >
           <ArrowLeft className="h-4 w-4" /> Back to chat
         </Link>
         <div className="flex items-center gap-2">
@@ -184,17 +287,22 @@ function AdminPage() {
             { id: "support", label: "Support Inbox", icon: Inbox },
             { id: "settings", label: "Settings", icon: Cog },
           ].map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id as Tab)}
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id as Tab)}
               className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
                 tab === t.id ? "bg-primary text-primary-foreground" : "hover:bg-accent"
-              }`}>
+              }`}
+            >
               <t.icon className="h-4 w-4" /> {t.label}
             </button>
           ))}
         </nav>
 
         <main className="min-w-0 flex-1 space-y-4">
-          {savedAt && <div className="rounded-md bg-primary/10 px-3 py-2 text-sm text-primary">Saved.</div>}
+          {savedAt && (
+            <div className="rounded-md bg-primary/10 px-3 py-2 text-sm text-primary">Saved.</div>
+          )}
 
           {tab === "overview" && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -213,18 +321,28 @@ function AdminPage() {
                 <div className="flex items-center gap-2">
                   <Sparkles className="h-4 w-4 text-primary" />
                   <h2 className="text-lg font-semibold">Smart Router — Active</h2>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary"><Check className="h-3 w-3" /> Live</span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+                    <Check className="h-3 w-3" /> Live
+                  </span>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Every message is auto-routed to the best AI based on intent (math, news, languages, summarization, fast chat, images). Any provider with a key in Settings or Lovable Cloud is instantly added to the pool. OpenRouter is the universal failover.
+                  Every message is auto-routed to the best AI based on intent (math, news,
+                  languages, summarization, fast chat, images). Any provider with a key in Settings
+                  or Lovable Cloud is instantly added to the pool. OpenRouter is the universal
+                  failover.
                 </p>
               </div>
-              <h3 className="pt-2 text-sm font-semibold text-muted-foreground">Connected providers (8)</h3>
+              <h3 className="pt-2 text-sm font-semibold text-muted-foreground">
+                Connected providers (8)
+              </h3>
               {PROVIDERS.map((p) => {
                 const overrideKey = settings[p.env.toLowerCase()] ?? settings[p.env];
                 const hasOverride = typeof overrideKey === "string" && overrideKey.length > 0;
                 return (
-                  <div key={p.id} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4"
+                  >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="font-semibold">{p.name}</h3>
@@ -232,7 +350,9 @@ function AdminPage() {
                           <Check className="h-3 w-3" /> Active
                         </span>
                         {hasOverride && (
-                          <span className="rounded-full bg-accent px-2 py-0.5 text-xs">Admin key</span>
+                          <span className="rounded-full bg-accent px-2 py-0.5 text-xs">
+                            Admin key
+                          </span>
                         )}
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{p.role}</p>
@@ -260,23 +380,49 @@ function AdminPage() {
                   <tbody>
                     {users.map((u) => (
                       <tr key={u.user_id} className="border-t border-border">
-                        <td className="px-3 py-2"><div className="font-medium">{u.display_name}</div><div className="text-xs text-muted-foreground">{u.email}</div></td>
                         <td className="px-3 py-2">
-                          <select value={u.subscription_plan} onChange={(e) => setUserPlan(u.user_id, e.target.value)}
-                            className="rounded border border-input bg-background px-2 py-1 text-xs">
+                          <div className="font-medium">{u.display_name}</div>
+                          <div className="text-xs text-muted-foreground">{u.email}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={u.subscription_plan}
+                            onChange={(e) => setUserPlan(u.user_id, e.target.value)}
+                            className="rounded border border-input bg-background px-2 py-1 text-xs"
+                          >
                             <option value="free">Free</option>
                             <option value="basic">Basic</option>
                             <option value="premium">Premium</option>
                           </select>
                         </td>
-                        <td className="px-3 py-2 text-xs">{u.last_active_at ? new Date(u.last_active_at).toLocaleString() : "—"}</td>
+                        <td className="px-3 py-2 text-xs">
+                          {u.last_active_at ? new Date(u.last_active_at).toLocaleString() : "—"}
+                        </td>
                         <td className="px-3 py-2">
-                          {u.banned ? <span className="rounded bg-destructive/15 px-2 py-0.5 text-xs text-destructive">Banned</span> : <span className="rounded bg-primary/15 px-2 py-0.5 text-xs text-primary">Active</span>}
+                          {u.banned ? (
+                            <span className="rounded bg-destructive/15 px-2 py-0.5 text-xs text-destructive">
+                              Banned
+                            </span>
+                          ) : (
+                            <span className="rounded bg-primary/15 px-2 py-0.5 text-xs text-primary">
+                              Active
+                            </span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right">
                           <div className="inline-flex gap-1">
-                            <button onClick={() => banUser(u.user_id, !u.banned)} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">{u.banned ? "Unban" : "Ban"}</button>
-                            <button onClick={() => deleteUser(u.user_id)} className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
+                            <button
+                              onClick={() => banUser(u.user_id, !u.banned)}
+                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                            >
+                              {u.banned ? "Unban" : "Ban"}
+                            </button>
+                            <button
+                              onClick={() => deleteUser(u.user_id)}
+                              className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                            >
+                              Delete
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -291,12 +437,23 @@ function AdminPage() {
             <div className="space-y-3">
               <h2 className="text-lg font-semibold">Send announcement</h2>
               <div className="rounded-xl border border-border bg-card p-4 space-y-2">
-                <input value={annTitle} onChange={(e) => setAnnTitle(e.target.value)} placeholder="Title"
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-                <textarea value={annBody} onChange={(e) => setAnnBody(e.target.value)} placeholder="Message body" rows={4}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-                <button onClick={sendAnnouncement}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground">
+                <input
+                  value={annTitle}
+                  onChange={(e) => setAnnTitle(e.target.value)}
+                  placeholder="Title"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+                <textarea
+                  value={annBody}
+                  onChange={(e) => setAnnBody(e.target.value)}
+                  placeholder="Message body"
+                  rows={4}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+                <button
+                  onClick={sendAnnouncement}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground"
+                >
                   Broadcast to all users
                 </button>
               </div>
@@ -304,11 +461,18 @@ function AdminPage() {
               <div className="space-y-2">
                 {announcements.map((a) => (
                   <div key={a.id} className="rounded-lg border border-border bg-card p-3 text-sm">
-                    <div className="flex justify-between"><span className="font-semibold">{a.title}</span><span className="text-xs text-muted-foreground">{new Date(a.created_at).toLocaleString()}</span></div>
+                    <div className="flex justify-between">
+                      <span className="font-semibold">{a.title}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(a.created_at).toLocaleString()}
+                      </span>
+                    </div>
                     <p className="mt-1 text-muted-foreground">{a.body}</p>
                   </div>
                 ))}
-                {announcements.length === 0 && <p className="text-xs text-muted-foreground">No announcements yet.</p>}
+                {announcements.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No announcements yet.</p>
+                )}
               </div>
             </div>
           )}
@@ -316,23 +480,49 @@ function AdminPage() {
           {tab === "transactions" && (
             <div className="space-y-3">
               <h2 className="text-lg font-semibold">Transactions ({transactions.length})</h2>
-              <p className="text-sm">Total revenue: <span className="font-bold">₦{metrics.totalRevenue.toLocaleString()}</span></p>
+              <p className="text-sm">
+                Total revenue:{" "}
+                <span className="font-bold">₦{metrics.totalRevenue.toLocaleString()}</span>
+              </p>
               <div className="overflow-x-auto rounded-xl border border-border bg-card">
                 <table className="min-w-full text-sm">
                   <thead className="bg-muted text-xs uppercase text-muted-foreground">
-                    <tr><th className="px-3 py-2 text-left">Reference</th><th className="px-3 py-2 text-left">Plan</th><th className="px-3 py-2 text-left">Amount</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-left">Date</th></tr>
+                    <tr>
+                      <th className="px-3 py-2 text-left">Reference</th>
+                      <th className="px-3 py-2 text-left">Plan</th>
+                      <th className="px-3 py-2 text-left">Amount</th>
+                      <th className="px-3 py-2 text-left">Status</th>
+                      <th className="px-3 py-2 text-left">Date</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {transactions.map((t) => (
                       <tr key={t.id} className="border-t border-border">
                         <td className="px-3 py-2 font-mono text-xs">{t.reference}</td>
                         <td className="px-3 py-2 capitalize">{t.plan}</td>
-                        <td className="px-3 py-2">₦{(t.amount_kobo/100).toLocaleString()}</td>
-                        <td className="px-3 py-2"><span className={`rounded px-2 py-0.5 text-xs ${t.status === "success" ? "bg-primary/15 text-primary" : "bg-muted"}`}>{t.status}</span></td>
-                        <td className="px-3 py-2 text-xs">{new Date(t.created_at).toLocaleString()}</td>
+                        <td className="px-3 py-2">₦{(t.amount_kobo / 100).toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`rounded px-2 py-0.5 text-xs ${t.status === "success" ? "bg-primary/15 text-primary" : "bg-muted"}`}
+                          >
+                            {t.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-xs">
+                          {new Date(t.created_at).toLocaleString()}
+                        </td>
                       </tr>
                     ))}
-                    {transactions.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-xs text-muted-foreground">No transactions yet.</td></tr>}
+                    {transactions.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-3 py-6 text-center text-xs text-muted-foreground"
+                        >
+                          No transactions yet.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -347,19 +537,32 @@ function AdminPage() {
                   <div key={r.id} className="rounded-lg border border-border bg-card p-3 text-sm">
                     <div className="flex justify-between text-xs text-muted-foreground">
                       <span>{new Date(r.created_at).toLocaleString()}</span>
-                      {r.resolved && <span className="rounded bg-primary/15 px-2 py-0.5 text-primary">Resolved</span>}
+                      {r.resolved && (
+                        <span className="rounded bg-primary/15 px-2 py-0.5 text-primary">
+                          Resolved
+                        </span>
+                      )}
                     </div>
                     {r.reason && <p className="mt-1 text-xs italic">Reason: {r.reason}</p>}
-                    <p className="mt-2 whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs">{r.content}</p>
+                    <p className="mt-2 whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs">
+                      {r.content}
+                    </p>
                     {!r.resolved && (
-                      <button onClick={async () => {
-                        await supabase.from("reports").update({ resolved: true }).eq("id", r.id);
-                        await loadReports();
-                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                      <button
+                        onClick={async () => {
+                          await supabase.from("reports").update({ resolved: true }).eq("id", r.id);
+                          await loadReports();
+                        }}
+                        className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                      >
+                        Mark resolved
+                      </button>
                     )}
                   </div>
                 ))}
-                {reports.length === 0 && <p className="text-xs text-muted-foreground">No reports yet.</p>}
+                {reports.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No reports yet.</p>
+                )}
               </div>
             </div>
           )}
@@ -371,19 +574,31 @@ function AdminPage() {
                 {supportMsgs.map((m) => (
                   <div key={m.id} className="rounded-lg border border-border bg-card p-3 text-sm">
                     <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{m.name || "Anonymous"} {m.email ? `(${m.email})` : ""}</span>
+                      <span>
+                        {m.name || "Anonymous"} {m.email ? `(${m.email})` : ""}
+                      </span>
                       <span>{new Date(m.created_at).toLocaleString()}</span>
                     </div>
                     <p className="mt-1 whitespace-pre-wrap text-xs">{m.message}</p>
                     {!m.resolved && (
-                      <button onClick={async () => {
-                        await supabase.from("support_tickets").update({ resolved: true }).eq("id", m.id);
-                        await loadSupport();
-                      }} className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent">Mark resolved</button>
+                      <button
+                        onClick={async () => {
+                          await supabase
+                            .from("support_tickets")
+                            .update({ resolved: true })
+                            .eq("id", m.id);
+                          await loadSupport();
+                        }}
+                        className="mt-2 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                      >
+                        Mark resolved
+                      </button>
                     )}
                   </div>
                 ))}
-                {supportMsgs.length === 0 && <p className="text-xs text-muted-foreground">No support messages yet.</p>}
+                {supportMsgs.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No support messages yet.</p>
+                )}
               </div>
             </div>
           )}
@@ -391,24 +606,84 @@ function AdminPage() {
           {tab === "settings" && (
             <div className="space-y-4">
               <h2 className="text-lg font-semibold">Platform Settings</h2>
-              <SettingRow label="Customer care email" value={settings.contact_email || ""} onSave={(v) => updateSetting("contact_email", v)} />
-              <SettingRow label="Customer care phone" value={settings.contact_phone || ""} onSave={(v) => updateSetting("contact_phone", v)} />
-              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Paystack</h3>
-              <SettingRow label="Paystack public key" value={settings.paystack_public_key || ""} onSave={(v) => updateSetting("paystack_public_key", v)} placeholder="pk_live_..." />
-              <SettingRow label="Paystack secret key" value={settings.paystack_secret_key || ""} onSave={(v) => updateSetting("paystack_secret_key", v)} placeholder="sk_live_..." secret />
-              <SettingRow label="Paystack webhook secret" value={settings.paystack_webhook_secret || ""} onSave={(v) => updateSetting("paystack_webhook_secret", v)} secret />
-              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Flutterwave</h3>
-              <SettingRow label="Flutterwave public key" value={settings.flutterwave_public_key || ""} onSave={(v) => updateSetting("flutterwave_public_key", v)} placeholder="FLWPUBK-..." />
-              <SettingRow label="Flutterwave secret key" value={settings.flutterwave_secret_key || ""} onSave={(v) => updateSetting("flutterwave_secret_key", v)} placeholder="FLWSECK-..." secret />
-              <SettingRow label="Flutterwave webhook secret hash" value={settings.flutterwave_webhook_secret || ""} onSave={(v) => updateSetting("flutterwave_webhook_secret", v)} secret />
-              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Custom API Keys</h3>
+              <SettingRow
+                label="Customer care email"
+                value={settings.contact_email || ""}
+                onSave={(v) => updateSetting("contact_email", v)}
+              />
+              <SettingRow
+                label="Customer care phone"
+                value={settings.contact_phone || ""}
+                onSave={(v) => updateSetting("contact_phone", v)}
+              />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">
+                Paystack
+              </h3>
+              <SettingRow
+                label="Paystack public key"
+                value={settings.paystack_public_key || ""}
+                onSave={(v) => updateSetting("paystack_public_key", v)}
+                placeholder="pk_live_..."
+              />
+              <SettingRow
+                label="Paystack secret key"
+                value={settings.paystack_secret_key || ""}
+                onSave={(v) => updateSetting("paystack_secret_key", v)}
+                placeholder="sk_live_..."
+                secret
+              />
+              <SettingRow
+                label="Paystack webhook secret"
+                value={settings.paystack_webhook_secret || ""}
+                onSave={(v) => updateSetting("paystack_webhook_secret", v)}
+                secret
+              />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">
+                Flutterwave
+              </h3>
+              <SettingRow
+                label="Flutterwave public key"
+                value={settings.flutterwave_public_key || ""}
+                onSave={(v) => updateSetting("flutterwave_public_key", v)}
+                placeholder="FLWPUBK-..."
+              />
+              <SettingRow
+                label="Flutterwave secret key"
+                value={settings.flutterwave_secret_key || ""}
+                onSave={(v) => updateSetting("flutterwave_secret_key", v)}
+                placeholder="FLWSECK-..."
+                secret
+              />
+              <SettingRow
+                label="Flutterwave webhook secret hash"
+                value={settings.flutterwave_webhook_secret || ""}
+                onSave={(v) => updateSetting("flutterwave_webhook_secret", v)}
+                secret
+              />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">
+                Custom API Keys
+              </h3>
               {[1, 2, 3].map((i) => (
                 <CustomSlot key={i} idx={i} settings={settings} updateSetting={updateSetting} />
               ))}
-              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">Limits & Pricing</h3>
-              <SettingRow label="Free daily message limit" value={String(settings.daily_free_limit ?? 20)} onSave={(v) => updateSetting("daily_free_limit", Number(v) || 20)} />
-              <SettingRow label="Basic plan price (₦)" value={String(settings.basic_price_naira ?? 2000)} onSave={(v) => updateSetting("basic_price_naira", Number(v) || 2000)} />
-              <SettingRow label="Premium plan price (₦)" value={String(settings.premium_price_naira ?? 5000)} onSave={(v) => updateSetting("premium_price_naira", Number(v) || 5000)} />
+              <h3 className="pt-4 text-sm font-semibold uppercase text-muted-foreground">
+                Limits & Pricing
+              </h3>
+              <SettingRow
+                label="Free daily message limit"
+                value={String(settings.daily_free_limit ?? 20)}
+                onSave={(v) => updateSetting("daily_free_limit", Number(v) || 20)}
+              />
+              <SettingRow
+                label="Basic plan price (₦)"
+                value={String(settings.basic_price_naira ?? 2000)}
+                onSave={(v) => updateSetting("basic_price_naira", Number(v) || 2000)}
+              />
+              <SettingRow
+                label="Premium plan price (₦)"
+                value={String(settings.premium_price_naira ?? 5000)}
+                onSave={(v) => updateSetting("premium_price_naira", Number(v) || 5000)}
+              />
             </div>
           )}
         </main>
@@ -427,18 +702,38 @@ function Stat({ label, value }: { label: string; value: any }) {
   );
 }
 
-function SettingRow({ label, value, onSave, placeholder, secret }:
-  { label: string; value: string; onSave: (v: string) => void; placeholder?: string; secret?: boolean }) {
+function SettingRow({
+  label,
+  value,
+  onSave,
+  placeholder,
+  secret,
+}: {
+  label: string;
+  value: string;
+  onSave: (v: string) => void;
+  placeholder?: string;
+  secret?: boolean;
+}) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <label className="text-sm font-medium">{label}</label>
       <div className="mt-2 flex gap-2">
-        <input type={secret ? "password" : "text"} value={v} onChange={(e) => setV(e.target.value)} placeholder={placeholder}
-          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm" />
-        <button onClick={() => onSave(v)}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Save</button>
+        <input
+          type={secret ? "password" : "text"}
+          value={v}
+          onChange={(e) => setV(e.target.value)}
+          placeholder={placeholder}
+          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+        <button
+          onClick={() => onSave(v)}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+        >
+          Save
+        </button>
       </div>
     </div>
   );
@@ -454,53 +749,114 @@ const FUNCTIONS = [
   { id: "general", label: "General Conversation" },
 ];
 
-function CustomSlot({ idx, settings, updateSetting }:
-  { idx: number; settings: Record<string, any>; updateSetting: (k: string, v: any) => void }) {
+function CustomSlot({
+  idx,
+  settings,
+  updateSetting,
+}: {
+  idx: number;
+  settings: Record<string, any>;
+  updateSetting: (k: string, v: any) => void;
+}) {
   const k = (s: string) => `custom_api_${idx}_${s}`;
   const [name, setName] = useState(settings[k("name")] || "");
   const [key, setKey] = useState(settings[k("key")] || "");
   const [url, setUrl] = useState(settings[k("url")] || "");
   const [model, setModel] = useState(settings[k("model")] || "");
   const [fn, setFn] = useState(settings[k("function")] || "");
-  useEffect(() => { setName(settings[k("name")] || ""); setKey(settings[k("key")] || "");
-    setUrl(settings[k("url")] || ""); setModel(settings[k("model")] || "");
-    setFn(settings[k("function")] || ""); }, [settings]); // eslint-disable-line
+  useEffect(() => {
+    setName(settings[k("name")] || "");
+    setKey(settings[k("key")] || "");
+    setUrl(settings[k("url")] || "");
+    setModel(settings[k("model")] || "");
+    setFn(settings[k("function")] || "");
+  }, [settings]); // eslint-disable-line
 
   const saveAll = () => {
-    updateSetting(k("name"), name); updateSetting(k("key"), key);
-    updateSetting(k("url"), url); updateSetting(k("model"), model);
+    updateSetting(k("name"), name);
+    updateSetting(k("key"), key);
+    updateSetting(k("url"), url);
+    updateSetting(k("model"), model);
     updateSetting(k("function"), fn);
   };
   const clearAll = () => {
-    setName(""); setKey(""); setUrl(""); setModel(""); setFn("");
-    updateSetting(k("name"), ""); updateSetting(k("key"), "");
-    updateSetting(k("url"), ""); updateSetting(k("model"), ""); updateSetting(k("function"), "");
+    setName("");
+    setKey("");
+    setUrl("");
+    setModel("");
+    setFn("");
+    updateSetting(k("name"), "");
+    updateSetting(k("key"), "");
+    updateSetting(k("url"), "");
+    updateSetting(k("model"), "");
+    updateSetting(k("function"), "");
   };
-  const active = !!(settings[k("key")] && settings[k("url")] && settings[k("model")] && settings[k("function")]);
+  const active = !!(
+    settings[k("key")] &&
+    settings[k("url")] &&
+    settings[k("model")] &&
+    settings[k("function")]
+  );
 
   return (
     <div className="rounded-xl border border-border bg-card p-4 space-y-2">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">Custom slot {idx}</h4>
-        {active && <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">Active</span>}
+        {active && (
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+            Active
+          </span>
+        )}
       </div>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Provider name (e.g. Anthropic)"
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-      <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key"
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-      <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="OpenAI-compatible base URL (e.g. https://api.x.com/v1/chat/completions)"
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-      <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Model id (e.g. gpt-4o-mini)"
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
-      <select value={fn} onChange={(e) => setFn(e.target.value)}
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
-        {FUNCTIONS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Provider name (e.g. Anthropic)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      />
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        placeholder="API key"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      />
+      <input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="OpenAI-compatible base URL (e.g. https://api.x.com/v1/chat/completions)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      />
+      <input
+        value={model}
+        onChange={(e) => setModel(e.target.value)}
+        placeholder="Model id (e.g. gpt-4o-mini)"
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      />
+      <select
+        value={fn}
+        onChange={(e) => setFn(e.target.value)}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      >
+        {FUNCTIONS.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.label}
+          </option>
+        ))}
       </select>
       <div className="flex gap-2">
-        <button onClick={saveAll}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground">Save</button>
-        <button onClick={clearAll}
-          className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10">Delete</button>
+        <button
+          onClick={saveAll}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground"
+        >
+          Save
+        </button>
+        <button
+          onClick={clearAll}
+          className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+        >
+          Delete
+        </button>
       </div>
     </div>
   );
