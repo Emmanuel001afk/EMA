@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
   Settings as SettingsIcon, HelpCircle, Search, Paperclip, Camera, Languages, User, Pencil,
-  Volume2, VolumeX, Share2, Flag,
+  Volume2, VolumeX, Share2, Flag, Trash2, Download, ImageIcon, FileText, Film,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -23,6 +23,29 @@ type Msg = {
   created_at: string; provider?: string | null; attachments?: Attachment[];
 };
 type Conv = { id: string; title: string; updated_at: string };
+
+type LocalAttachment = Attachment & { path?: string; data?: string };
+
+const isImageAttachment = (a: Attachment) => a.type?.startsWith("image/");
+const isVideoAttachment = (a: Attachment) => a.type?.startsWith("video/");
+const isAudioAttachment = (a: Attachment) => a.type?.startsWith("audio/");
+const isPdfAttachment = (a: Attachment) => a.type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
+const stripLocalData = (attachments: LocalAttachment[]): Attachment[] =>
+  attachments.map(({ data: _data, ...rest }) => rest);
+
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function extractGeneratedDataImage(content: string) {
+  const match = content.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/);
+  return match?.[0] || null;
+}
 
 function ChatPage() {
   const navigate = useNavigate();
