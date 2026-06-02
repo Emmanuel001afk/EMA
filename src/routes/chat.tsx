@@ -340,7 +340,8 @@ function ChatPage() {
       const lowered = text.toLowerCase().trim();
       const wantsImage =
         lowered.startsWith("/image ") ||
-        /\b(generate|create|draw|make|design|render|produce|show me)\b.*\b(image|picture|photo|pic|logo|illustration|wallpaper|art|drawing|painting)\b/i.test(lowered);
+        /\b(generate|create|draw|make|design|render|produce|paint|sketch|show me)\b.*\b(image|picture|photo|pic|logo|illustration|wallpaper|art|drawing|painting|portrait|poster|flyer|banner|avatar)\b/i.test(lowered) ||
+        /^\s*(draw|paint|sketch|illustrate|render)\b/i.test(text);
       const cleanedText = lowered.startsWith("/image ") ? text.replace(/^\/image\s+/i, "") : text;
       if (wantsImage) {
         history[history.length - 1] = { role: "user", content: cleanedText };
