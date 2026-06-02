@@ -156,7 +156,8 @@ function AdminPage() {
     );
   }
 
-  const active = (settings.active_provider as string) || "gemini";
+  const active =
+    settings.smart_router_enabled !== false ? "Smart router" : (settings.active_provider as string) || "gemini";
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
