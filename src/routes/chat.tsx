@@ -515,12 +515,18 @@ function ChatPage() {
       </div>
       <div className="flex-1 space-y-1 overflow-y-auto">
         {filteredConvs.map((c) => (
-          <button key={c.id} onClick={() => { setActiveConvId(c.id); setDrawerOpen(false); }}
-            className={`block w-full truncate rounded-md px-3 py-2 text-left text-sm transition ${
-              c.id === activeConvId ? "bg-accent text-accent-foreground" : "hover:bg-sidebar-accent"
-            }`}>
-            {c.title}
-          </button>
+          <div key={c.id} className={`group flex items-center gap-1 rounded-md transition ${
+            c.id === activeConvId ? "bg-accent text-accent-foreground" : "hover:bg-sidebar-accent"
+          }`}>
+            <button onClick={() => { setActiveConvId(c.id); setDrawerOpen(false); }}
+              className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm">
+              {c.title}
+            </button>
+            <button onClick={() => deleteConversation(c.id)} title="Delete chat"
+              className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded opacity-70 hover:bg-destructive/10 hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
         ))}
         {filteredConvs.length === 0 && (
           <p className="px-2 py-4 text-xs text-muted-foreground">{search ? "No matches." : "No chats yet."}</p>
