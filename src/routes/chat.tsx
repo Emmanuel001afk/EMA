@@ -537,14 +537,14 @@ function ChatPage() {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <header className="flex items-center justify-between border-b border-border px-3 py-2 sm:px-4 sm:py-3">
+    <div className="flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))]">
+      <header className="flex items-center justify-between border-b border-border bg-chat-panel px-3 py-2 shadow-sm backdrop-blur-xl sm:px-4 sm:py-3">
         <div className="flex items-center gap-2">
           <button onClick={() => setDrawerOpen(true)} className="md:hidden rounded-md p-1.5 hover:bg-accent">
             <Menu className="h-5 w-5" />
           </button>
           <Link to="/" className="flex items-center gap-2">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
+            <div className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
               <Sparkles className="h-4 w-4" />
             </div>
             <span className="text-base font-bold tracking-tight">HI THERE</span>
@@ -564,10 +564,18 @@ function ChatPage() {
               <User className="h-4 w-4" />
             </button>
             {profileOpen && (
-              <div className="absolute right-0 top-10 z-50 w-48 rounded-xl border border-border bg-popover p-1.5 shadow-2xl">
+              <div className="absolute right-0 top-10 z-50 w-56 rounded-xl border border-border bg-popover/95 p-1.5 shadow-2xl backdrop-blur-xl">
                 <Link to="/settings" onClick={() => setProfileOpen(false)} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent">
                   <SettingsIcon className="h-4 w-4" /> Settings
                 </Link>
+                <button onClick={() => { setProfileOpen(false); newChat(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent">
+                  <Plus className="h-4 w-4" /> New chat
+                </button>
+                {activeConvId && (
+                  <button onClick={() => { setProfileOpen(false); deleteConversation(activeConvId); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-destructive/10 hover:text-destructive">
+                    <Trash2 className="h-4 w-4" /> Delete current chat
+                  </button>
+                )}
                 <Link to="/faq" onClick={() => setProfileOpen(false)} className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent">
                   <HelpCircle className="h-4 w-4" /> FAQ
                 </Link>
@@ -726,7 +734,7 @@ function ChatPage() {
             </div>
           )}
 
-          <div className="border-t border-border bg-background/80 p-2 backdrop-blur sm:p-3">
+          <div className="border-t border-border bg-chat-panel p-2 backdrop-blur-xl sm:p-3">
             <div className="mx-auto max-w-3xl">
               {pendingFiles.length > 0 && (
               <div className="mb-2 grid gap-2 sm:grid-cols-2">
