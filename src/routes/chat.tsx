@@ -677,7 +677,9 @@ function ChatPage() {
           })
           .join("\n\n---\n\n")
       : `Open this chat first to export its full messages.`;
-    const blob = new Blob([`# ${conv?.title || "HI THERE chat"}\n\n${body}`], { type: "text/markdown" });
+    const blob = new Blob([`# ${conv?.title || "HI THERE chat"}\n\n${body}`], {
+      type: "text/markdown",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
