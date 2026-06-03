@@ -242,14 +242,10 @@ function ChatPage() {
     if (raw.includes("401") || raw.includes("not authenticated") || raw.includes("unauthorized")) {
       return "Your session expired. Please sign in again.";
     }
-    if (
-      raw.includes("non-2xx") ||
-      raw.includes("all providers failed") ||
-      raw.includes("502") ||
-      raw.includes("503")
-    ) {
+    if (raw.includes("non-2xx") || raw.includes("502") || raw.includes("503")) {
       return "The AI is taking a quick break. Please try again in a moment.";
     }
+    // For real provider errors, surface the actual message so admin can debug.
     return err?.message || "Something went wrong. Please try again.";
   };
   const [userId, setUserId] = useState<string | null>(null);
