@@ -263,6 +263,7 @@ function ChatPage() {
   const [editingText, setEditingText] = useState("");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [voiceName, setVoiceName] = useState<string>("default");
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [typing, setTyping] = useState("");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -342,6 +343,27 @@ function ChatPage() {
     });
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
+
+  // Load browser TTS voices for the picker (Chrome populates them async).
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const load = () => setAvailableVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
+    return () => {
+      if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
+  const saveVoice = async (name: string) => {
+    setVoiceName(name);
+    if (userId) {
+      await supabase
+        .from("profiles")
+        .update({ voice_name: name } as never)
+        .eq("user_id", userId);
+    }
+  };
 
   useEffect(() => {
     if (!userId) return;
