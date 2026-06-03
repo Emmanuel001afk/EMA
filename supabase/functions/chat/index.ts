@@ -551,7 +551,9 @@ serve(async (req) => {
       } catch (e: any) {
         return new Response(
           JSON.stringify({
-            error: "Image generation is temporarily unavailable. Please try again in a moment.",
+            error:
+              "Image generation failed: " +
+              (e?.message || String(e)).slice(0, 240),
             details: e?.message || String(e),
           }),
           {
@@ -616,7 +618,14 @@ serve(async (req) => {
     }
     return new Response(
       JSON.stringify({
-        error: "The AI is taking a quick break — please try again in a moment.",
+        error:
+          errors.length > 0
+            ? "AI providers all failed: " +
+              errors
+                .map((s) => s.split(":").slice(0, 2).join(":"))
+                .join(" | ")
+                .slice(0, 300)
+            : "No AI provider available. Add an API key in admin settings.",
         details: errors,
       }),
       {
