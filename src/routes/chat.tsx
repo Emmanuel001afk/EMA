@@ -242,14 +242,10 @@ function ChatPage() {
     if (raw.includes("401") || raw.includes("not authenticated") || raw.includes("unauthorized")) {
       return "Your session expired. Please sign in again.";
     }
-    if (
-      raw.includes("non-2xx") ||
-      raw.includes("all providers failed") ||
-      raw.includes("502") ||
-      raw.includes("503")
-    ) {
+    if (raw.includes("non-2xx") || raw.includes("502") || raw.includes("503")) {
       return "The AI is taking a quick break. Please try again in a moment.";
     }
+    // For real provider errors, surface the actual message so admin can debug.
     return err?.message || "Something went wrong. Please try again.";
   };
   const [userId, setUserId] = useState<string | null>(null);
@@ -267,6 +263,7 @@ function ChatPage() {
   const [editingText, setEditingText] = useState("");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [voiceName, setVoiceName] = useState<string>("default");
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [typing, setTyping] = useState("");
   const [search, setSearch] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -346,6 +343,27 @@ function ChatPage() {
     });
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
+
+  // Load browser TTS voices for the picker (Chrome populates them async).
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    const load = () => setAvailableVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
+    return () => {
+      if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
+  const saveVoice = async (name: string) => {
+    setVoiceName(name);
+    if (userId) {
+      await supabase
+        .from("profiles")
+        .update({ voice_name: name } as never)
+        .eq("user_id", userId);
+    }
+  };
 
   useEffect(() => {
     if (!userId) return;
@@ -927,6 +945,25 @@ function ChatPage() {
                 >
                   <HelpCircle className="h-4 w-4" /> FAQ
                 </Link>
+                <div className="border-t border-border/60 px-2.5 py-2">
+                  <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                    <Volume2 className="h-3 w-3" /> Voice tone
+                  </label>
+                  <select
+                    value={voiceName}
+                    onChange={(e) => saveVoice(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                  >
+                    <option value="default">Default</option>
+                    <option value="female">Female (auto)</option>
+                    <option value="male">Male (auto)</option>
+                    {availableVoices.map((v) => (
+                      <option key={v.voiceURI} value={v.name}>
+                        {v.name} {v.lang ? `· ${v.lang}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <Link
                   to="/contact"
                   onClick={() => setProfileOpen(false)}
