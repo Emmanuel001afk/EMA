@@ -566,8 +566,18 @@ function ChatPage() {
 
     try {
       const hasImages = attachments.some(isImageAttachment);
+      const textBlocks = attachments
+        .filter((a) => a.text)
+        .map((a) => `\n\n=== File: ${a.name} ===\n${a.text}`)
+        .join("");
       const attachContext = attachments.length
-        ? `\n\n[User attached ${attachments.length} file(s): ${attachments.map((a) => `${a.name} (${a.type})`).join(", ")}. ${hasImages ? "The image data is attached; inspect it directly and describe what you see." : "Use the visible file details when relevant."}]`
+        ? `\n\n[User attached ${attachments.length} file(s): ${attachments
+            .map((a) => `${a.name} (${a.type})`)
+            .join(", ")}. ${
+            hasImages
+              ? "Image data is attached — describe what you see."
+              : "Use the file contents below."
+          }]${textBlocks}`
         : "";
       const history = [...messages, { ...userMsg, content: text + attachContext }].map((m) => ({
         role: m.role,
