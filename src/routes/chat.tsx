@@ -482,6 +482,16 @@ function ChatPage() {
         f.type.startsWith("image/") && f.size <= 6 * 1024 * 1024
           ? await fileToBase64(f)
           : undefined;
+      let textContent: string | undefined;
+      try {
+        if (f.name.toLowerCase().endsWith(".zip") || f.type === "application/zip") {
+          textContent = await extractZipSummary(f);
+        } else if (isTextFile(f) && f.size <= 2 * 1024 * 1024) {
+          textContent = await readTextSafe(f);
+        }
+      } catch (e) {
+        console.warn("file extract failed", f.name, e);
+      }
       const { error: upErr } = await supabase.storage
         .from("chat-uploads")
         .upload(path, f, { contentType: f.type, upsert: true });
@@ -503,6 +513,7 @@ function ChatPage() {
         size: f.size,
         path,
         data: previewData,
+        text: textContent,
       });
     }
     setPendingFiles((p) => [...p, ...uploads]);
