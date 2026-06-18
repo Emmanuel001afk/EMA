@@ -1061,14 +1061,37 @@ function ChatPage() {
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-3xl space-y-4">
               {messages.length === 0 && !typing && (
-                <div className="rounded-2xl border border-border bg-card p-6 text-center sm:p-8">
-                  <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent">
-                    <Sparkles className="h-6 w-6 text-primary-foreground" />
+                <div className="space-y-6 py-6 sm:py-10">
+                  <div className="text-center">
+                    <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg">
+                      <Sparkles className="h-7 w-7 text-primary-foreground" />
+                    </div>
+                    <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                      Hi there 👋 What can I help with?
+                    </h2>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Ask, upload images, PDFs, ZIPs or code — I'll handle it.
+                    </p>
                   </div>
-                  <h2 className="text-2xl font-bold">Hi there 👋</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Welcome to HI THERE — your friendly AI companion. Ask anything!
-                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {[
+                      { icon: ImageIcon, label: "Generate an image", prompt: "Generate an image of " },
+                      { icon: FileText, label: "Summarize a document", prompt: "Summarize this for me: " },
+                      { icon: Search, label: "Search the latest news", prompt: "What's the latest news on " },
+                      { icon: Film, label: "Explain a concept", prompt: "Explain in simple terms: " },
+                    ].map((q) => (
+                      <button
+                        key={q.label}
+                        onClick={() => setInput(q.prompt)}
+                        className="group flex items-center gap-3 rounded-xl border border-border bg-card/60 p-3 text-left text-sm backdrop-blur transition hover:border-primary/60 hover:bg-card"
+                      >
+                        <span className="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary">
+                          <q.icon className="h-4 w-4" />
+                        </span>
+                        <span className="font-medium">{q.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
