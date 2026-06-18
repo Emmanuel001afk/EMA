@@ -48,6 +48,7 @@ type Attachment = {
   size: number;
   path?: string;
   data?: string;
+  text?: string;
 };
 type Msg = {
   id: string;
@@ -65,7 +66,7 @@ const isAudioAttachment = (a: Attachment) => a.type?.startsWith("audio/");
 const isPdfAttachment = (a: Attachment) =>
   a.type === "application/pdf" || a.name.toLowerCase().endsWith(".pdf");
 const stripLocalData = (attachments: Attachment[]): Attachment[] =>
-  attachments.map(({ data: _data, ...rest }) => rest);
+  attachments.map(({ data: _d, text: _t, ...rest }) => rest);
 
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -74,6 +75,39 @@ async function fileToBase64(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+const TEXT_EXTS = /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|yml|yaml|html?|css|scss|less|js|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|bash|zsh|sql|toml|ini|env|log|gitignore|dockerfile|lock)$/i;
+const TEXT_MIME = /^(text\/|application\/(json|xml|x-yaml|javascript|typescript))/;
+const isTextFile = (f: { type?: string; name: string }) =>
+  TEXT_MIME.test(f.type || "") || TEXT_EXTS.test(f.name);
+
+async function readTextSafe(file: Blob, maxBytes = 200_000): Promise<string> {
+  const slice = file.size > maxBytes ? file.slice(0, maxBytes) : file;
+  const t = await slice.text();
+  return file.size > maxBytes ? t + `\n…[truncated, original ${file.size} bytes]` : t;
+}
+
+async function extractZipSummary(file: File): Promise<string> {
+  const { default: JSZip } = await import("jszip");
+  const zip = await JSZip.loadAsync(file);
+  const entries = Object.values(zip.files).filter((e) => !e.dir);
+  const list = entries.map((e) => `- ${e.name}`).join("\n");
+  const textEntries = entries.filter((e) => isTextFile({ name: e.name })).slice(0, 8);
+  let body = "";
+  let budget = 60_000;
+  for (const e of textEntries) {
+    if (budget <= 0) break;
+    try {
+      const content = await e.async("string");
+      const snippet = content.slice(0, Math.min(8000, budget));
+      budget -= snippet.length;
+      body += `\n\n--- ${e.name} ---\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}`;
+    } catch {
+      /* skip binary */
+    }
+  }
+  return `ZIP archive "${file.name}" (${entries.length} files):\n${list}${body}`;
 }
 
 function base64ToBlob(base64: string, type: string) {
