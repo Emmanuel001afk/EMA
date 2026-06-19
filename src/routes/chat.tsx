@@ -28,6 +28,8 @@ import {
   ImageIcon,
   FileText,
   Film,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -91,23 +93,55 @@ async function readTextSafe(file: Blob, maxBytes = 200_000): Promise<string> {
 async function extractZipSummary(file: File): Promise<string> {
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(file);
-  const entries = Object.values(zip.files).filter((e) => !e.dir);
-  const list = entries.map((e) => `- ${e.name}`).join("\n");
-  const textEntries = entries.filter((e) => isTextFile({ name: e.name })).slice(0, 8);
+  let entries = Object.values(zip.files).filter((e) => !e.dir);
+
+  // Detect & strip a single wrapper folder (GitHub "<repo>-main/", Lovable export, etc.)
+  const topSegs = new Set(entries.map((e) => e.name.split("/")[0]));
+  let wrapper = "";
+  if (topSegs.size === 1) {
+    wrapper = [...topSegs][0] + "/";
+  }
+  const norm = (n: string) => (wrapper && n.startsWith(wrapper) ? n.slice(wrapper.length) : n);
+
+  // Skip noise
+  const SKIP = /(^|\/)(node_modules|\.git|\.next|dist|build|\.cache|\.turbo|coverage)\//;
+  const SKIP_FILES = /(package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml)$/i;
+  entries = entries.filter((e) => !SKIP.test("/" + norm(e.name)) && !SKIP_FILES.test(norm(e.name)));
+
+  const list = entries.map((e) => `- ${norm(e.name)}`).join("\n");
+  const textEntries = entries.filter((e) => isTextFile({ name: e.name }));
+
+  // Prioritise key files
+  const KEY = /(package\.json|tsconfig|vite\.config|tailwind|index\.html|README|src\/routes\/|src\/App|src\/main|src\/router|src\/integrations\/)/i;
+  textEntries.sort((a, b) => (KEY.test(b.name) ? 1 : 0) - (KEY.test(a.name) ? 1 : 0));
+
   let body = "";
-  let budget = 60_000;
+  let budget = 240_000;
+  let included = 0;
   for (const e of textEntries) {
     if (budget <= 0) break;
     try {
       const content = await e.async("string");
-      const snippet = content.slice(0, Math.min(8000, budget));
+      const snippet = content.slice(0, Math.min(20_000, budget));
       budget -= snippet.length;
-      body += `\n\n--- ${e.name} ---\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}`;
+      included++;
+      body += `\n\n\`\`\`${guessLang(e.name)} ${norm(e.name)}\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}\n\`\`\``;
     } catch {
       /* skip binary */
     }
   }
-  return `ZIP archive "${file.name}" (${entries.length} files):\n${list}${body}`;
+  return `ZIP archive "${file.name}"${wrapper ? ` (wrapper "${wrapper}" stripped)` : ""} — ${entries.length} files, ${included} read inline below.\n\nFile list:\n${list}${body}`;
+}
+
+function guessLang(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", json: "json",
+    css: "css", scss: "scss", html: "html", md: "md",
+    py: "py", rb: "rb", go: "go", rs: "rs", java: "java", sh: "bash",
+    sql: "sql", yml: "yaml", yaml: "yaml", toml: "toml", env: "bash",
+  };
+  return map[ext] || "";
 }
 
 function base64ToBlob(base64: string, type: string) {
@@ -115,6 +149,86 @@ function base64ToBlob(base64: string, type: string) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type });
+}
+
+function CollapsibleCode({
+  code,
+  lang,
+  filename,
+}: {
+  code: string;
+  lang?: string;
+  filename?: string;
+}) {
+  const lineCount = code.split("\n").length;
+  // Auto-open short snippets; collapse anything bigger or anything with a filename.
+  const [open, setOpen] = useState(!filename && lineCount <= 12);
+  const [copied, setCopied] = useState(false);
+  const label = filename || (lang ? `${lang} snippet` : "code");
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const download = () => {
+    const blob = new Blob([code], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename?.split("/").pop() || `snippet.${lang || "txt"}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-border bg-card/60">
+      <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-2.5 py-1.5 text-[12px]">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex flex-1 items-center gap-1.5 text-left font-mono text-muted-foreground hover:text-foreground"
+        >
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+          )}
+          <FileText className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{label}</span>
+          <span className="ml-1 shrink-0 text-[10px] opacity-60">
+            {lineCount} line{lineCount === 1 ? "" : "s"}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={copy}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+          title="Copy"
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={download}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+          title="Download"
+        >
+          <Download className="h-3 w-3" />
+        </button>
+      </div>
+      {open && (
+        <pre className="m-0 max-h-[480px] overflow-auto bg-background/40 p-3 text-[12px] leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function AttachmentPreview({ attachment }: { attachment: Attachment }) {
@@ -338,6 +452,49 @@ function ChatPage() {
                 loading="lazy"
               />
             ) : null,
+          pre: ({ children }: any) => {
+            // Extract the inner <code> child produced by remark for fenced blocks.
+            const child: any = Array.isArray(children) ? children[0] : children;
+            const props = child?.props || {};
+            const raw = String(props.children ?? "").replace(/\n$/, "");
+            const className: string = props.className || "";
+            const langMatch = /language-([\w+-]+)/.exec(className);
+            const lang = langMatch?.[1];
+            // Filename support: ```tsx src/foo.tsx  → react-markdown drops the
+            // info-string tail, so we also accept a first-line "// file: path" hint.
+            let filename: string | undefined;
+            const firstLine = raw.split("\n")[0] || "";
+            const fileHint = /^\s*(?:\/\/|#|--)\s*(?:file|path):\s*(\S+)/i.exec(firstLine);
+            const bareFile = /^(?:[\w.\-/]+\/)?[\w.\-]+\.\w{1,8}$/i.test(firstLine.trim());
+            let body = raw;
+            if (fileHint) {
+              filename = fileHint[1];
+              body = raw.split("\n").slice(1).join("\n");
+            } else if (className.includes(" ") || (lang && bareFile)) {
+              // some markdowns keep extra info after language in className
+              const extra = className.split(" ").find((c) => c.includes("/") || c.includes("."));
+              if (extra) filename = extra;
+            }
+            return <CollapsibleCode code={body} lang={lang} filename={filename} />;
+          },
+          code: ({ inline, className, children, ...props }: any) => {
+            if (inline) {
+              return (
+                <code
+                  className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
+                  {...props}
+                >
+                  {children}
+                </code>
+              );
+            }
+            // Block code is handled by the `pre` override; just pass through.
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
         }}
       >
         {text}
