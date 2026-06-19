@@ -230,12 +230,28 @@ async function callProvider(
 }
 
 // Smart router: pick provider order from message intent + language
-type Intent = "math" | "naija" | "news" | "fast" | "image" | "summarize" | "general";
+type Intent =
+  | "math"
+  | "naija"
+  | "news"
+  | "fast"
+  | "image"
+  | "summarize"
+  | "bigcontext"
+  | "general";
 
 function detectIntent(userText: string, language: string): Intent {
   const t = (userText || "").toLowerCase();
   const naijaLangs = ["yo", "ig", "ha", "pcm"];
   if (naijaLangs.includes(language)) return "naija";
+  // Big-context: zip dumps, multi-file project reads, very long prompts
+  if (
+    t.length > 12_000 ||
+    /\bzip archive\b|--- src\/|```[\w]*\s+src\//i.test(userText) ||
+    (userText.match(/^```/gm)?.length ?? 0) >= 4
+  ) {
+    return "bigcontext";
+  }
   const codeMath =
     /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
   if (codeMath.test(t)) return "math";
@@ -261,6 +277,9 @@ function routeForIntent(intent: Intent): Provider[] {
       return ["cerebras", "groq", "gemini", "openai", "openrouter"];
     case "summarize":
       return ["mistral", "gemini", "openai", "deepseek", "openrouter"];
+    case "bigcontext":
+      // Largest context windows first (Gemini ~1M, GPT-4o ~128k, DeepSeek 128k)
+      return ["gemini", "openai", "deepseek", "mistral", "openrouter"];
     default:
       return ["openai", "gemini", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
   }
