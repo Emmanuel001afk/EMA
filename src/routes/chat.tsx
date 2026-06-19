@@ -28,6 +28,8 @@ import {
   ImageIcon,
   FileText,
   Film,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
