@@ -258,6 +258,10 @@ function detectIntent(userText: string, language: string): Intent {
   const news =
     /\b(news|latest|today|recent|search|google|browse|web ?search|look ?up|find online|breaking|current|currently|headline|update on|what.?s happening|live|now|price of|weather|score|stock|market|election|forecast|trending|this (week|month|year)|in 20\d\d)\b|^\/(search|web)\b/i;
   if (news.test(t)) return "news";
+  // Live-info-ish dev questions: package versions, known bugs, changelogs
+  const liveDev =
+    /\b(latest version|current version|newest|changelog|release notes|known (bug|issue|cve)|deprecated|breaking change|migration guide|docs? for|how to use [\w@/.-]+ v?\d)/i;
+  if (liveDev.test(t)) return "news";
   const summarize =
     /\b(summari[sz]e|summary|tl;?dr|key points|main ideas|abstract|long document)\b/i;
   if (summarize.test(t) || t.length > 1500) return "summarize";
