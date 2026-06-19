@@ -151,6 +151,86 @@ function base64ToBlob(base64: string, type: string) {
   return new Blob([bytes], { type });
 }
 
+function CollapsibleCode({
+  code,
+  lang,
+  filename,
+}: {
+  code: string;
+  lang?: string;
+  filename?: string;
+}) {
+  const lineCount = code.split("\n").length;
+  // Auto-open short snippets; collapse anything bigger or anything with a filename.
+  const [open, setOpen] = useState(!filename && lineCount <= 12);
+  const [copied, setCopied] = useState(false);
+  const label = filename || (lang ? `${lang} snippet` : "code");
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const download = () => {
+    const blob = new Blob([code], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename?.split("/").pop() || `snippet.${lang || "txt"}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-border bg-card/60">
+      <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-2.5 py-1.5 text-[12px]">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex flex-1 items-center gap-1.5 text-left font-mono text-muted-foreground hover:text-foreground"
+        >
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+          )}
+          <FileText className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{label}</span>
+          <span className="ml-1 shrink-0 text-[10px] opacity-60">
+            {lineCount} line{lineCount === 1 ? "" : "s"}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={copy}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+          title="Copy"
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={download}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+          title="Download"
+        >
+          <Download className="h-3 w-3" />
+        </button>
+      </div>
+      {open && (
+        <pre className="m-0 max-h-[480px] overflow-auto bg-background/40 p-3 text-[12px] leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function AttachmentPreview({ attachment }: { attachment: Attachment }) {
   const src =
     attachment.data && isImageAttachment(attachment)
