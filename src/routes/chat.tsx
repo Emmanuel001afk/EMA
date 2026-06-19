@@ -452,6 +452,49 @@ function ChatPage() {
                 loading="lazy"
               />
             ) : null,
+          pre: ({ children }: any) => {
+            // Extract the inner <code> child produced by remark for fenced blocks.
+            const child: any = Array.isArray(children) ? children[0] : children;
+            const props = child?.props || {};
+            const raw = String(props.children ?? "").replace(/\n$/, "");
+            const className: string = props.className || "";
+            const langMatch = /language-([\w+-]+)/.exec(className);
+            const lang = langMatch?.[1];
+            // Filename support: ```tsx src/foo.tsx  → react-markdown drops the
+            // info-string tail, so we also accept a first-line "// file: path" hint.
+            let filename: string | undefined;
+            const firstLine = raw.split("\n")[0] || "";
+            const fileHint = /^\s*(?:\/\/|#|--)\s*(?:file|path):\s*(\S+)/i.exec(firstLine);
+            const bareFile = /^(?:[\w.\-/]+\/)?[\w.\-]+\.\w{1,8}$/i.test(firstLine.trim());
+            let body = raw;
+            if (fileHint) {
+              filename = fileHint[1];
+              body = raw.split("\n").slice(1).join("\n");
+            } else if (className.includes(" ") || (lang && bareFile)) {
+              // some markdowns keep extra info after language in className
+              const extra = className.split(" ").find((c) => c.includes("/") || c.includes("."));
+              if (extra) filename = extra;
+            }
+            return <CollapsibleCode code={body} lang={lang} filename={filename} />;
+          },
+          code: ({ inline, className, children, ...props }: any) => {
+            if (inline) {
+              return (
+                <code
+                  className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
+                  {...props}
+                >
+                  {children}
+                </code>
+              );
+            }
+            // Block code is handled by the `pre` override; just pass through.
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
         }}
       >
         {text}
