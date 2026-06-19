@@ -93,23 +93,55 @@ async function readTextSafe(file: Blob, maxBytes = 200_000): Promise<string> {
 async function extractZipSummary(file: File): Promise<string> {
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(file);
-  const entries = Object.values(zip.files).filter((e) => !e.dir);
-  const list = entries.map((e) => `- ${e.name}`).join("\n");
-  const textEntries = entries.filter((e) => isTextFile({ name: e.name })).slice(0, 8);
+  let entries = Object.values(zip.files).filter((e) => !e.dir);
+
+  // Detect & strip a single wrapper folder (GitHub "<repo>-main/", Lovable export, etc.)
+  const topSegs = new Set(entries.map((e) => e.name.split("/")[0]));
+  let wrapper = "";
+  if (topSegs.size === 1) {
+    wrapper = [...topSegs][0] + "/";
+  }
+  const norm = (n: string) => (wrapper && n.startsWith(wrapper) ? n.slice(wrapper.length) : n);
+
+  // Skip noise
+  const SKIP = /(^|\/)(node_modules|\.git|\.next|dist|build|\.cache|\.turbo|coverage)\//;
+  const SKIP_FILES = /(package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml)$/i;
+  entries = entries.filter((e) => !SKIP.test("/" + norm(e.name)) && !SKIP_FILES.test(norm(e.name)));
+
+  const list = entries.map((e) => `- ${norm(e.name)}`).join("\n");
+  const textEntries = entries.filter((e) => isTextFile({ name: e.name }));
+
+  // Prioritise key files
+  const KEY = /(package\.json|tsconfig|vite\.config|tailwind|index\.html|README|src\/routes\/|src\/App|src\/main|src\/router|src\/integrations\/)/i;
+  textEntries.sort((a, b) => (KEY.test(b.name) ? 1 : 0) - (KEY.test(a.name) ? 1 : 0));
+
   let body = "";
-  let budget = 60_000;
+  let budget = 240_000;
+  let included = 0;
   for (const e of textEntries) {
     if (budget <= 0) break;
     try {
       const content = await e.async("string");
-      const snippet = content.slice(0, Math.min(8000, budget));
+      const snippet = content.slice(0, Math.min(20_000, budget));
       budget -= snippet.length;
-      body += `\n\n--- ${e.name} ---\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}`;
+      included++;
+      body += `\n\n\`\`\`${guessLang(e.name)} ${norm(e.name)}\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}\n\`\`\``;
     } catch {
       /* skip binary */
     }
   }
-  return `ZIP archive "${file.name}" (${entries.length} files):\n${list}${body}`;
+  return `ZIP archive "${file.name}"${wrapper ? ` (wrapper "${wrapper}" stripped)` : ""} — ${entries.length} files, ${included} read inline below.\n\nFile list:\n${list}${body}`;
+}
+
+function guessLang(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", json: "json",
+    css: "css", scss: "scss", html: "html", md: "md",
+    py: "py", rb: "rb", go: "go", rs: "rs", java: "java", sh: "bash",
+    sql: "sql", yml: "yaml", yaml: "yaml", toml: "toml", env: "bash",
+  };
+  return map[ext] || "";
 }
 
 function base64ToBlob(base64: string, type: string) {
