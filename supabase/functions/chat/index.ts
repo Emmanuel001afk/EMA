@@ -230,18 +230,38 @@ async function callProvider(
 }
 
 // Smart router: pick provider order from message intent + language
-type Intent = "math" | "naija" | "news" | "fast" | "image" | "summarize" | "general";
+type Intent =
+  | "math"
+  | "naija"
+  | "news"
+  | "fast"
+  | "image"
+  | "summarize"
+  | "bigcontext"
+  | "general";
 
 function detectIntent(userText: string, language: string): Intent {
   const t = (userText || "").toLowerCase();
   const naijaLangs = ["yo", "ig", "ha", "pcm"];
   if (naijaLangs.includes(language)) return "naija";
+  // Big-context: zip dumps, multi-file project reads, very long prompts
+  if (
+    t.length > 12_000 ||
+    /\bzip archive\b|--- src\/|```[\w]*\s+src\//i.test(userText) ||
+    (userText.match(/^```/gm)?.length ?? 0) >= 4
+  ) {
+    return "bigcontext";
+  }
   const codeMath =
     /\b(code|coding|program|programming|function|algorithm|bug|error|stack trace|python|javascript|typescript|java|c\+\+|sql|regex|equation|integral|derivative|matrix|calculate|solve|math|theorem|proof)\b|[=+\-*/^][^a-z\s]*\d|```/i;
   if (codeMath.test(t)) return "math";
   const news =
     /\b(news|latest|today|recent|search|google|browse|web ?search|look ?up|find online|breaking|current|currently|headline|update on|what.?s happening|live|now|price of|weather|score|stock|market|election|forecast|trending|this (week|month|year)|in 20\d\d)\b|^\/(search|web)\b/i;
   if (news.test(t)) return "news";
+  // Live-info-ish dev questions: package versions, known bugs, changelogs
+  const liveDev =
+    /\b(latest version|current version|newest|changelog|release notes|known (bug|issue|cve)|deprecated|breaking change|migration guide|docs? for|how to use [\w@/.-]+ v?\d)/i;
+  if (liveDev.test(t)) return "news";
   const summarize =
     /\b(summari[sz]e|summary|tl;?dr|key points|main ideas|abstract|long document)\b/i;
   if (summarize.test(t) || t.length > 1500) return "summarize";
@@ -261,6 +281,9 @@ function routeForIntent(intent: Intent): Provider[] {
       return ["cerebras", "groq", "gemini", "openai", "openrouter"];
     case "summarize":
       return ["mistral", "gemini", "openai", "deepseek", "openrouter"];
+    case "bigcontext":
+      // Largest context windows first (Gemini ~1M, GPT-4o ~128k, DeepSeek 128k)
+      return ["gemini", "openai", "deepseek", "mistral", "openrouter"];
     default:
       return ["openai", "gemini", "groq", "cerebras", "mistral", "deepseek", "openrouter"];
   }
@@ -470,6 +493,15 @@ serve(async (req) => {
       "Be authentic, warm, helpful, and concise. Render answers cleanly for a modern chat app: use markdown only when it improves readability, " +
       "do not wrap basic words in bold markers, use $...$ or $$...$$ only for actual mathematical notation, solve math in normal human steps, " +
       "show media inline when possible, and when the user asks for videos or web resources provide direct full URLs instead of hiding links behind words.";
+    const codeRules =
+      " CODE & FILE OUTPUT RULES (strict):" +
+      " 1) Whenever you output a file or a code snippet longer than ~10 lines, put it inside a fenced code block and ALWAYS make the FIRST line of the block a comment with the path, like `// file: src/foo.tsx` (use `# file: ...` for python/sh/yaml). The UI renders this as a clean collapsible box with copy/download. NEVER dump big code or full files inline as prose." +
+      " 2) Keep replies short and action-oriented like Claude: say what you did, then say what the user should do next. No long essays. No asking permission for obvious steps." +
+      " 3) BUG/ISSUE REPORTS: when reviewing a project or zip, report EVERY issue at once in a single response, ordered Critical → High → Medium → Low. Never trickle one bug at a time." +
+      " 4) IMPORT-AWARE EDITS: before proposing an edit to a file, mention which other files import from it and what could break. Never replace a whole file just to add a small thing — preserve everything that works and add alongside it." +
+      " 5) RECURRING-ISSUE CHECKLIST: when given a project, automatically scan for and call out: missing context providers in the root layout; shared lib files that lost exports after an edit; package.json peer-dep conflicts; files whose contents don't match their filename (accidental overwrites); duplicate nested folders in wrong locations; stray internal AI marker comments left in code." +
+      " 6) PROJECT MEMORY: once a zip or project is shared in this conversation, keep it in mind for every follow-up — do not ask the user to re-upload or re-explain." +
+      " 7) When the user asks for the latest version of a package, a known bug, or current info, say so plainly and use any web-search context provided.";
     const sysMsg =
       mode === "translate"
         ? {
@@ -478,7 +510,7 @@ serve(async (req) => {
           }
         : {
             role: "system",
-            content: `${identityLock} Always respond in ${langNames[lang] || "English"}.`,
+            content: `${identityLock}${codeRules} Always respond in ${langNames[lang] || "English"}.`,
           };
     const fullMessages = [sysMsg, ...messages];
 
