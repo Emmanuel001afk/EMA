@@ -30,6 +30,15 @@ import {
   Film,
   ChevronDown,
   ChevronRight,
+  Bookmark,
+  BookmarkCheck,
+  Activity,
+  LayoutDashboard,
+  Wand2,
+  Bug,
+  ListChecks,
+  FileDown,
+  Type as TypeIcon,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -422,6 +431,140 @@ function ChatPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
+  // === New: prefs, pinned, slash menu, audit ===
+  const [personality, setPersonality] = useState<"direct" | "friendly" | "detailed">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-personality") as any)) || "friendly",
+  );
+  const [respLength, setRespLength] = useState<"short" | "normal" | "detailed">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-length") as any)) || "normal",
+  );
+  const [fontSize, setFontSize] = useState<"sm" | "md" | "lg">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-fontsize") as any)) || "md",
+  );
+  const [pinned, setPinned] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hi-there-pinned") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditReport, setAuditReport] = useState<string | null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-personality", personality); } catch { /* ignore */ }
+  }, [personality]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-length", respLength); } catch { /* ignore */ }
+  }, [respLength]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-fontsize", fontSize); } catch { /* ignore */ }
+  }, [fontSize]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-pinned", JSON.stringify(pinned)); } catch { /* ignore */ }
+  }, [pinned]);
+  useEffect(() => {
+    const on = () => setIsOffline(false);
+    const off = () => setIsOffline(true);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+
+  // Time-of-day welcome greeting
+  const timeGreeting = useMemo(() => {
+    const h = new Date().getHours();
+    const morning = ["Good morning — ready when you are.", "Morning! What's first today?", "Morning. Let's make it count."];
+    const afternoon = ["Afternoon. What are we working on?", "Good afternoon — how can I help?", "Afternoon! Drop it on me."];
+    const evening = ["Evening. What do you need?", "Evening — let's wrap something up.", "Evening! Still building?"];
+    const lateNight = ["Late night session? I'm here.", "Up late? Let's keep it sharp.", "Quiet hours — perfect for focus work."];
+    const pool = h < 5 ? lateNight : h < 12 ? morning : h < 17 ? afternoon : h < 22 ? evening : lateNight;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }, [activeConvId]); // refresh greeting on new chat
+
+  // Slash command catalogue
+  const slashCommands = [
+    { cmd: "/explain", desc: "Explain the last code in plain English" },
+    { cmd: "/fix", desc: "Find and fix bugs in the last code" },
+    { cmd: "/audit", desc: "Full bug scan of the project" },
+    { cmd: "/compare", desc: "Compare two solutions to a problem" },
+    { cmd: "/summary", desc: "Summarise this conversation" },
+    { cmd: "/export", desc: "Export this conversation to a file" },
+    { cmd: "/image", desc: "Generate a new image" },
+    { cmd: "/health", desc: "Run a self-audit of all AI providers" },
+  ];
+  const slashMatches = useMemo(() => {
+    const t = input.trim();
+    if (!t.startsWith("/")) return [];
+    return slashCommands.filter((c) => c.cmd.startsWith(t.split(" ")[0]));
+  }, [input]);
+
+  // Smart follow-up suggestions for the last assistant message
+  const lastAssistant = useMemo(() => [...messages].reverse().find((m) => m.role === "assistant"), [messages]);
+  const suggestions = useMemo(() => {
+    if (!lastAssistant) return [];
+    const c = lastAssistant.content.toLowerCase();
+    const hasImg = lastAssistant.attachments?.some((a) => a.type?.startsWith("image/"));
+    if (hasImg) return ["Modify this image", "Generate a variation", "Animate this image"];
+    if (/bug|issue|error|fix|critical|high|severity/.test(c))
+      return ["Fix the highest severity bug", "Show me all affected files", "Explain what caused this"];
+    if (/```/.test(lastAssistant.content)) return ["Explain this code", "Refactor for readability", "Add tests"];
+    if (/zip|project|files|repository/.test(c)) return ["List the most important files", "Find security issues", "Suggest improvements"];
+    return ["Tell me more", "Give an example", "Summarize the key points"];
+  }, [lastAssistant]);
+
+  // Self-audit
+  const runSelfAudit = async () => {
+    setAuditOpen(true);
+    setAuditing(true);
+    setAuditReport(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("chat", { body: { mode: "audit", messages: [] } });
+      if (error) throw error;
+      const provs = data?.providers || {};
+      const ok = Object.entries(provs).filter(([, v]: any) => v.ok).map(([k]) => k);
+      const bad = Object.entries(provs).filter(([, v]: any) => !v.ok);
+      const lines = [
+        `**System Health Report**  •  ${new Date().toLocaleString()}`,
+        ``,
+        `**AI Providers (${ok.length}/${Object.keys(provs).length} online)**`,
+        ...Object.entries(provs).map(([k, v]: any) =>
+          `- ${v.ok ? "✅" : "❌"} **${k}** — ${v.ok ? `${v.ms}ms` : (v.error || "failed")}`,
+        ),
+        ``,
+        `**Image generation:** ${data?.image_generation?.ok ? `✅ working (via ${data.image_generation.via})` : `❌ ${data?.image_generation?.error || "down"}`}`,
+        `**ZIP file reader:** ${data?.zip_reader?.ok ? "✅ active" : "❌ not available"}`,
+        ``,
+        bad.length === 0
+          ? `All systems nominal — full failover chain available.`
+          : `Providers currently limited or down: ${bad.map(([k]) => k).join(", ")}. The smart router will skip them automatically.`,
+      ];
+      setAuditReport(lines.join("\n"));
+    } catch (e: any) {
+      setAuditReport(`❌ Audit failed: ${friendlyError(e)}`);
+    } finally {
+      setAuditing(false);
+    }
+  };
+
+  // Copy the last assistant response
+  const copyLast = async () => {
+    if (!lastAssistant) return;
+    await navigator.clipboard.writeText(lastAssistant.content);
+    setCopiedId(lastAssistant.id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  // Toggle pin
+  const togglePin = (id: string) => setPinned((p) => ({ ...p, [id]: !p[id] }));
+  const pinnedMessages = useMemo(() => messages.filter((m) => pinned[m.id]), [messages, pinned]);
+
   // Renders assistant/user text as markdown (with GFM tables, math via KaTeX,
   // and inline images from data URLs returned by the image-generation flow).
   const MD = ({ text, dark }: { text: string; dark?: boolean }) => (
@@ -583,7 +726,16 @@ function ChatPage() {
       .select("id,title,updated_at")
       .order("updated_at", { ascending: false });
     setConversations(data ?? []);
-    if (data && data.length && !activeConvId) setActiveConvId(data[0].id);
+    if (data && data.length && !activeConvId) {
+      // If user came from dashboard, restore that conversation
+      let target = data[0].id;
+      try {
+        const requested = localStorage.getItem("hi-there-open-conv");
+        if (requested && data.some((c) => c.id === requested)) target = requested;
+        localStorage.removeItem("hi-there-open-conv");
+      } catch { /* ignore */ }
+      setActiveConvId(target);
+    }
   };
 
   useEffect(() => {
@@ -679,6 +831,42 @@ function ChatPage() {
   const send = async () => {
     if ((!input.trim() && pendingFiles.length === 0) || !userId || sending) return;
     setError(null);
+    // Slash-command routing (intercept before sending to AI)
+    const raw = input.trim();
+    if (raw === "/health" || raw === "/audit") {
+      setInput("");
+      setSlashOpen(false);
+      if (raw === "/health") {
+        await runSelfAudit();
+        return;
+      }
+      // /audit on a project context: rewrite as a clear audit instruction
+      setInput("Run a full audit of the project I shared. Report every issue you find in one response, sorted Critical → High → Medium → Low.");
+      return;
+    }
+    if (raw === "/export") {
+      setInput("");
+      setSlashOpen(false);
+      downloadConversation(activeConvId);
+      return;
+    }
+    if (raw === "/summary") {
+      setInput("Summarise this entire conversation in clear bullet points.");
+      return;
+    }
+    if (raw === "/explain") {
+      setInput("Explain the last code I shared in plain English, section by section.");
+      return;
+    }
+    if (raw === "/fix") {
+      setInput("Find and fix every bug in the last code I shared. Show before/after for each change.");
+      return;
+    }
+    if (raw === "/compare") {
+      setInput("Compare two different solutions to my last question, side by side, with pros/cons.");
+      return;
+    }
+    setSlashOpen(false);
     let convId = activeConvId;
     if (!convId) {
       const { data } = await supabase
@@ -759,6 +947,7 @@ function ChatPage() {
           messages: history,
           language,
           mode: wantsImage ? "image" : undefined,
+          prefs: { personality, length: respLength },
           attachments: attachments.map((a) => ({
             url: a.url,
             type: a.type,
@@ -1077,7 +1266,24 @@ function ChatPage() {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))]">
+    <div className={`flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))] ${fontSize === "sm" ? "text-[13px]" : fontSize === "lg" ? "text-[17px]" : "text-[15px]"}`}>
+      {isOffline && (
+        <div className="bg-destructive/15 px-3 py-1.5 text-center text-xs text-destructive">
+          You're offline — messages will fail until your connection returns.
+        </div>
+      )}
+      {auditOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setAuditOpen(false)}>
+          <div className="max-h-[80vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-lg font-bold"><Activity className="h-5 w-5 text-primary" /> System health</h3>
+              <button onClick={() => setAuditOpen(false)} className="rounded p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
+            </div>
+            {auditing && <p className="text-sm text-muted-foreground">Pinging every provider…</p>}
+            {auditReport && <pre className="whitespace-pre-wrap text-xs leading-relaxed">{auditReport}</pre>}
+          </div>
+        </div>
+      )}
       <header className="flex items-center justify-between border-b border-border bg-chat-panel px-3 py-2 shadow-sm backdrop-blur-xl sm:px-4 sm:py-3">
         <div className="flex items-center gap-2">
           <button
@@ -1119,6 +1325,26 @@ function ChatPage() {
                 >
                   <SettingsIcon className="h-4 w-4" /> Settings
                 </Link>
+                <Link
+                  to="/dashboard"
+                  onClick={() => setProfileOpen(false)}
+                  className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent"
+                >
+                  <LayoutDashboard className="h-4 w-4" /> Project dashboard
+                </Link>
+                <button
+                  onClick={() => { setProfileOpen(false); runSelfAudit(); }}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent"
+                >
+                  <Activity className="h-4 w-4" /> Audit AI health
+                </button>
+                <button
+                  onClick={() => { setProfileOpen(false); copyLast(); }}
+                  disabled={!lastAssistant}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent disabled:opacity-40"
+                >
+                  <Copy className="h-4 w-4" /> Copy last response
+                </button>
                 <button
                   onClick={() => {
                     setProfileOpen(false);
@@ -1176,6 +1402,52 @@ function ChatPage() {
                     ))}
                   </select>
                 </div>
+                <div className="border-t border-border/60 px-2.5 py-2 space-y-2">
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <Wand2 className="h-3 w-3" /> Personality
+                    </label>
+                    <select
+                      value={personality}
+                      onChange={(e) => setPersonality(e.target.value as any)}
+                      className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="direct">Direct (short, no fluff)</option>
+                      <option value="friendly">Friendly (default)</option>
+                      <option value="detailed">Detailed</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <ListChecks className="h-3 w-3" /> Response length
+                    </label>
+                    <select
+                      value={respLength}
+                      onChange={(e) => setRespLength(e.target.value as any)}
+                      className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="short">Short</option>
+                      <option value="normal">Normal</option>
+                      <option value="detailed">Detailed</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <TypeIcon className="h-3 w-3" /> Font size
+                    </label>
+                    <div className="flex gap-1">
+                      {(["sm", "md", "lg"] as const).map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setFontSize(s)}
+                          className={`flex-1 rounded border px-2 py-1 text-xs ${fontSize === s ? "border-primary bg-primary/10" : "border-input"}`}
+                        >
+                          {s === "sm" ? "Small" : s === "md" ? "Normal" : "Large"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
                 <Link
                   to="/contact"
                   onClick={() => setProfileOpen(false)}
@@ -1217,6 +1489,23 @@ function ChatPage() {
         <main className="flex flex-1 flex-col">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-3xl space-y-4">
+              {pinnedMessages.length > 0 && (
+                <div className="rounded-xl border border-primary/30 bg-primary/5 p-3">
+                  <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
+                    <BookmarkCheck className="h-3 w-3" /> Pinned ({pinnedMessages.length})
+                  </p>
+                  <div className="space-y-1.5">
+                    {pinnedMessages.map((p) => (
+                      <div key={`pin-${p.id}`} className="flex items-start gap-2 text-xs">
+                        <span className="line-clamp-2 flex-1 text-foreground/80">{p.content.slice(0, 200)}</span>
+                        <button onClick={() => togglePin(p.id)} className="shrink-0 rounded p-0.5 hover:bg-accent" title="Unpin">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {messages.length === 0 && !typing && (
                 <div className="space-y-6 py-6 sm:py-10">
                   <div className="text-center">
@@ -1224,7 +1513,7 @@ function ChatPage() {
                       <Sparkles className="h-7 w-7 text-primary-foreground" />
                     </div>
                     <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                      Hi there 👋 What can I help with?
+                      {timeGreeting}
                     </h2>
                     <p className="mt-2 text-sm text-muted-foreground">
                       Ask, upload images, PDFs, ZIPs or code — I'll handle it.
@@ -1315,6 +1604,13 @@ function ChatPage() {
                           >
                             <Languages className="h-3 w-3" />
                             {translatingId === m.id ? "…" : "Translate"}
+                          </button>
+                          <button
+                            onClick={() => togglePin(m.id)}
+                            title={pinned[m.id] ? "Unpin" : "Pin"}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent"
+                          >
+                            {pinned[m.id] ? <BookmarkCheck className="h-3 w-3 text-primary" /> : <Bookmark className="h-3 w-3" />}
                           </button>
                           <button
                             onClick={() => speak(m)}
@@ -1420,6 +1716,19 @@ function ChatPage() {
                   </div>
                 </div>
               )}
+              {!sending && !typing && lastAssistant && suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => { setInput(s); }}
+                      className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1434,6 +1743,20 @@ function ChatPage() {
 
           <div className="border-t border-border bg-chat-panel p-2 backdrop-blur-xl sm:p-3">
             <div className="mx-auto max-w-3xl">
+              {slashMatches.length > 0 && (
+                <div className="mb-2 rounded-xl border border-border bg-popover/95 p-1 shadow-lg backdrop-blur">
+                  {slashMatches.map((c) => (
+                    <button
+                      key={c.cmd}
+                      onClick={() => { setInput(c.cmd); setSlashOpen(false); }}
+                      className="flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-accent"
+                    >
+                      <span className="font-mono font-semibold text-primary">{c.cmd}</span>
+                      <span className="text-muted-foreground">{c.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {pendingFiles.length > 0 && (
                 <div className="mb-2 grid gap-2 sm:grid-cols-2">
                   {pendingFiles.map((f, i) => (
@@ -1455,7 +1778,7 @@ function ChatPage() {
                   type="file"
                   multiple
                   hidden
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.html,.css,image/*,video/*,audio/*"
                   onChange={(e) => {
                     handleFiles(e.target.files);
                     e.target.value = "";

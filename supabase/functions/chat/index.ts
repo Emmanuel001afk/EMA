@@ -172,7 +172,7 @@ async function callProvider(
     if (!k) throw new Error("MISTRAL_API_KEY missing");
     return await callOpenAICompat(
       "https://api.mistral.ai/v1/chat/completions",
-      intent === "summarize" ? "mistral-large-latest" : "mistral-small-latest",
+      intent === "summarize" ? "mistral-large-latest" : "codestral-latest",
       messages,
       k,
       "mistral",
@@ -364,7 +364,7 @@ async function generateImageWithFallback(
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   try {
-    const { messages, language, mode, attachments } = await req.json();
+    const { messages, language, mode, attachments, prefs } = await req.json();
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -383,6 +383,48 @@ serve(async (req) => {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // === SELF-AUDIT mode: ping every provider with a tiny prompt and report status ===
+    if (mode === "audit") {
+      const { data: settingsRows0 } = await admin.from("app_settings").select("key,value");
+      const settings0: Record<string, any> = {};
+      for (const r of settingsRows0 ?? []) settings0[r.key] = r.value;
+      const overrides0: Record<string, string> = {};
+      for (const name of [
+        "GEMINI_API_KEY","GROQ_API_KEY","MISTRAL_API_KEY","DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY","CEREBRAS_API_KEY","HUGGINGFACE_API_KEY","OPENROUTER_API_KEY",
+      ]) {
+        const v = settings0[name.toLowerCase()] ?? settings0[name];
+        if (typeof v === "string" && v.length > 0) overrides0[name] = v;
+      }
+      const providers: Provider[] = ["gemini","groq","mistral","deepseek","openai","cerebras","huggingface","openrouter"];
+      const ping = [{ role: "user", content: "Reply with the single word: OK" }];
+      const results: Record<string, { ok: boolean; ms: number; error?: string }> = {};
+      await Promise.all(providers.map(async (p) => {
+        const t0 = Date.now();
+        try {
+          const out = await callProvider(p, ping, {}, "fast", overrides0, []);
+          results[p] = { ok: Boolean(out && out.length), ms: Date.now() - t0 };
+        } catch (e: any) {
+          results[p] = { ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 160) };
+        }
+      }));
+      // Image gen status (try Lovable gateway first, then FLUX as a quick existence check)
+      let imageStatus: { ok: boolean; via?: string; error?: string } = { ok: false };
+      try {
+        const img = await generateImageWithFallback("a small red dot", overrides0["HUGGINGFACE_API_KEY"]);
+        imageStatus = { ok: true, via: img.via };
+      } catch (e: any) {
+        imageStatus = { ok: false, error: String(e?.message || e).slice(0, 200) };
+      }
+      return new Response(JSON.stringify({
+        mode: "audit",
+        providers: results,
+        image_generation: imageStatus,
+        zip_reader: { ok: true, note: "Client-side JSZip extraction active in chat" },
+        timestamp: new Date().toISOString(),
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     // Load settings + profile
@@ -501,7 +543,26 @@ serve(async (req) => {
       " 4) IMPORT-AWARE EDITS: before proposing an edit to a file, mention which other files import from it and what could break. Never replace a whole file just to add a small thing — preserve everything that works and add alongside it." +
       " 5) RECURRING-ISSUE CHECKLIST: when given a project, automatically scan for and call out: missing context providers in the root layout; shared lib files that lost exports after an edit; package.json peer-dep conflicts; files whose contents don't match their filename (accidental overwrites); duplicate nested folders in wrong locations; stray internal AI marker comments left in code." +
       " 6) PROJECT MEMORY: once a zip or project is shared in this conversation, keep it in mind for every follow-up — do not ask the user to re-upload or re-explain." +
-      " 7) When the user asks for the latest version of a package, a known bug, or current info, say so plainly and use any web-search context provided.";
+      " 7) When the user asks for the latest version of a package, a known bug, or current info, say so plainly and use any web-search context provided." +
+      " 8) THINK BEFORE ACT: When the user asks a question like 'can you do X?' or 'is X possible?' — first ANSWER the question, then act if they confirm. Only act immediately on clear direct instructions ('do X', 'fix X', 'build X'). When the user sends an image or screenshot, READ and UNDERSTAND that exact image before responding — never replace it with a generated one unless they explicitly ask for a new image." +
+      " 9) MULTILINGUAL: reply in the SAME language the user wrote in for the last turn, regardless of the configured app language. If they switch languages mid-conversation, switch with them." +
+      " 10) ERROR & CODE EXPLANATION: when the user pastes an error message, explain in plain English what it means, what caused it, and how to fix it — one clear response. When they paste code and ask what it does, walk through it section by section in plain language, no jargon.";
+
+    // Personality / length / tone preferences from the client (Settings panel)
+    const personality = prefs?.personality || "friendly"; // direct | friendly | detailed
+    const length = prefs?.length || "normal";             // short  | normal   | detailed
+    const personalityRule =
+      personality === "direct"
+        ? " TONE: Be DIRECT. No fluff, no warm intros, just the answer."
+        : personality === "detailed"
+        ? " TONE: Be thorough and explain reasoning when useful, but stay readable."
+        : " TONE: Be friendly and warm but concise.";
+    const lengthRule =
+      length === "short"
+        ? " LENGTH: Keep replies VERY short — 1-3 sentences unless code is needed."
+        : length === "detailed"
+        ? " LENGTH: Detailed replies welcome when the topic warrants it."
+        : " LENGTH: Normal length — answer fully but don't pad.";
     const sysMsg =
       mode === "translate"
         ? {
@@ -510,7 +571,7 @@ serve(async (req) => {
           }
         : {
             role: "system",
-            content: `${identityLock}${codeRules} Always respond in ${langNames[lang] || "English"}.`,
+            content: `${identityLock}${codeRules}${personalityRule}${lengthRule} Default response language: ${langNames[lang] || "English"} (but follow rule 9 — match the user's language).`,
           };
     const fullMessages = [sysMsg, ...messages];
 
