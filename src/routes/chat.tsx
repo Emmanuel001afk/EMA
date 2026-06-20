@@ -902,6 +902,7 @@ function ChatPage() {
           messages: history,
           language,
           mode: wantsImage ? "image" : undefined,
+          prefs: { personality, length: respLength },
           attachments: attachments.map((a) => ({
             url: a.url,
             type: a.type,
