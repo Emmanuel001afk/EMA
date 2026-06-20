@@ -1606,6 +1606,13 @@ function ChatPage() {
                             {translatingId === m.id ? "…" : "Translate"}
                           </button>
                           <button
+                            onClick={() => togglePin(m.id)}
+                            title={pinned[m.id] ? "Unpin" : "Pin"}
+                            className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent"
+                          >
+                            {pinned[m.id] ? <BookmarkCheck className="h-3 w-3 text-primary" /> : <Bookmark className="h-3 w-3" />}
+                          </button>
+                          <button
                             onClick={() => speak(m)}
                             title="Read aloud"
                             className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent"
