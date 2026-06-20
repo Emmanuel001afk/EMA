@@ -1266,7 +1266,24 @@ function ChatPage() {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))]">
+    <div className={`flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))] ${fontSize === "sm" ? "text-[13px]" : fontSize === "lg" ? "text-[17px]" : "text-[15px]"}`}>
+      {isOffline && (
+        <div className="bg-destructive/15 px-3 py-1.5 text-center text-xs text-destructive">
+          You're offline — messages will fail until your connection returns.
+        </div>
+      )}
+      {auditOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setAuditOpen(false)}>
+          <div className="max-h-[80vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-lg font-bold"><Activity className="h-5 w-5 text-primary" /> System health</h3>
+              <button onClick={() => setAuditOpen(false)} className="rounded p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
+            </div>
+            {auditing && <p className="text-sm text-muted-foreground">Pinging every provider…</p>}
+            {auditReport && <pre className="whitespace-pre-wrap text-xs leading-relaxed">{auditReport}</pre>}
+          </div>
+        </div>
+      )}
       <header className="flex items-center justify-between border-b border-border bg-chat-panel px-3 py-2 shadow-sm backdrop-blur-xl sm:px-4 sm:py-3">
         <div className="flex items-center gap-2">
           <button
