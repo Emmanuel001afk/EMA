@@ -1743,6 +1743,20 @@ function ChatPage() {
 
           <div className="border-t border-border bg-chat-panel p-2 backdrop-blur-xl sm:p-3">
             <div className="mx-auto max-w-3xl">
+              {slashMatches.length > 0 && (
+                <div className="mb-2 rounded-xl border border-border bg-popover/95 p-1 shadow-lg backdrop-blur">
+                  {slashMatches.map((c) => (
+                    <button
+                      key={c.cmd}
+                      onClick={() => { setInput(c.cmd); setSlashOpen(false); }}
+                      className="flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-accent"
+                    >
+                      <span className="font-mono font-semibold text-primary">{c.cmd}</span>
+                      <span className="text-muted-foreground">{c.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {pendingFiles.length > 0 && (
                 <div className="mb-2 grid gap-2 sm:grid-cols-2">
                   {pendingFiles.map((f, i) => (
@@ -1764,7 +1778,7 @@ function ChatPage() {
                   type="file"
                   multiple
                   hidden
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.html,.css,image/*,video/*,audio/*"
                   onChange={(e) => {
                     handleFiles(e.target.files);
                     e.target.value = "";
