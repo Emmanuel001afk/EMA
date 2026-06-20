@@ -431,6 +431,140 @@ function ChatPage() {
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
+  // === New: prefs, pinned, slash menu, audit ===
+  const [personality, setPersonality] = useState<"direct" | "friendly" | "detailed">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-personality") as any)) || "friendly",
+  );
+  const [respLength, setRespLength] = useState<"short" | "normal" | "detailed">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-length") as any)) || "normal",
+  );
+  const [fontSize, setFontSize] = useState<"sm" | "md" | "lg">(
+    () => (typeof localStorage !== "undefined" && (localStorage.getItem("hi-there-fontsize") as any)) || "md",
+  );
+  const [pinned, setPinned] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("hi-there-pinned") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditReport, setAuditReport] = useState<string | null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-personality", personality); } catch { /* ignore */ }
+  }, [personality]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-length", respLength); } catch { /* ignore */ }
+  }, [respLength]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-fontsize", fontSize); } catch { /* ignore */ }
+  }, [fontSize]);
+  useEffect(() => {
+    try { localStorage.setItem("hi-there-pinned", JSON.stringify(pinned)); } catch { /* ignore */ }
+  }, [pinned]);
+  useEffect(() => {
+    const on = () => setIsOffline(false);
+    const off = () => setIsOffline(true);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+
+  // Time-of-day welcome greeting
+  const timeGreeting = useMemo(() => {
+    const h = new Date().getHours();
+    const morning = ["Good morning — ready when you are.", "Morning! What's first today?", "Morning. Let's make it count."];
+    const afternoon = ["Afternoon. What are we working on?", "Good afternoon — how can I help?", "Afternoon! Drop it on me."];
+    const evening = ["Evening. What do you need?", "Evening — let's wrap something up.", "Evening! Still building?"];
+    const lateNight = ["Late night session? I'm here.", "Up late? Let's keep it sharp.", "Quiet hours — perfect for focus work."];
+    const pool = h < 5 ? lateNight : h < 12 ? morning : h < 17 ? afternoon : h < 22 ? evening : lateNight;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }, [activeConvId]); // refresh greeting on new chat
+
+  // Slash command catalogue
+  const slashCommands = [
+    { cmd: "/explain", desc: "Explain the last code in plain English" },
+    { cmd: "/fix", desc: "Find and fix bugs in the last code" },
+    { cmd: "/audit", desc: "Full bug scan of the project" },
+    { cmd: "/compare", desc: "Compare two solutions to a problem" },
+    { cmd: "/summary", desc: "Summarise this conversation" },
+    { cmd: "/export", desc: "Export this conversation to a file" },
+    { cmd: "/image", desc: "Generate a new image" },
+    { cmd: "/health", desc: "Run a self-audit of all AI providers" },
+  ];
+  const slashMatches = useMemo(() => {
+    const t = input.trim();
+    if (!t.startsWith("/")) return [];
+    return slashCommands.filter((c) => c.cmd.startsWith(t.split(" ")[0]));
+  }, [input]);
+
+  // Smart follow-up suggestions for the last assistant message
+  const lastAssistant = useMemo(() => [...messages].reverse().find((m) => m.role === "assistant"), [messages]);
+  const suggestions = useMemo(() => {
+    if (!lastAssistant) return [];
+    const c = lastAssistant.content.toLowerCase();
+    const hasImg = lastAssistant.attachments?.some((a) => a.type?.startsWith("image/"));
+    if (hasImg) return ["Modify this image", "Generate a variation", "Animate this image"];
+    if (/bug|issue|error|fix|critical|high|severity/.test(c))
+      return ["Fix the highest severity bug", "Show me all affected files", "Explain what caused this"];
+    if (/```/.test(lastAssistant.content)) return ["Explain this code", "Refactor for readability", "Add tests"];
+    if (/zip|project|files|repository/.test(c)) return ["List the most important files", "Find security issues", "Suggest improvements"];
+    return ["Tell me more", "Give an example", "Summarize the key points"];
+  }, [lastAssistant]);
+
+  // Self-audit
+  const runSelfAudit = async () => {
+    setAuditOpen(true);
+    setAuditing(true);
+    setAuditReport(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("chat", { body: { mode: "audit", messages: [] } });
+      if (error) throw error;
+      const provs = data?.providers || {};
+      const ok = Object.entries(provs).filter(([, v]: any) => v.ok).map(([k]) => k);
+      const bad = Object.entries(provs).filter(([, v]: any) => !v.ok);
+      const lines = [
+        `**System Health Report**  •  ${new Date().toLocaleString()}`,
+        ``,
+        `**AI Providers (${ok.length}/${Object.keys(provs).length} online)**`,
+        ...Object.entries(provs).map(([k, v]: any) =>
+          `- ${v.ok ? "✅" : "❌"} **${k}** — ${v.ok ? `${v.ms}ms` : (v.error || "failed")}`,
+        ),
+        ``,
+        `**Image generation:** ${data?.image_generation?.ok ? `✅ working (via ${data.image_generation.via})` : `❌ ${data?.image_generation?.error || "down"}`}`,
+        `**ZIP file reader:** ${data?.zip_reader?.ok ? "✅ active" : "❌ not available"}`,
+        ``,
+        bad.length === 0
+          ? `All systems nominal — full failover chain available.`
+          : `Providers currently limited or down: ${bad.map(([k]) => k).join(", ")}. The smart router will skip them automatically.`,
+      ];
+      setAuditReport(lines.join("\n"));
+    } catch (e: any) {
+      setAuditReport(`❌ Audit failed: ${friendlyError(e)}`);
+    } finally {
+      setAuditing(false);
+    }
+  };
+
+  // Copy the last assistant response
+  const copyLast = async () => {
+    if (!lastAssistant) return;
+    await navigator.clipboard.writeText(lastAssistant.content);
+    setCopiedId(lastAssistant.id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
+  // Toggle pin
+  const togglePin = (id: string) => setPinned((p) => ({ ...p, [id]: !p[id] }));
+  const pinnedMessages = useMemo(() => messages.filter((m) => pinned[m.id]), [messages, pinned]);
+
   // Renders assistant/user text as markdown (with GFM tables, math via KaTeX,
   // and inline images from data URLs returned by the image-generation flow).
   const MD = ({ text, dark }: { text: string; dark?: boolean }) => (
