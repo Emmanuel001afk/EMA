@@ -172,7 +172,7 @@ async function callProvider(
     if (!k) throw new Error("MISTRAL_API_KEY missing");
     return await callOpenAICompat(
       "https://api.mistral.ai/v1/chat/completions",
-      intent === "summarize" ? "mistral-large-latest" : "mistral-small-latest",
+      intent === "summarize" ? "mistral-large-latest" : "codestral-latest",
       messages,
       k,
       "mistral",
