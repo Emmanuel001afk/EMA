@@ -1308,6 +1308,26 @@ function ChatPage() {
                 >
                   <SettingsIcon className="h-4 w-4" /> Settings
                 </Link>
+                <Link
+                  to="/dashboard"
+                  onClick={() => setProfileOpen(false)}
+                  className="flex items-center gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent"
+                >
+                  <LayoutDashboard className="h-4 w-4" /> Project dashboard
+                </Link>
+                <button
+                  onClick={() => { setProfileOpen(false); runSelfAudit(); }}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent"
+                >
+                  <Activity className="h-4 w-4" /> Audit AI health
+                </button>
+                <button
+                  onClick={() => { setProfileOpen(false); copyLast(); }}
+                  disabled={!lastAssistant}
+                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent disabled:opacity-40"
+                >
+                  <Copy className="h-4 w-4" /> Copy last response
+                </button>
                 <button
                   onClick={() => {
                     setProfileOpen(false);
@@ -1364,6 +1384,52 @@ function ChatPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+                <div className="border-t border-border/60 px-2.5 py-2 space-y-2">
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <Wand2 className="h-3 w-3" /> Personality
+                    </label>
+                    <select
+                      value={personality}
+                      onChange={(e) => setPersonality(e.target.value as any)}
+                      className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="direct">Direct (short, no fluff)</option>
+                      <option value="friendly">Friendly (default)</option>
+                      <option value="detailed">Detailed</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <ListChecks className="h-3 w-3" /> Response length
+                    </label>
+                    <select
+                      value={respLength}
+                      onChange={(e) => setRespLength(e.target.value as any)}
+                      className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                    >
+                      <option value="short">Short</option>
+                      <option value="normal">Normal</option>
+                      <option value="detailed">Detailed</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                      <TypeIcon className="h-3 w-3" /> Font size
+                    </label>
+                    <div className="flex gap-1">
+                      {(["sm", "md", "lg"] as const).map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setFontSize(s)}
+                          className={`flex-1 rounded border px-2 py-1 text-xs ${fontSize === s ? "border-primary bg-primary/10" : "border-input"}`}
+                        >
+                          {s === "sm" ? "Small" : s === "md" ? "Normal" : "Large"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 <Link
                   to="/contact"
