@@ -822,6 +822,42 @@ function ChatPage() {
   const send = async () => {
     if ((!input.trim() && pendingFiles.length === 0) || !userId || sending) return;
     setError(null);
+    // Slash-command routing (intercept before sending to AI)
+    const raw = input.trim();
+    if (raw === "/health" || raw === "/audit") {
+      setInput("");
+      setSlashOpen(false);
+      if (raw === "/health") {
+        await runSelfAudit();
+        return;
+      }
+      // /audit on a project context: rewrite as a clear audit instruction
+      setInput("Run a full audit of the project I shared. Report every issue you find in one response, sorted Critical → High → Medium → Low.");
+      return;
+    }
+    if (raw === "/export") {
+      setInput("");
+      setSlashOpen(false);
+      downloadConversation(activeConvId);
+      return;
+    }
+    if (raw === "/summary") {
+      setInput("Summarise this entire conversation in clear bullet points.");
+      return;
+    }
+    if (raw === "/explain") {
+      setInput("Explain the last code I shared in plain English, section by section.");
+      return;
+    }
+    if (raw === "/fix") {
+      setInput("Find and fix every bug in the last code I shared. Show before/after for each change.");
+      return;
+    }
+    if (raw === "/compare") {
+      setInput("Compare two different solutions to my last question, side by side, with pros/cons.");
+      return;
+    }
+    setSlashOpen(false);
     let convId = activeConvId;
     if (!convId) {
       const { data } = await supabase
