@@ -1413,7 +1413,7 @@ function ChatPage() {
                       <Sparkles className="h-7 w-7 text-primary-foreground" />
                     </div>
                     <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                      Hi there 👋 What can I help with?
+                      {timeGreeting}
                     </h2>
                     <p className="mt-2 text-sm text-muted-foreground">
                       Ask, upload images, PDFs, ZIPs or code — I'll handle it.
