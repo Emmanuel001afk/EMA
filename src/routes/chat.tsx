@@ -726,7 +726,16 @@ function ChatPage() {
       .select("id,title,updated_at")
       .order("updated_at", { ascending: false });
     setConversations(data ?? []);
-    if (data && data.length && !activeConvId) setActiveConvId(data[0].id);
+    if (data && data.length && !activeConvId) {
+      // If user came from dashboard, restore that conversation
+      let target = data[0].id;
+      try {
+        const requested = localStorage.getItem("hi-there-open-conv");
+        if (requested && data.some((c) => c.id === requested)) target = requested;
+        localStorage.removeItem("hi-there-open-conv");
+      } catch { /* ignore */ }
+      setActiveConvId(target);
+    }
   };
 
   useEffect(() => {
