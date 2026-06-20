@@ -1716,6 +1716,19 @@ function ChatPage() {
                   </div>
                 </div>
               )}
+              {!sending && !typing && lastAssistant && suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => { setInput(s); }}
+                      className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
