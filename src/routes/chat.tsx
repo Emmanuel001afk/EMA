@@ -30,6 +30,15 @@ import {
   Film,
   ChevronDown,
   ChevronRight,
+  Bookmark,
+  BookmarkCheck,
+  Activity,
+  LayoutDashboard,
+  Wand2,
+  Bug,
+  ListChecks,
+  FileDown,
+  Type as TypeIcon,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
