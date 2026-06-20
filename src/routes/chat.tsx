@@ -1489,6 +1489,23 @@ function ChatPage() {
         <main className="flex flex-1 flex-col">
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">
             <div className="mx-auto max-w-3xl space-y-4">
+              {pinnedMessages.length > 0 && (
+                <div className="rounded-xl border border-primary/30 bg-primary/5 p-3">
+                  <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
+                    <BookmarkCheck className="h-3 w-3" /> Pinned ({pinnedMessages.length})
+                  </p>
+                  <div className="space-y-1.5">
+                    {pinnedMessages.map((p) => (
+                      <div key={`pin-${p.id}`} className="flex items-start gap-2 text-xs">
+                        <span className="line-clamp-2 flex-1 text-foreground/80">{p.content.slice(0, 200)}</span>
+                        <button onClick={() => togglePin(p.id)} className="shrink-0 rounded p-0.5 hover:bg-accent" title="Unpin">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {messages.length === 0 && !typing && (
                 <div className="space-y-6 py-6 sm:py-10">
                   <div className="text-center">
