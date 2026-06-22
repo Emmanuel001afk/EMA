@@ -87,10 +87,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/eN2QbygYC9ekvLSqNW78WJkfN9h2/social-images/social-1778153707683-1000407076.webp" },
     ],
     links: [
-      {
-        rel: "stylesheet",
-        href: appCss,
-      },
+      { rel: "stylesheet", href: appCss },
     ],
   }),
   shellComponent: RootShell,
@@ -104,11 +101,14 @@ function RootShell({ children }: { children: React.ReactNode }) {
     <html lang="en" className="dark" suppressHydrationWarning>
       <head>
         <HeadContent />
+        {/* Theme init — runs before React hydrates to prevent flash */}
         <script
           dangerouslySetInnerHTML={{
             __html: `try{var t=localStorage.getItem('hi-there-theme');if(t==='light')document.documentElement.classList.remove('dark');else document.documentElement.classList.add('dark');}catch(e){}`,
           }}
         />
+        {/* Puter.js — free AI fallback (Claude, ChatGPT, 400+ models via user's free Puter account) */}
+        <script src="https://js.puter.com/v2/" async />
       </head>
       <body className="bg-background text-foreground">
         {children}
