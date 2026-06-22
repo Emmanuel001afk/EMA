@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Sparkles,
@@ -28,6 +28,11 @@ import {
   ImageIcon,
   FileText,
   Film,
+  Mic,
+  MicOff,
+  FileDown,
+  Columns,
+  GitCompare,
   ChevronDown,
   ChevronRight,
   Bookmark,
@@ -49,6 +54,49 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+
+// Puter.js loaded via <script> in __root.tsx — declare global type here
+declare const puter: {
+  ai: {
+    chat: (
+      messages: { role: string; content: string }[],
+      options?: { model?: string }
+    ) => Promise<any>;
+  };
+  auth: { signIn: () => Promise<void>; isSignedIn: () => Promise<boolean> };
+};
+
+// callPuterAI: free AI fallback via user's Puter account (no server, no API key needed)
+async function callPuterAI(
+  messages: { role: string; content: string }[]
+): Promise<string> {
+  // Wait up to 3 seconds for Puter.js to finish loading (async script tag)
+  if (typeof puter === "undefined") {
+    await new Promise<void>((resolve, reject) => {
+      let waited = 0;
+      const check = setInterval(() => {
+        waited += 100;
+        if (typeof puter !== "undefined") { clearInterval(check); resolve(); }
+        if (waited >= 3000) { clearInterval(check); reject(new Error("Puter not loaded")); }
+      }, 100);
+    });
+  }
+  // Ensure user is signed into their free Puter account
+  try {
+    const signedIn = await puter.auth.isSignedIn();
+    if (!signedIn) await puter.auth.signIn();
+  } catch (_authErr) {
+    // Some Puter versions don't need explicit sign-in for basic AI access
+  }
+  const response = await puter.ai.chat(messages, { model: "claude-sonnet-4-6" });
+  if (typeof response === "string") return response;
+  if (response?.message?.content?.[0]?.text) return response.message.content[0].text;
+  if (response?.content?.[0]?.text) return response.content[0].text;
+  if (response?.text) return response.text;
+  return String(response || "");
+}
+
+
 
 export const Route = createFileRoute("/chat")({ component: ChatPage });
 
@@ -101,46 +149,235 @@ async function readTextSafe(file: Blob, maxBytes = 200_000): Promise<string> {
 
 async function extractZipSummary(file: File): Promise<string> {
   const { default: JSZip } = await import("jszip");
-  const zip = await JSZip.loadAsync(file);
-  let entries = Object.values(zip.files).filter((e) => !e.dir);
 
-  // Detect & strip a single wrapper folder (GitHub "<repo>-main/", Lovable export, etc.)
-  const topSegs = new Set(entries.map((e) => e.name.split("/")[0]));
-  let wrapper = "";
-  if (topSegs.size === 1) {
-    wrapper = [...topSegs][0] + "/";
+  // Check for password protection
+  let zip: any;
+  try {
+    zip = await JSZip.loadAsync(file);
+  } catch (e: any) {
+    if (String(e).includes("password")) {
+      return `ZIP archive "${file.name}" is password-protected and cannot be read. Please provide an unprotected ZIP.`;
+    }
+    return `ZIP archive "${file.name}" could not be opened: ${e?.message || e}`;
   }
+
+  let entries = Object.values(zip.files).filter((e: any) => !e.dir);
+
+  // Handle nested ZIP (zip inside zip) — extract inner zip first
+  const innerZip = (entries as any[]).find((e: any) => e.name.toLowerCase().endsWith(".zip"));
+  if (innerZip) {
+    try {
+      const innerData = await (innerZip as any).async("arraybuffer");
+      const innerFile = new File([innerData], innerZip.name);
+      const innerResult = await extractZipSummary(innerFile);
+      return `Outer ZIP: "${file.name}" contains inner ZIP "${innerZip.name}":\n\n${innerResult}`;
+    } catch { /* fall through to process outer zip */ }
+  }
+
+  // Detect & strip single wrapper folder (GitHub "repo-main/", Lovable export, etc.)
+  const topSegs = new Set((entries as any[]).map((e: any) => e.name.split("/")[0]));
+  let wrapper = "";
+  if (topSegs.size === 1) wrapper = [...topSegs][0] + "/";
   const norm = (n: string) => (wrapper && n.startsWith(wrapper) ? n.slice(wrapper.length) : n);
 
-  // Skip noise
-  const SKIP = /(^|\/)(node_modules|\.git|\.next|dist|build|\.cache|\.turbo|coverage)\//;
+  // Skip build artifacts and lock files — keep everything else
+  const SKIP = /(^\/|\/)?(node_modules|\.git|\.next|dist|build|\.cache|\.turbo|coverage)(\/|$)/;
   const SKIP_FILES = /(package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml)$/i;
-  entries = entries.filter((e) => !SKIP.test("/" + norm(e.name)) && !SKIP_FILES.test(norm(e.name)));
+  entries = (entries as any[]).filter((e: any) => {
+    const n = "/" + norm(e.name);
+    return !SKIP.test(n) && !SKIP_FILES.test(norm(e.name));
+  });
 
-  const list = entries.map((e) => `- ${norm(e.name)}`).join("\n");
-  const textEntries = entries.filter((e) => isTextFile({ name: e.name }));
+  const totalFiles = entries.length;
+  const binaryFiles: string[] = [];
+  const failedFiles: string[] = [];
+  const textEntries = (entries as any[]).filter((e: any) => isTextFile({ name: e.name }));
+  const nonTextEntries = (entries as any[]).filter((e: any) => !isTextFile({ name: e.name }));
+  for (const e of nonTextEntries) binaryFiles.push(norm(e.name));
 
-  // Prioritise key files
-  const KEY = /(package\.json|tsconfig|vite\.config|tailwind|index\.html|README|src\/routes\/|src\/App|src\/main|src\/router|src\/integrations\/)/i;
-  textEntries.sort((a, b) => (KEY.test(b.name) ? 1 : 0) - (KEY.test(a.name) ? 1 : 0));
+  // Sort: key project files first, then alphabetical
+  const KEY = /(package\.json$|tsconfig|vite\.config|tailwind|index\.html|README|\/routes\/|\/App\.|src\/main|router\.tsx|\/integrations\/|supabase.*\/index\.ts)/i;
+  textEntries.sort((a: any, b: any) => {
+    const ak = KEY.test(a.name) ? 0 : 1;
+    const bk = KEY.test(b.name) ? 0 : 1;
+    return ak - bk || norm(a.name).localeCompare(norm(b.name));
+  });
 
+  // Build file list
+  const allFileList = [
+    ...textEntries.map((e: any) => `  [TEXT] ${norm(e.name)}`),
+    ...binaryFiles.map((n) => `  [BINARY - listed only, not read] ${n}`),
+  ].join("\n");
+
+  // Read every text file with byte verification
   let body = "";
-  let budget = 240_000;
+  let budget = 300_000; // large budget — read as much as possible
   let included = 0;
   for (const e of textEntries) {
-    if (budget <= 0) break;
+    if (budget <= 0) {
+      body += `\n\n[Budget exhausted — ${textEntries.length - included} files not shown. Ask me to read a specific file.]`;
+      break;
+    }
     try {
-      const content = await e.async("string");
-      const snippet = content.slice(0, Math.min(20_000, budget));
+      const rawContent: string = await (e as any).async("string");
+      // Verify file actually has content
+      if (!rawContent || rawContent.trim().length === 0) {
+        body += `\n\n[FILE: ${norm(e.name)} — empty file (0 bytes of content)]`;
+        included++;
+        continue;
+      }
+      const perFileBudget = Math.min(30_000, budget);
+      const snippet = rawContent.slice(0, perFileBudget);
+      const truncated = rawContent.length > perFileBudget;
       budget -= snippet.length;
       included++;
-      body += `\n\n\`\`\`${guessLang(e.name)} ${norm(e.name)}\n${snippet}${content.length > snippet.length ? "\n…[truncated]" : ""}\n\`\`\``;
-    } catch {
-      /* skip binary */
+      body += `\n\n\`\`\`${guessLang(e.name)} ${norm(e.name)}\n${snippet}${truncated ? "\n…[truncated — file is " + rawContent.length + " chars, showing first " + perFileBudget + "]" : ""}\n\`\`\``;
+    } catch (err: any) {
+      failedFiles.push(`${norm(e.name)}: ${err?.message || "read error"}`);
     }
   }
-  return `ZIP archive "${file.name}"${wrapper ? ` (wrapper "${wrapper}" stripped)` : ""} — ${entries.length} files, ${included} read inline below.\n\nFile list:\n${list}${body}`;
+
+  const header = [
+    `=== ZIP ARCHIVE: "${file.name}" ===`,
+    `Total files found: ${totalFiles}`,
+    `Text files read: ${included}/${textEntries.length}`,
+    `Binary files (listed only): ${binaryFiles.length}`,
+    wrapper ? `Wrapper folder stripped: "${wrapper}"` : "",
+    failedFiles.length ? `Files that failed to read: ${failedFiles.join(", ")}` : "",
+    "",
+    "CRITICAL INSTRUCTION TO AI: Everything below is the ACTUAL file content extracted directly from the ZIP.",
+    "You MUST use ONLY this content to answer questions. Do NOT use training knowledge about what these files might contain.",
+    "If a file is not shown below, say so explicitly. Never invent or guess file contents.",
+    "",
+    "=== ALL FILES IN ZIP ===",
+    allFileList,
+    "",
+    "=== FILE CONTENTS (read verbatim from ZIP) ===",
+  ].filter(Boolean).join("\n");
+
+
+  return header + body;
 }
+
+// === PDF TEXT EXTRACTION ===
+// Uses pdf.js from CDN to extract real text from PDFs
+async function extractPdfText(file: File): Promise<string> {
+  try {
+    // Dynamically load pdf.js
+    if (!(window as any).pdfjsLib) {
+      await new Promise<void>((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error("pdf.js failed to load"));
+        document.head.appendChild(s);
+      });
+      (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+    const pdfjsLib = (window as any).pdfjsLib;
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const totalPages = pdf.numPages;
+    let fullText = `=== PDF: "${file.name}" — ${totalPages} pages ===\n\n`;
+    for (let i = 1; i <= Math.min(totalPages, 50); i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map((item: any) => item.str).join(" ");
+      fullText += `--- Page ${i} ---\n${pageText}\n\n`;
+    }
+    if (totalPages > 50) fullText += `[${totalPages - 50} more pages not shown — upload smaller PDF]`;
+    return fullText;
+  } catch (e: any) {
+    return `PDF "${file.name}" could not be read: ${e?.message || e}. Try copying the text manually.`;
+  }
+}
+
+// === LIVE CODE ARTIFACT RENDERER ===
+// When AI returns a full HTML or React snippet, render it live in a sandboxed iframe
+function ArtifactRenderer({ code, lang }: { code: string; lang: string }) {
+  const [visible, setVisible] = useState(false);
+  const isHtml = lang === "html" || lang === "svg";
+  const isJsx = lang === "jsx" || lang === "tsx" || lang === "react";
+  if (!isHtml && !isJsx) return null;
+  let iframeContent = code;
+  if (isJsx) {
+    // Wrap React/JSX in a simple HTML shell with React CDN
+    iframeContent = `<!DOCTYPE html><html><head>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>body{margin:0;font-family:sans-serif;}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+${code}
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(typeof App !== 'undefined' ? App : () => React.createElement('div', null, 'Component loaded'), null));
+</script></body></html>`;
+  }
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-primary/30 bg-background">
+      <div className="flex items-center justify-between bg-primary/5 px-3 py-1.5">
+        <span className="text-xs font-medium text-primary">⚡ Live Preview</span>
+        <button
+          onClick={() => setVisible(!visible)}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          {visible ? "Hide" : "Show"} preview
+        </button>
+      </div>
+      {visible && (
+        <iframe
+          srcDoc={iframeContent}
+          sandbox="allow-scripts allow-same-origin"
+          className="h-64 w-full border-0 bg-white"
+          title="Live preview"
+        />
+      )}
+    </div>
+  );
+}
+
+// === IMAGE CAROUSEL ===
+// When multiple images are in one message, show them in a swipeable carousel
+function ImageCarousel({ images }: { images: { src: string; name: string }[] }) {
+  const [idx, setIdx] = useState(0);
+  if (images.length === 0) return null;
+  const cur = images[idx];
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-background/70">
+      <div className="relative">
+        <img src={cur.src} alt={cur.name} className="max-h-80 w-full object-contain" loading="lazy" />
+        {images.length > 1 && (
+          <>
+            <button
+              onClick={() => setIdx((i) => (i - 1 + images.length) % images.length)}
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-1.5 text-white hover:bg-black/70"
+            >‹</button>
+            <button
+              onClick={() => setIdx((i) => (i + 1) % images.length)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-1.5 text-white hover:bg-black/70"
+            >›</button>
+            <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1">
+              {images.map((_, i) => (
+                <button key={i} onClick={() => setIdx(i)}
+                  className={`h-1.5 w-1.5 rounded-full transition-colors ${i === idx ? "bg-white" : "bg-white/40"}`}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      <div className="flex items-center justify-between px-2.5 py-1.5 text-[11px] text-muted-foreground">
+        <span>{idx + 1} / {images.length}</span>
+        <a href={cur.src} download="hi-there-image.png" className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent">
+          <Download className="h-3 w-3" /> Save
+        </a>
+      </div>
+    </div>
+  );
+}
+
 
 function guessLang(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() || "";
@@ -247,28 +484,73 @@ function AttachmentPreview({ attachment }: { attachment: Attachment }) {
       : attachment.url;
 
   if (isImageAttachment(attachment)) {
+    // Aspect ratio classes for generated images
+    const aspectClasses: Record<string, string> = {
+      "1:1": "aspect-square",
+      "16:9": "aspect-video",
+      "9:16": "aspect-[9/16]",
+      "4:3": "aspect-[4/3]",
+    };
+    const [aspectRatio, setAspectRatio] = useState("1:1");
+    const isGenerated = attachment.name?.startsWith("generated-");
     return (
       <figure className="overflow-hidden rounded-xl border border-border bg-background/70">
-        <img
-          src={src}
-          alt={attachment.name}
-          className="max-h-80 w-full object-contain"
-          loading="lazy"
-        />
+        <div className={isGenerated ? aspectClasses[aspectRatio] : undefined}>
+          <img
+            src={src}
+            alt={attachment.name}
+            className={`w-full object-contain${isGenerated ? " h-full" : " max-h-80"}`}
+            loading="lazy"
+          />
+        </div>
+        {isGenerated && (
+          <div className="flex flex-wrap gap-1 px-2.5 pt-2 pb-1">
+            {Object.keys(aspectClasses).map((r) => (
+              <button
+                key={r}
+                onClick={() => setAspectRatio(r)}
+                className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                  aspectRatio === r
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-accent text-muted-foreground hover:bg-accent/80"
+                }`}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        )}
         <figcaption className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-muted-foreground">
           <span className="truncate">
             <ImageIcon className="mr-1 inline h-3 w-3" />
-            {attachment.name}
+            {isGenerated ? "AI Generated Image" : attachment.name}
           </span>
-          <a
-            href={src}
-            download={attachment.name}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
-          >
-            <Download className="h-3 w-3" /> Download
-          </a>
+          <div className="flex items-center gap-1">
+            {isGenerated && (
+              <button
+                onClick={() => {
+                  const prompt = window.prompt("Describe what to change in this image:");
+                  if (prompt) {
+                    const event = new CustomEvent("hi-there-edit-image", { detail: { src, prompt, name: attachment.name } });
+                    window.dispatchEvent(event);
+                  }
+                }}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-primary hover:bg-accent"
+                title="Edit this image with AI"
+              >
+                ✏️ Edit
+              </button>
+            )}
+            <a
+              href={src}
+              download={isGenerated ? "hi-there-image.png" : attachment.name}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-accent"
+            >
+              <Download className="h-3 w-3" /> Save
+            </a>
+          </div>
         </figcaption>
       </figure>
     );
@@ -430,6 +712,39 @@ function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
+
+  // Live AI status message (shown while sending)
+  const [aiStatusMsg, setAiStatusMsg] = useState("Thinking...");
+
+  // Voice input state
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [continuousVoice, setContinuousVoice] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  // Multi-model compare state
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareResults, setCompareResults] = useState<{a: string; b: string} | null>(null);
+  const [comparing, setComparing] = useState(false);
+
+  // Diff viewer state
+  const [diffBefore, setDiffBefore] = useState("");
+  const [diffAfter, setDiffAfter] = useState("");
+  const [showDiff, setShowDiff] = useState(false);
+
+  // PDF export state
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  // Persistent memory
+  const [userMemory, setUserMemory] = useState<string>("");
+
+  // Kids mode & caps from settings
+  const [kidsMode, setKidsMode] = useState(() => {
+    try { const c = JSON.parse(localStorage.getItem("hi-there-caps") || "{}"); return c.kids_mode === true; } catch { return false; }
+  });
+  const [capImageGen, setCapImageGen] = useState(() => {
+    try { const c = JSON.parse(localStorage.getItem("hi-there-caps") || "{}"); return c.cap_image_gen !== false; } catch { return true; }
+  });
 
   // === New: prefs, pinned, slash menu, audit ===
   const [personality, setPersonality] = useState<"direct" | "friendly" | "detailed">(
@@ -757,6 +1072,21 @@ function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, typing]);
 
+  // Listen for image edit requests from the Edit button on generated images
+  useEffect(() => {
+    const handleImageEdit = async (e: any) => {
+      const { prompt, name } = e.detail as { src: string; prompt: string; name: string };
+      if (!prompt) return;
+      // Send edit request as a new user message
+      setInput(`Edit the last generated image: ${prompt}`);
+      setTimeout(() => {
+        document.getElementById("send-btn")?.click();
+      }, 100);
+    };
+    window.addEventListener("hi-there-edit-image", handleImageEdit);
+    return () => window.removeEventListener("hi-there-edit-image", handleImageEdit);
+  }, []);
+
   const filteredConvs = useMemo(() => {
     if (!search.trim()) return conversations;
     const q = search.toLowerCase();
@@ -795,6 +1125,8 @@ function ChatPage() {
       try {
         if (f.name.toLowerCase().endsWith(".zip") || f.type === "application/zip") {
           textContent = await extractZipSummary(f);
+        } else if (f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")) {
+          textContent = await extractPdfText(f);
         } else if (isTextFile(f) && f.size <= 2 * 1024 * 1024) {
           textContent = await readTextSafe(f);
         }
@@ -942,29 +1274,84 @@ function ChatPage() {
       if (wantsImage) {
         history[history.length - 1] = { role: "user", content: cleanedText };
       }
-      const { data, error } = await supabase.functions.invoke("chat", {
-        body: {
-          messages: history,
-          language,
-          mode: wantsImage ? "image" : undefined,
-          prefs: { personality, length: respLength },
-          attachments: attachments.map((a) => ({
-            url: a.url,
-            type: a.type,
-            name: a.name,
-            data: a.data,
-          })),
-        },
-      });
+      // Primary: Supabase Edge Function (all server-side providers)
+      // Compare mode: run two parallel requests
+      if (compareMode && !wantsImage) {
+        setAiStatusMsg("Comparing two AI responses...");
+        await runCompare(text);
+        return;
+      }
+
+      // === PRIMARY: Puter.js (real Claude, free, no API key needed) ===
+      // For text messages, try Puter.js FIRST — it gives real Claude Sonnet for free.
+      // For images/video, go straight to server (Puter doesn't do image generation).
+      let data: any = null;
+      let error: any = null;
+
+      const hasZip = pendingFiles.some(f => f.name?.endsWith(".zip"));
+      const hasFiles = attachments.length > 0;
+
+      if (!wantsImage && !hasFiles) {
+        // Pure text — try Puter (real Claude) first
+        setAiStatusMsg("Connecting to AI...");
+        try {
+          const puterReply = await callPuterAI(
+            userMemory
+              ? [{ role: "system", content: `User memory:\n${userMemory}` }, ...history]
+              : history
+          );
+          if (puterReply) {
+            data = { content: puterReply, provider: "hi-there" };
+          }
+        } catch (_puterErr) {
+          // Puter unavailable — fall through to server providers below
+        }
+      }
+
+      // === SECONDARY: Supabase Edge Function (all server-side providers) ===
+      // Used when: image gen, file/ZIP upload, or Puter failed
+      if (!data) {
+        setAiStatusMsg(
+          wantsImage
+            ? "Generating image..."
+            : hasZip
+            ? "Reading ZIP and analyzing files..."
+            : hasFiles
+            ? "Processing your files..."
+            : "Routing to best AI service..."
+        );
+        const invokeResult = await supabase.functions.invoke("chat", {
+          body: {
+            messages: userMemory
+              ? [{ role: "system", content: `User memory:\n${userMemory}` }, ...history]
+              : history,
+            language,
+            mode: wantsImage ? "image" : undefined,
+            prefs: { personality, length: respLength, kidsMode },
+            attachments: attachments.map((a) => ({
+              url: a.url,
+              type: a.type,
+              name: a.name,
+              data: a.data,
+            })),
+          },
+        });
+        data = invokeResult.data;
+        error = invokeResult.error;
+      }
+
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       let assistantAttachments: Attachment[] = [];
       let storedAssistantAttachments: Attachment[] = [];
       const reply: string = data.image_b64
-        ? "Here’s the image I created:"
+        ? "Here's the image I created:"
+        : data.video_b64
+        ? "Here's your animated video:"
         : data.content || "(no response)";
       const provider: string = data.provider;
 
+      // Handle generated image
       if (data.image_b64) {
         const filename = `generated-${Date.now()}.png`;
         const path = `${userId}/generated/${filename}`;
@@ -1002,9 +1389,47 @@ function ChatPage() {
         }
       }
 
+      // Handle generated video (image-to-video animation)
+      if (data.video_b64) {
+        const filename = `animated-${Date.now()}.mp4`;
+        const path = `${userId}/generated/${filename}`;
+        try {
+          const blob = base64ToBlob(data.video_b64, "video/mp4");
+          const { error: vidErr } = await supabase.storage
+            .from("chat-uploads")
+            .upload(path, blob, { contentType: "video/mp4", upsert: true });
+          if (vidErr) throw vidErr;
+          const { data: signed } = await supabase.storage
+            .from("chat-uploads")
+            .createSignedUrl(path, 60 * 60 * 24 * 7);
+          assistantAttachments = [
+            {
+              name: filename,
+              type: "video/mp4",
+              size: blob.size,
+              path,
+              url: signed?.signedUrl || "",
+              data: data.video_b64,
+            },
+          ];
+          storedAssistantAttachments = stripLocalData(assistantAttachments);
+        } catch {
+          assistantAttachments = [
+            {
+              name: filename,
+              type: "video/mp4",
+              size: data.video_b64.length,
+              url: `data:video/mp4;base64,${data.video_b64}`,
+              data: data.video_b64,
+            },
+          ];
+          storedAssistantAttachments = assistantAttachments;
+        }
+      }
+
       const aid = crypto.randomUUID();
-      // Skip typewriter for image replies (don't reveal base64 char-by-char).
-      if (!data.image_b64) {
+      // Skip typewriter for image/video replies
+      if (!data.image_b64 && !data.video_b64) {
         let i = 0;
         setTyping("");
         await new Promise<void>((resolve) => {
@@ -1056,6 +1481,7 @@ function ChatPage() {
       ]);
     } finally {
       setSending(false);
+      setAiStatusMsg("Thinking...");
     }
   };
 
@@ -1265,6 +1691,123 @@ function ChatPage() {
     </aside>
   );
 
+  // === VOICE INPUT ===
+  const startVoice = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) { setVoiceError("Voice input not supported in this browser. Try Chrome."); return; }
+    const r = new SR();
+    r.lang = language || "en-US";
+    r.continuous = continuousVoice;
+    r.interimResults = false;
+    r.onresult = (e: any) => {
+      const transcript = Array.from(e.results).map((r: any) => r[0].transcript).join(" ");
+      setInput((prev) => (prev ? prev + " " + transcript : transcript));
+      if (continuousVoice) {
+        // Auto-send in continuous mode
+        setTimeout(() => {
+          const btn = document.getElementById("send-btn");
+          btn?.click();
+        }, 500);
+      }
+    };
+    r.onerror = (e: any) => {
+      setVoiceError(e.error === "not-allowed" ? "Microphone access denied." : `Voice error: ${e.error}`);
+      setVoiceListening(false);
+    };
+    r.onend = () => setVoiceListening(false);
+    recognitionRef.current = r;
+    r.start();
+    setVoiceListening(true);
+    setVoiceError(null);
+  }, [language, continuousVoice]);
+
+  const stopVoice = useCallback(() => {
+    recognitionRef.current?.stop();
+    setVoiceListening(false);
+    setContinuousVoice(false);
+  }, []);
+
+  // === PDF EXPORT ===
+  const exportPdf = useCallback(async () => {
+    setExportingPdf(true);
+    try {
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) { setExportingPdf(false); return; }
+      const htmlContent = `<!DOCTYPE html><html><head><title>HI THERE — Chat Export</title>
+      <style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}
+      .msg{margin:16px 0;padding:12px 16px;border-radius:8px;}
+      .user{background:#f0f0f0;text-align:right;}
+      .assistant{background:#e8f4fd;}
+      .role{font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;}
+      pre{background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;}
+      h1{color:#333;border-bottom:2px solid #eee;padding-bottom:8px;}
+      </style></head><body>
+      <h1>HI THERE — Chat Export</h1>
+      <p style="color:#666;font-size:12px;">Exported ${new Date().toLocaleString()}</p>
+      ${messages.map(m => `<div class="msg ${m.role}"><div class="role">${m.role}</div>${m.content.replace(/
+/g,"<br>").replace(/```[\w]*
+([\s\S]*?)```/g,"<pre>$1</pre>")}</div>`).join("")}
+      </body></html>`;
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => { printWindow.print(); printWindow.close(); }, 500);
+    } finally {
+      setExportingPdf(false);
+    }
+  }, [messages]);
+
+  // === MULTI-MODEL COMPARE ===
+  const runCompare = useCallback(async (prompt: string) => {
+    if (!userId) return;
+    setComparing(true);
+    setCompareResults(null);
+    try {
+      // Run same prompt through two different routes in parallel
+      const [res1, res2] = await Promise.allSettled([
+        supabase.functions.invoke("chat", { body: { messages: [{ role: "user", content: prompt }], prefs: { personality, length: respLength } } }),
+        supabase.functions.invoke("chat", { body: { messages: [{ role: "user", content: prompt }], prefs: { personality: "direct", length: "short" } } }),
+      ]);
+      const a = res1.status === "fulfilled" ? (res1.value.data?.content || res1.value.data?.error || "No response") : "Failed";
+      const b = res2.status === "fulfilled" ? (res2.value.data?.content || res2.value.data?.error || "No response") : "Failed";
+      setCompareResults({ a, b });
+    } finally {
+      setComparing(false);
+      setCompareMode(false);
+    }
+  }, [userId, personality, respLength]);
+
+  // === LOAD USER MEMORY ===
+  useEffect(() => {
+    if (!userId) return;
+    supabase.from("profiles").select("memory_summary").eq("user_id", userId).maybeSingle().then(({ data }) => {
+      setUserMemory((data as any)?.memory_summary || "");
+    });
+  }, [userId]);
+
+  // === AUTO-SAVE MEMORY from conversations ===
+  const updateMemory = useCallback(async (newMessages: typeof messages) => {
+    if (!userId || newMessages.length < 6) return;
+    // Extract facts from recent messages and save as memory summary
+    const recentText = newMessages.slice(-10).map(m => `${m.role}: ${m.content}`).join("
+").slice(0, 3000);
+    const { data } = await supabase.functions.invoke("chat", {
+      body: {
+        messages: [
+          { role: "system", content: "You extract factual personal information from conversations to remember about the user. Output ONLY a bullet list of facts, max 10 items, starting with '- '. Only include real personal facts (name, job, location, preferences). Nothing else." },
+          { role: "user", content: recentText },
+        ],
+        prefs: { personality: "direct", length: "short" },
+      },
+    });
+    if (data?.content) {
+      const newFacts = data.content;
+      await supabase.from("profiles").update({ memory_summary: newFacts } as any).eq("user_id", userId);
+      setUserMemory(newFacts);
+    }
+  }, [userId]);
+
+
   return (
     <div className={`flex h-screen flex-col bg-chat-surface bg-[radial-gradient(circle_at_top_left,var(--chat-glow),transparent_34%),linear-gradient(180deg,var(--chat-surface),var(--background))] ${fontSize === "sm" ? "text-[13px]" : fontSize === "lg" ? "text-[17px]" : "text-[15px]"}`}>
       {isOffline && (
@@ -1274,13 +1817,93 @@ function ChatPage() {
       )}
       {auditOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setAuditOpen(false)}>
-          <div className="max-h-[80vh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="flex items-center gap-2 text-lg font-bold"><Activity className="h-5 w-5 text-primary" /> System health</h3>
+          <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-2xl border border-border bg-card p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-lg font-bold">
+                <Activity className="h-5 w-5 text-primary" /> AI Central Nervous System
+              </h3>
               <button onClick={() => setAuditOpen(false)} className="rounded p-1 hover:bg-accent"><X className="h-4 w-4" /></button>
             </div>
-            {auditing && <p className="text-sm text-muted-foreground">Pinging every provider…</p>}
-            {auditReport && <pre className="whitespace-pre-wrap text-xs leading-relaxed">{auditReport}</pre>}
+
+            {/* Live status */}
+            <div className="mb-4 rounded-xl border border-border bg-background p-3">
+              <p className="text-xs font-semibold text-muted-foreground mb-2">SYSTEM STATUS</p>
+              <div className="flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${sending ? "bg-yellow-400 animate-pulse" : "bg-green-500"}`} />
+                <span className="text-sm">{sending ? aiStatusMsg : "Ready — all systems online"}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Memory: {userMemory ? "✅ Active" : "⬜ None"} &nbsp;|&nbsp;
+                Voice: {voiceListening ? "🎤 Listening" : "⬜ Off"} &nbsp;|&nbsp;
+                Kids mode: {kidsMode ? "🔒 On" : "⬜ Off"}
+              </p>
+            </div>
+
+            {/* Provider health */}
+            {auditing && (
+              <div className="mb-4 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground animate-pulse">
+                Pinging all AI services...
+              </div>
+            )}
+            {auditReport && (
+              <div className="mb-4 rounded-xl border border-border bg-background p-3">
+                <p className="text-xs font-semibold text-muted-foreground mb-2">PROVIDER STATUS</p>
+                <pre className="whitespace-pre-wrap text-xs leading-relaxed">{auditReport}</pre>
+              </div>
+            )}
+
+            {/* Overseer controls */}
+            <div className="mb-4 rounded-xl border border-border bg-background p-3">
+              <p className="text-xs font-semibold text-muted-foreground mb-2">OVERSEER CONTROLS</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={runSelfAudit}
+                  disabled={auditing}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
+                >
+                  <Activity className="h-3 w-3" /> Run health check
+                </button>
+                <button
+                  onClick={exportPdf}
+                  disabled={exportingPdf}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
+                >
+                  <Download className="h-3 w-3" /> Export chat PDF
+                </button>
+                <button
+                  onClick={() => { setCompareMode(true); setAuditOpen(false); }}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
+                >
+                  <Sparkles className="h-3 w-3" /> Multi-model compare
+                </button>
+                <button
+                  onClick={() => { setContinuousVoice(true); startVoice(); setAuditOpen(false); }}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs hover:bg-accent"
+                >
+                  <Mic className="h-3 w-3" /> Start voice mode
+                </button>
+              </div>
+            </div>
+
+            {/* Code verification notice */}
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-xs font-semibold text-amber-600 mb-1">⚠️ CODE EDITING SAFETY</p>
+              <p className="text-xs text-muted-foreground">
+                Before applying any code changes from this AI to your GitHub/Vercel project,
+                always verify: (1) the full file was returned, not a partial snippet,
+                (2) all imports at the top are intact, (3) no export is missing at the bottom.
+                The AI will always tell you which file to replace and where it goes.
+              </p>
+            </div>
+
+            {isAdmin && (
+              <div className="mt-3">
+                <Link to="/admin" onClick={() => setAuditOpen(false)}
+                  className="flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary hover:bg-primary/10">
+                  <Shield className="h-3 w-3" /> Open admin panel
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1509,15 +2132,20 @@ function ChatPage() {
               {messages.length === 0 && !typing && (
                 <div className="space-y-6 py-6 sm:py-10">
                   <div className="text-center">
-                    <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent shadow-lg">
-                      <Sparkles className="h-7 w-7 text-primary-foreground" />
+                    <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-primary via-violet-600 to-indigo-600 shadow-xl ring-4 ring-primary/20">
+                      <Sparkles className="h-8 w-8 text-white" />
                     </div>
-                    <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-                      {timeGreeting}
+                    <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
+                      {timeGreeting}{displayName ? `, ${displayName}` : ""}
                     </h2>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Ask, upload images, PDFs, ZIPs or code — I'll handle it.
+                    <p className="mt-2 text-sm text-muted-foreground max-w-sm mx-auto">
+                      I can read files, generate images, write and fix code, answer questions, and much more.
                     </p>
+                    <div className="mt-4 flex flex-wrap justify-center gap-2 text-xs text-muted-foreground">
+                      {["📎 Upload ZIP or PDF","🖼️ Generate images","🎤 Voice input","💻 Write & fix code","🔍 Search the web","🌍 Yoruba • Igbo • Hausa • Pidgin"].map(c => (
+                        <span key={c} className="rounded-full border border-border bg-card px-3 py-1">{c}</span>
+                      ))}
+                    </div>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {[
@@ -1541,19 +2169,48 @@ function ChatPage() {
                 </div>
               )}
 
-              {messages.map((m) => (
+              {messages.map((m) => {
+                // Group all image attachments for carousel
+                const imgAttachments = (m.attachments || []).filter((a: Attachment) => a.type?.startsWith("image/"));
+                const otherAttachments = (m.attachments || []).filter((a: Attachment) => !a.type?.startsWith("image/"));
+                const isUser = m.role === "user";
+                return (
                 <div
                   key={m.id}
-                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                  className={`flex gap-2 sm:gap-3 ${isUser ? "justify-end" : "justify-start"}`}
                 >
-                  <div
-                    className={`group max-w-[88%] rounded-2xl px-3.5 py-2.5 text-sm sm:max-w-[85%] sm:px-4 sm:py-3 ${
-                      m.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "border border-border bg-card"
-                    }`}
-                  >
-                    <MD text={m.content} dark={m.role === "user"} />
+                  {/* Avatar — assistant only */}
+                  {!isUser && (
+                    <div className="mt-1 shrink-0">
+                      <div className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-primary to-violet-600 shadow-sm">
+                        <Sparkles className="h-4 w-4 text-white" />
+                      </div>
+                    </div>
+                  )}
+                  <div className={`group flex flex-col ${isUser ? "items-end" : "items-start"} max-w-[85%] sm:max-w-[80%]`}>
+                    {/* Image carousel — shown above text for rich media responses */}
+                    {imgAttachments.length > 0 && (
+                      <div className="mb-2 w-full max-w-sm">
+                        <ImageCarousel images={imgAttachments.map((a: Attachment) => ({
+                          src: a.data ? `data:${a.type};base64,${a.data}` : a.url,
+                          name: a.name,
+                        }))} />
+                      </div>
+                    )}
+                    <div
+                      className={`rounded-2xl text-sm ${
+                        isUser
+                          ? "bg-primary text-primary-foreground px-4 py-3"
+                          : "bg-card border border-border/60 px-4 py-3 shadow-sm"
+                      }`}
+                    >
+                    <MD text={m.content} dark={isUser} />
+                    {/* Artifact renderer — shows live preview button for HTML/React */}
+                    {!isUser && (() => {
+                      const codeMatch = /```(html|jsx|tsx|react|svg)([\s\S]*?)```/i.exec(m.content);
+                      if (!codeMatch) return null;
+                      return <ArtifactRenderer code={codeMatch[2].trim()} lang={codeMatch[1].toLowerCase()} />;
+                    })()}
                     {m.role === "user" && editingId === m.id && (
                       <div className="mt-2 space-y-1">
                         <textarea
@@ -1578,13 +2235,7 @@ function ChatPage() {
                         </div>
                       </div>
                     )}
-                    {m.attachments && m.attachments.length > 0 && (
-                      <div className="mt-2 space-y-2">
-                        {m.attachments.map((a, i) => (
-                          <AttachmentPreview key={`${a.name}-${i}`} attachment={a} />
-                        ))}
-                      </div>
-                    )}
+                    {/* Artifact renderer — live preview for HTML/React code blocks */}
                     {translations[m.id] && (
                       <div className="mt-2 rounded-md border border-border/50 bg-background/40 p-2 text-xs">
                         <p className="mb-1 font-semibold opacity-70">
@@ -1691,9 +2342,27 @@ function ChatPage() {
                         </div>
                       )}
                     </div>
+                    </div>
+                    {/* Other attachments (PDF, ZIP, video) */}
+                    {otherAttachments.length > 0 && (
+                      <div className="mt-2 w-full space-y-2">
+                        {otherAttachments.map((a: Attachment, i: number) => (
+                          <AttachmentPreview key={`${a.name}-${i}`} attachment={a} />
+                        ))}
+                      </div>
+                    )}
                   </div>
+                  {/* User avatar */}
+                  {isUser && (
+                    <div className="mt-1 shrink-0">
+                      <div className="grid h-8 w-8 place-items-center rounded-xl bg-muted border border-border text-xs font-bold text-muted-foreground">
+                        {displayName?.[0]?.toUpperCase() || "U"}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
 
               {typing && (
                 <div className="flex justify-start">
@@ -1706,135 +2375,15 @@ function ChatPage() {
                 </div>
               )}
               {sending && !typing && (
-                <div className="flex justify-start">
-                  <div className="rounded-2xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-                    <span className="inline-flex gap-1">
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground [animation-delay:-0.3s]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground [animation-delay:-0.15s]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground" />
-                    </span>
-                  </div>
-                </div>
-              )}
-              {!sending && !typing && lastAssistant && suggestions.length > 0 && (
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {suggestions.map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => { setInput(s); }}
-                      className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {error && (
-            <div className="mx-3 mb-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive sm:mx-4">
-              {error}
-              <button onClick={() => setError(null)} className="ml-2 underline">
-                dismiss
-              </button>
-            </div>
-          )}
-
-          <div className="border-t border-border bg-chat-panel p-2 backdrop-blur-xl sm:p-3">
-            <div className="mx-auto max-w-3xl">
-              {slashMatches.length > 0 && (
-                <div className="mb-2 rounded-xl border border-border bg-popover/95 p-1 shadow-lg backdrop-blur">
-                  {slashMatches.map((c) => (
-                    <button
-                      key={c.cmd}
-                      onClick={() => { setInput(c.cmd); setSlashOpen(false); }}
-                      className="flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-accent"
-                    >
-                      <span className="font-mono font-semibold text-primary">{c.cmd}</span>
-                      <span className="text-muted-foreground">{c.desc}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {pendingFiles.length > 0 && (
-                <div className="mb-2 grid gap-2 sm:grid-cols-2">
-                  {pendingFiles.map((f, i) => (
-                    <div key={i} className="relative">
-                      <AttachmentPreview attachment={f} />
-                      <button
-                        onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}
-                        className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full border border-border bg-background/90 text-foreground shadow-sm hover:text-destructive"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
+                <div className="flex gap-2 sm:gap-3 justify-start">
+                  <div className="mt-1 shrink-0">
+                    <div className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-primary to-violet-600 shadow-sm animate-pulse">
+                      <Sparkles className="h-4 w-4 text-white" />
                     </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex items-end gap-1.5 sm:gap-2">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  multiple
-                  hidden
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.html,.css,image/*,video/*,audio/*"
-                  onChange={(e) => {
-                    handleFiles(e.target.files);
-                    e.target.value = "";
-                  }}
-                />
-                <input
-                  ref={cameraRef}
-                  type="file"
-                  hidden
-                  accept="image/*"
-                  capture="environment"
-                  onChange={(e) => {
-                    handleFiles(e.target.files);
-                    e.target.value = "";
-                  }}
-                />
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  title="Attach file"
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent"
-                >
-                  <Paperclip className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => cameraRef.current?.click()}
-                  title="Camera"
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent md:hidden"
-                >
-                  <Camera className="h-4 w-4" />
-                </button>
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
-                  rows={1}
-                  placeholder="Message HI THERE…"
-                  className="max-h-40 min-h-[40px] flex-1 resize-none rounded-xl border border-input bg-card px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-ring sm:px-4 sm:py-3"
-                />
-                <button
-                  onClick={send}
-                  disabled={sending || (!input.trim() && pendingFiles.length === 0)}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-          <Footer />
-        </main>
-      </div>
-    </div>
-  );
-}
+                  </div>
+                  <div className="rounded-2xl border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                    <span className="flex items-center gap-2">
+                      <span className="inline-flex gap-1">
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-
