@@ -42,7 +42,6 @@ import {
   Wand2,
   Bug,
   ListChecks,
-  FileDown,
   Type as TypeIcon,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
@@ -2386,4 +2385,4 @@ function ChatPage() {
                       <span className="inline-flex gap-1">
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-prim
