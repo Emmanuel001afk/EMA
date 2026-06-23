@@ -1743,9 +1743,9 @@ function ChatPage() {
       </style></head><body>
       <h1>HI THERE — Chat Export</h1>
       <p style="color:#666;font-size:12px;">Exported ${new Date().toLocaleString()}</p>
-      ${messages.map(m => `<div class="msg ${m.role}"><div class="role">${m.role}</div>${m.content.replace(/
-/g,"<br>").replace(/```[\w]*
-([\s\S]*?)```/g,"<pre>$1</pre>")}</div>`).join("")}
+      ${messages.map(m => `<div class="msg ${m.role}"><div class="role">${m.role}</div>${m.content.replace(/\n/g,"<br>")}</div>`).join("")}
+
+
       </body></html>`;
       printWindow.document.write(htmlContent);
       printWindow.document.close();
@@ -2385,4 +2385,6 @@ function ChatPage() {
                       <span className="inline-flex gap-1">
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-prim
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary" />
+                      </span>
+          
