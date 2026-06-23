@@ -1732,21 +1732,27 @@ function ChatPage() {
     try {
       const printWindow = window.open("", "_blank");
       if (!printWindow) { setExportingPdf(false); return; }
-      const htmlContent = `<!DOCTYPE html><html><head><title>HI THERE — Chat Export</title>
-      <style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}
-      .msg{margin:16px 0;padding:12px 16px;border-radius:8px;}
-      .user{background:#f0f0f0;text-align:right;}
-      .assistant{background:#e8f4fd;}
-      .role{font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;}
-      pre{background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;}
-      h1{color:#333;border-bottom:2px solid #eee;padding-bottom:8px;}
-      </style></head><body>
-      <h1>HI THERE — Chat Export</h1>
-      <p style="color:#666;font-size:12px;">Exported ${new Date().toLocaleString()}</p>
-      ${messages.map(m => `<div class="msg ${m.role}"><div class="role">${m.role}</div>${m.content.replace(/\n/g,"<br>")}</div>`).join("")}
-
-
-      </body></html>`;
+      const nl = String.fromCharCode(10);
+      const br = "<br>";
+      const msgRows = messages.map((m) => {
+        const safe = m.content.split(nl).join(br);
+        return '<div class="msg ' + m.role + '"><div class="role">' + m.role + '</div>' + safe + '</div>';
+      }).join("");
+      const htmlContent = [
+        "<!DOCTYPE html><html><head><title>HI THERE Chat Export</title>",
+        "<style>",
+        "body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}",
+        ".msg{margin:16px 0;padding:12px 16px;border-radius:8px;}",
+        ".user{background:#f0f0f0;text-align:right;}",
+        ".assistant{background:#e8f4fd;}",
+        ".role{font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;}",
+        "h1{color:#333;border-bottom:2px solid #eee;padding-bottom:8px;}",
+        "</style></head><body>",
+        "<h1>HI THERE Chat Export</h1>",
+        "<p style='color:#666;font-size:12px;'>Exported " + new Date().toLocaleString() + "</p>",
+        msgRows,
+        "</body></html>",
+      ].join("");
       printWindow.document.write(htmlContent);
       printWindow.document.close();
       printWindow.focus();
@@ -2384,7 +2390,4 @@ function ChatPage() {
                     <span className="flex items-center gap-2">
                       <span className="inline-flex gap-1">
                         <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary" />
-                      </span>
-          
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [an
