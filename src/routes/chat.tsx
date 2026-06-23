@@ -828,7 +828,7 @@ function ChatPage() {
     if (hasImg) return ["Modify this image", "Generate a variation", "Animate this image"];
     if (/bug|issue|error|fix|critical|high|severity/.test(c))
       return ["Fix the highest severity bug", "Show me all affected files", "Explain what caused this"];
-    if (/```/.test(lastAssistant.content)) return ["Explain this code", "Refactor for readability", "Add tests"];
+    if (lastAssistant.content.includes("```")) return ["Explain this code", "Refactor for readability", "Add tests"];
     if (/zip|project|files|repository/.test(c)) return ["List the most important files", "Find security issues", "Suggest improvements"];
     return ["Tell me more", "Give an example", "Summarize the key points"];
   }, [lastAssistant]);
@@ -1115,7 +1115,8 @@ function ChatPage() {
         setError(`${f.name} exceeds 20MB`);
         continue;
       }
-      const path = `${userId}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+      const safeName = f.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const path = `${userId}/${Date.now()}-${safeName}`;
       const previewData =
         f.type.startsWith("image/") && f.size <= 6 * 1024 * 1024
           ? await fileToBase64(f)
@@ -1527,7 +1528,8 @@ function ChatPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(conv?.title || "hi-there-chat").replace(/[^a-z0-9]+/gi, "-").slice(0, 50)}.md`;
+    const safeConvTitle = (conv?.title || "hi-there-chat").replace(/[^a-z0-9]+/gi, "-").slice(0, 50);
+    a.download = `${safeConvTitle}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -2212,9 +2214,24 @@ function ChatPage() {
                     <MD text={m.content} dark={isUser} />
                     {/* Artifact renderer — shows live preview button for HTML/React */}
                     {!isUser && (() => {
-                      const codeMatch = /```(html|jsx|tsx|react|svg)([\s\S]*?)```/i.exec(m.content);
-                      if (!codeMatch) return null;
-                      return <ArtifactRenderer code={codeMatch[2].trim()} lang={codeMatch[1].toLowerCase()} />;
+                      const artifactLangs = ["html","jsx","tsx","react","svg"];
+                      let artifactCode = "";
+                      let artifactLang = "";
+                      for (const lang of artifactLangs) {
+                        const marker = "```" + lang;
+                        const startIdx = m.content.toLowerCase().indexOf(marker);
+                        if (startIdx >= 0) {
+                          const afterMarker = m.content.indexOf("\n", startIdx) + 1;
+                          const endIdx = m.content.indexOf("```", afterMarker);
+                          if (endIdx > afterMarker) {
+                            artifactCode = m.content.slice(afterMarker, endIdx).trim();
+                            artifactLang = lang;
+                            break;
+                          }
+                        }
+                      }
+                      if (!artifactCode) return null;
+                      return <ArtifactRenderer code={artifactCode} lang={artifactLang} />;
                     })()}
                     {m.role === "user" && editingId === m.id && (
                       <div className="mt-2 space-y-1">
@@ -2380,14 +2397,4 @@ function ChatPage() {
                 </div>
               )}
               {sending && !typing && (
-                <div className="flex gap-2 sm:gap-3 justify-start">
-                  <div className="mt-1 shrink-0">
-                    <div className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-primary to-violet-600 shadow-sm animate-pulse">
-                      <Sparkles className="h-4 w-4 text-white" />
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
-                    <span className="flex items-center gap-2">
-                      <span className="inline-flex gap-1">
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
-                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [an
+                <
