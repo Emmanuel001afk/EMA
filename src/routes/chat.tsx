@@ -135,8 +135,9 @@ async function fileToBase64(file: File): Promise<string> {
   });
 }
 
-const TEXT_EXTS = /\.(txt|md|markdown|json|jsonl|csv|tsv|xml|yml|yaml|html?|css|scss|less|js|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|bash|zsh|sql|toml|ini|env|log|gitignore|dockerfile|lock)$/i;
-const TEXT_MIME = /^(text\/|application\/(json|xml|x-yaml|javascript|typescript))/;
+const TEXT_EXT_LIST = ["txt","md","markdown","json","jsonl","csv","tsv","xml","yml","yaml","html","htm","css","scss","less","js","jsx","ts","tsx","py","rb","go","rs","java","kt","swift","c","h","cpp","hpp","cs","php","sh","bash","zsh","sql","toml","ini","env","log","gitignore","dockerfile","lock"];
+const TEXT_EXTS = { test: (name: string) => TEXT_EXT_LIST.some(ext => name.toLowerCase().endsWith("." + ext)) };
+const TEXT_MIME = { test: (type: string) => type.startsWith("text/") || ["application/json","application/xml","application/x-yaml","application/javascript","application/typescript"].includes(type) };
 const isTextFile = (f: { type?: string; name: string }) =>
   TEXT_MIME.test(f.type || "") || TEXT_EXTS.test(f.name);
 
@@ -180,8 +181,9 @@ async function extractZipSummary(file: File): Promise<string> {
   const norm = (n: string) => (wrapper && n.startsWith(wrapper) ? n.slice(wrapper.length) : n);
 
   // Skip build artifacts and lock files — keep everything else
-  const SKIP = /(^\/|\/)?(node_modules|\.git|\.next|dist|build|\.cache|\.turbo|coverage)(\/|$)/;
-  const SKIP_FILES = /(package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml)$/i;
+  const SKIP_DIRS = ["node_modules",".git",".next","dist","build",".cache",".turbo","coverage"];
+  const SKIP = { test: (n: string) => SKIP_DIRS.some(d => n.includes("/" + d + "/") || n.includes("/" + d) || n.startsWith(d + "/")) };
+  const SKIP_FILES = { test: (n: string) => ["package-lock.json","bun.lock","yarn.lock","pnpm-lock.yaml"].some(f => n.endsWith(f)) };
   entries = (entries as any[]).filter((e: any) => {
     const n = "/" + norm(e.name);
     return !SKIP.test(n) && !SKIP_FILES.test(norm(e.name));
@@ -195,10 +197,11 @@ async function extractZipSummary(file: File): Promise<string> {
   for (const e of nonTextEntries) binaryFiles.push(norm(e.name));
 
   // Sort: key project files first, then alphabetical
-  const KEY = /(package\.json$|tsconfig|vite\.config|tailwind|index\.html|README|\/routes\/|\/App\.|src\/main|router\.tsx|\/integrations\/|supabase.*\/index\.ts)/i;
+  const KEY_TERMS = ["package.json","tsconfig","vite.config","tailwind","index.html","README","/routes/","/App.","src/main","router.tsx","/integrations/","supabase"];
+  const isKeyFile = (name: string) => KEY_TERMS.some(k => name.toLowerCase().includes(k.toLowerCase()));
   textEntries.sort((a: any, b: any) => {
-    const ak = KEY.test(a.name) ? 0 : 1;
-    const bk = KEY.test(b.name) ? 0 : 1;
+    const ak = isKeyFile(a.name) ? 0 : 1;
+    const bk = isKeyFile(b.name) ? 0 : 1;
     return ak - bk || norm(a.name).localeCompare(norm(b.name));
   });
 
@@ -826,10 +829,10 @@ function ChatPage() {
     const c = lastAssistant.content.toLowerCase();
     const hasImg = lastAssistant.attachments?.some((a) => a.type?.startsWith("image/"));
     if (hasImg) return ["Modify this image", "Generate a variation", "Animate this image"];
-    if (/bug|issue|error|fix|critical|high|severity/.test(c))
+    if (["bug","issue","error","fix","critical","high","severity"].some(k => c.toLowerCase().includes(k)))
       return ["Fix the highest severity bug", "Show me all affected files", "Explain what caused this"];
     if (lastAssistant.content.includes("```")) return ["Explain this code", "Refactor for readability", "Add tests"];
-    if (/zip|project|files|repository/.test(c)) return ["List the most important files", "Find security issues", "Suggest improvements"];
+    if (["zip","project","files","repository"].some(k => c.toLowerCase().includes(k))) return ["List the most important files", "Find security issues", "Suggest improvements"];
     return ["Tell me more", "Give an example", "Summarize the key points"];
   }, [lastAssistant]);
 
@@ -913,16 +916,19 @@ function ChatPage() {
             // Extract the inner <code> child produced by remark for fenced blocks.
             const child: any = Array.isArray(children) ? children[0] : children;
             const props = child?.props || {};
-            const raw = String(props.children ?? "").replace(/\n$/, "");
+            const rawFull = String(props.children ?? "");
+            const raw = rawFull.endsWith("\n") ? rawFull.slice(0, -1) : rawFull;
             const className: string = props.className || "";
-            const langMatch = /language-([\w+-]+)/.exec(className);
+            const langPrefix = "language-";
+            const langMatch = className && className.startsWith(langPrefix) ? [null, className.slice(langPrefix.length)] : null;
             const lang = langMatch?.[1];
             // Filename support: ```tsx src/foo.tsx  → react-markdown drops the
             // info-string tail, so we also accept a first-line "// file: path" hint.
             let filename: string | undefined;
             const firstLine = raw.split("\n")[0] || "";
-            const fileHint = /^\s*(?:\/\/|#|--)\s*(?:file|path):\s*(\S+)/i.exec(firstLine);
-            const bareFile = /^(?:[\w.\-/]+\/)?[\w.\-]+\.\w{1,8}$/i.test(firstLine.trim());
+            const fileHintMatch = firstLine.trim().match(/file:|path:/i);
+            const fileHint = fileHintMatch ? [null, firstLine.trim().split(/file:|path:/i)[1]?.trim().split(" ")[0] || ""] : null;
+            const bareFile = firstLine.trim().length > 0 && firstLine.trim().length < 60 && firstLine.trim().includes(".") && !firstLine.trim().includes(" ");
             let body = raw;
             if (fileHint) {
               filename = fileHint[1];
@@ -1269,7 +1275,7 @@ function ChatPage() {
         /\b(generate|create|draw|make|design|render|produce|paint|sketch|show me)\b.*\b(image|picture|photo|pic|logo|illustration|wallpaper|art|drawing|painting|portrait|poster|flyer|banner|avatar)\b/i.test(
           lowered,
         ) ||
-        /^\s*(draw|paint|sketch|illustrate|render)\b/i.test(text);
+        ["draw","paint","sketch","illustrate","render"].some(v => text.toLowerCase().trimStart().startsWith(v));
       const cleanedText = lowered.startsWith("/image ") ? text.replace(/^\/image\s+/i, "") : text;
       if (wantsImage) {
         history[history.length - 1] = { role: "user", content: cleanedText };
@@ -1566,8 +1572,8 @@ function ChatPage() {
     const wantMale = voiceName.toLowerCase().includes("male");
     const pick =
       voices.find((v) => v.name.toLowerCase().includes(voiceName.toLowerCase())) ??
-      voices.find((v) => wantFemale && /female|samantha|victoria|zira|karen|tessa/i.test(v.name)) ??
-      voices.find((v) => wantMale && /male|daniel|alex|david|fred/i.test(v.name)) ??
+      voices.find((v) => wantFemale && ["female","samantha","victoria","zira","karen","tessa"].some(n => v.name.toLowerCase().includes(n))) ??
+      voices.find((v) => wantMale && ["male","daniel","alex","david","fred"].some(n => v.name.toLowerCase().includes(n))) ??
       voices[0];
     if (pick) u.voice = pick;
     u.onend = () => setSpeakingId(null);
@@ -2397,4 +2403,157 @@ function ChatPage() {
                 </div>
               )}
               {sending && !typing && (
-                <
+                <div className="flex gap-2 sm:gap-3 justify-start">
+                  <div className="mt-1 shrink-0">
+                    <div className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-primary to-violet-600 shadow-sm animate-pulse">
+                      <Sparkles className="h-4 w-4 text-white" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
+                    <span className="flex items-center gap-2">
+                      <span className="inline-flex gap-1">
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
+                        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary" />
+                      </span>
+                      <span className="text-xs animate-pulse text-primary/70">{aiStatusMsg}</span>
+                    </span>
+                  </div>
+                </div>
+              )}
+              {!sending && !typing && lastAssistant && suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => { setInput(s); }}
+                      className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {error && (
+            <div className="mx-3 mb-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive sm:mx-4">
+              {error}
+              <button onClick={() => setError(null)} className="ml-2 underline">
+                dismiss
+              </button>
+            </div>
+          )}
+
+          <div className="border-t border-border bg-chat-panel p-2 backdrop-blur-xl sm:p-3">
+            <div className="mx-auto max-w-3xl">
+              {slashMatches.length > 0 && (
+                <div className="mb-2 rounded-xl border border-border bg-popover/95 p-1 shadow-lg backdrop-blur">
+                  {slashMatches.map((c) => (
+                    <button
+                      key={c.cmd}
+                      onClick={() => { setInput(c.cmd); setSlashOpen(false); }}
+                      className="flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-xs hover:bg-accent"
+                    >
+                      <span className="font-mono font-semibold text-primary">{c.cmd}</span>
+                      <span className="text-muted-foreground">{c.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pendingFiles.length > 0 && (
+                <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                  {pendingFiles.map((f, i) => (
+                    <div key={i} className="relative">
+                      <AttachmentPreview attachment={f} />
+                      <button
+                        onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}
+                        className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full border border-border bg-background/90 text-foreground shadow-sm hover:text-destructive"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-end gap-1.5 sm:gap-2">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  hidden
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.zip,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.html,.css,image/*,video/*,audio/*"
+                  onChange={(e) => {
+                    handleFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <input
+                  ref={cameraRef}
+                  type="file"
+                  hidden
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    handleFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  title="Attach file"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => cameraRef.current?.click()}
+                  title="Camera"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-input bg-card hover:bg-accent md:hidden"
+                >
+                  <Camera className="h-4 w-4" />
+                </button>
+                {/* Mic button — tap to dictate, long-press for continuous voice conversation */}
+                <button
+                  onClick={() => voiceListening ? stopVoice() : startVoice()}
+                  onContextMenu={(e) => { e.preventDefault(); setContinuousVoice(true); startVoice(); }}
+                  title={voiceListening ? "Stop voice" : "Voice input (long-press for continuous)"}
+                  className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border transition-colors ${
+                    voiceListening
+                      ? "border-primary bg-primary/10 text-primary animate-pulse"
+                      : "border-input bg-card hover:bg-accent"
+                  }`}
+                >
+                  {voiceListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                </button>
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  rows={1}
+                  placeholder="Message HI THERE…"
+                  className="max-h-40 min-h-[40px] flex-1 resize-none rounded-xl border border-input bg-card px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-ring sm:px-4 sm:py-3"
+                />
+                <button
+                  id="send-btn"
+                  onClick={send}
+                  disabled={sending || (!input.trim() && pendingFiles.length === 0)}
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <Footer />
+        </main>
+      </div>
+    </div>
+  );
+}
