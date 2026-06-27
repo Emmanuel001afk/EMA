@@ -22,7 +22,7 @@ import "katex/dist/katex.min.css";
 
 export const Route = createFileRoute("/chat")({ component: ChatPage });
 
-// ── Puter.js global ────────────────────────────────────────────────────────
+// - Puter.js global -
 declare const puter: {
   ai: { chat: (msgs: {role:string;content:string}[], opts?: {model?:string}) => Promise<any> };
   auth: { isSignedIn: () => Promise<boolean>; signIn: () => Promise<void> };
@@ -48,7 +48,7 @@ async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string
   return String(res || "");
 }
 
-// ── Pollinations.ai image generation — NO API KEY NEEDED ──────────────────
+// - Pollinations.ai image generation -- NO API KEY NEEDED -
 async function generateImagePollinations(prompt: string): Promise<string> {
   const encoded = encodeURIComponent(prompt);
   const models = ["flux", "turbo", "seedream"];
@@ -66,7 +66,7 @@ async function generateImagePollinations(prompt: string): Promise<string> {
   throw new Error("Image generation unavailable");
 }
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// - Types -
 type Attachment = { name: string; url: string; type: string; size: number; path?: string; data?: string; text?: string };
 type Msg = {
   id: string; role: "user"|"assistant"; content: string; created_at: string;
@@ -75,7 +75,7 @@ type Msg = {
 };
 type Conv = { id: string; title: string; updated_at: string };
 
-// ── File helpers — NO regex anywhere ──────────────────────────────────────
+// - File helpers -- NO regex anywhere -
 const TEXT_EXTS = ["txt","md","markdown","json","jsonl","csv","tsv","xml","yml","yaml","html","htm","css","scss","less","js","jsx","ts","tsx","py","rb","go","rs","java","kt","swift","c","h","cpp","hpp","cs","php","sh","bash","zsh","sql","toml","ini","env","log","gitignore","dockerfile","lock"];
 const TEXT_MIMES = ["text/","application/json","application/xml","application/x-yaml","application/javascript","application/typescript"];
 const isText = (f:{type?:string;name:string}) => TEXT_EXTS.includes(f.name.split(".").pop()?.toLowerCase() || "") || TEXT_MIMES.some(m => (f.type||"").startsWith(m));
@@ -98,7 +98,7 @@ async function fileToB64(file:File): Promise<string> {
 async function readText(file:Blob, max=200000): Promise<string> {
   const sl = file.size > max ? file.slice(0,max) : file;
   const t = await sl.text();
-  return file.size > max ? t + "\n[truncated — " + file.size + " bytes total]" : t;
+  return file.size > max ? t + "\n[truncated -- " + file.size + " bytes total]" : t;
 }
 function guesslang(name:string) {
   const ext = name.split(".").pop()?.toLowerCase() || "";
@@ -106,7 +106,7 @@ function guesslang(name:string) {
   return m[ext]||"";
 }
 
-// ── PDF extraction ─────────────────────────────────────────────────────────
+// - PDF extraction -
 async function extractPdf(file:File): Promise<string> {
   try {
     if (!(window as any).pdfjsLib) {
@@ -126,7 +126,7 @@ async function extractPdf(file:File): Promise<string> {
   } catch(e:any) { return "PDF could not be read: " + (e?.message||e); }
 }
 
-// ── ZIP extraction — zero regex ────────────────────────────────────────────
+// - ZIP extraction -- zero regex -
 async function extractZip(file:File): Promise<string> {
   const {default:JSZip} = await import("jszip");
   let zip:any;
@@ -154,7 +154,7 @@ async function extractZip(file:File): Promise<string> {
   const fileList = [...txts.map((e:any)=>"  [TEXT] "+norm(e.name)),...bins.map((e:any)=>"  [BIN]  "+norm(e.name))].join("\n");
   let body=""; let budget=300000; let included=0;
   for (const e of txts) {
-    if (budget<=0){body+="\n\n[Budget reached — ask for specific files]";break;}
+    if (budget<=0){body+="\n\n[Budget reached -- ask for specific files]";break;}
     try {
       const raw:string = await (e as any).async("string");
       if (!raw||raw.trim().length===0){body+="\n\n[EMPTY: "+norm(e.name)+"]";included++;continue;}
@@ -167,7 +167,7 @@ async function extractZip(file:File): Promise<string> {
   return ["=== ZIP: \""+file.name+"\" ===","Files: "+entries.length+" total | "+included+"/"+txts.length+" text read | "+bins.length+" binary","Wrapper stripped: "+(wrap||"none"),"","CRITICAL: Use ONLY the content below. Never guess or invent file contents.","If a file is not shown, say so clearly.","","=== FILE LIST ===",fileList,"","=== CONTENTS ==="].join("\n")+body;
 }
 
-// ── Collapsible code block ─────────────────────────────────────────────────
+// - Collapsible code block -
 function Code({code,lang,filename}:{code:string;lang?:string;filename?:string}) {
   const lines = code.split("\n").length;
   const [open,setOpen] = useState(!filename&&lines<=15);
@@ -200,7 +200,7 @@ function Code({code,lang,filename}:{code:string;lang?:string;filename?:string}) 
   );
 }
 
-// ── Image Carousel ─────────────────────────────────────────────────────────
+// - Image Carousel -
 function Carousel({images}:{images:{src:string;name:string}[]}) {
   const [i,setI] = useState(0);
   if (!images.length) return null;
@@ -211,8 +211,8 @@ function Carousel({images}:{images:{src:string;name:string}[]}) {
       <div className="relative">
         <img src={cur.src} alt={isGen?"AI Generated":cur.name} className="max-h-96 w-full object-contain bg-black/20"/>
         {images.length>1&&<>
-          <button onClick={()=>setI(n=>(n-1+images.length)%images.length)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg">‹</button>
-          <button onClick={()=>setI(n=>(n+1)%images.length)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg">›</button>
+          <button onClick={()=>setI(n=>(n-1+images.length)%images.length)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg"><</button>
+          <button onClick={()=>setI(n=>(n+1)%images.length)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg">></button>
           <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
             {images.map((_,n)=><button key={n} onClick={()=>setI(n)} className={"h-1.5 w-1.5 rounded-full transition-all "+(n===i?"bg-white w-4":"bg-white/40")}/>)}
           </div>
@@ -224,9 +224,9 @@ function Carousel({images}:{images:{src:string;name:string}[]}) {
         )}
       </div>
       <div className="flex items-center justify-between px-3 py-2 text-[11px] text-zinc-400">
-        <span>{isGen?"✨ AI Generated":(cur.name)}{images.length>1?" ("+(i+1)+"/"+images.length+")":""}</span>
+        <span>{isGen?"* AI Generated":(cur.name)}{images.length>1?" ("+(i+1)+"/"+images.length+")":""}</span>
         <div className="flex gap-2">
-          {isGen&&<button onClick={()=>{const p=window.prompt("What to change?");if(p){const ev=new CustomEvent("aem-edit-image",{detail:{prompt:p}});window.dispatchEvent(ev);}}} className="text-primary hover:text-primary/80">✏️ Edit</button>}
+          {isGen&&<button onClick={()=>{const p=window.prompt("What to change?");if(p){const ev=new CustomEvent("aem-edit-image",{detail:{prompt:p}});window.dispatchEvent(ev);}}} className="text-primary hover:text-primary/80">Edit Edit</button>}
           <a href={cur.src} download={isGen?"aem-image.png":cur.name} className="flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1 hover:bg-white/20"><Download className="h-3 w-3"/> Save</a>
         </div>
       </div>
@@ -234,7 +234,7 @@ function Carousel({images}:{images:{src:string;name:string}[]}) {
   );
 }
 
-// ── Citation card ──────────────────────────────────────────────────────────
+// - Citation card -
 function CitationCard({c}:{c:{title:string;url:string}}) {
   return (
     <a href={c.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10 transition-colors">
@@ -245,7 +245,7 @@ function CitationCard({c}:{c:{title:string;url:string}}) {
   );
 }
 
-// ── Attachment preview ─────────────────────────────────────────────────────
+// - Attachment preview -
 function AttachView({a}:{a:Attachment}) {
   const src = a.data&&isImg(a)?"data:"+a.type+";base64,"+a.data:a.url;
   if (isImg(a)) return <Carousel images={[{src,name:a.name}]}/>;
@@ -255,7 +255,7 @@ function AttachView({a}:{a:Attachment}) {
   return <a href={src} target="_blank" rel="noreferrer" download={a.name} className="flex items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs hover:bg-white/10"><span className="truncate"><FileText className="mr-1 inline h-3 w-3"/>{a.name}</span><Download className="h-3.5 w-3.5 shrink-0"/></a>;
 }
 
-// ── Main component ─────────────────────────────────────────────────────────
+// - Main component -
 function ChatPage() {
   const navigate = useNavigate();
 
@@ -263,13 +263,13 @@ function ChatPage() {
     const err = e as {message?:string;error?:string};
     if (!navigator.onLine) return "You're offline. Check your connection.";
     const raw = (err?.message||err?.error||"").toString().toLowerCase();
-    if (raw.includes("failed to fetch")||raw.includes("networkerror")) return "Network issue — please try again.";
+    if (raw.includes("failed to fetch")||raw.includes("networkerror")) return "Network issue -- please try again.";
     if (raw.includes("429")||raw.includes("cooldown")||raw.includes("limit")) return err?.message||"Daily limit reached. Try again later or upgrade.";
     if (raw.includes("401")) return "Session expired. Please sign in again.";
     return err?.message||"Something went wrong. Please try again.";
   };
 
-  // ── State ────────────────────────────────────────────────────────────────
+  // - State -
   const [userId,setUserId] = useState<string|null>(null);
   const [displayName,setDisplayName] = useState("");
   const [isAdmin,setIsAdmin] = useState(false);
@@ -363,7 +363,7 @@ function ChatPage() {
       const pw=window.open("","_blank");if(!pw){setExportingPdf(false);return;}
       const nl=String.fromCharCode(10);const br="<br>";
       const rows=messages.map(m=>"<div class=\"msg "+m.role+"\"><div class=\"role\">"+m.role+"</div>"+m.content.split(nl).join(br)+"</div>").join("");
-      pw.document.write(["<!DOCTYPE html><html><head><title>HI THERE Chat Export</title>","<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}",".msg{margin:16px 0;padding:12px 16px;border-radius:12px;}",".user{background:#1e1e2e;color:#cdd6f4;text-align:right;}",".assistant{background:#181825;color:#cdd6f4;}",".role{font-size:11px;color:#6c7086;margin-bottom:4px;text-transform:uppercase;}","h1{color:#cba6f7;border-bottom:1px solid #313244;padding-bottom:8px;}","</style></head><body>","<h1>HI THERE — Chat Export</h1>","<p style='color:#6c7086;font-size:12px;'>"+new Date().toLocaleString()+"</p>",rows,"</body></html>"].join(""));
+      pw.document.write(["<!DOCTYPE html><html><head><title>HI THERE Chat Export</title>","<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}",".msg{margin:16px 0;padding:12px 16px;border-radius:12px;}",".user{background:#1e1e2e;color:#cdd6f4;text-align:right;}",".assistant{background:#181825;color:#cdd6f4;}",".role{font-size:11px;color:#6c7086;margin-bottom:4px;text-transform:uppercase;}","h1{color:#cba6f7;border-bottom:1px solid #313244;padding-bottom:8px;}","</style></head><body>","<h1>HI THERE -- Chat Export</h1>","<p style='color:#6c7086;font-size:12px;'>"+new Date().toLocaleString()+"</p>",rows,"</body></html>"].join(""));
       pw.document.close();pw.focus();setTimeout(()=>{pw.print();pw.close();},500);
     } finally{setExportingPdf(false);}
   },[messages]);
@@ -380,12 +380,12 @@ function ChatPage() {
   // Greeting
   const greeting = useMemo(()=>{
     const h=new Date().getHours();
-    const pools={morning:["Good morning — let's build something today.","Morning! What are we working on?","Morning. Ready when you are."],afternoon:["Good afternoon — what's next?","Afternoon! What do you need?","Afternoon. Let's keep it moving."],evening:["Evening — still building?","Evening. What can I help with?","Evening — let's wrap something up."],late:["Late night session. I'm here.","Up late? Let's make it count.","Quiet hours — best time to focus."]};
+    const pools={morning:["Good morning -- let's build something today.","Morning! What are we working on?","Morning. Ready when you are."],afternoon:["Good afternoon -- what's next?","Afternoon! What do you need?","Afternoon. Let's keep it moving."],evening:["Evening -- still building?","Evening. What can I help with?","Evening -- let's wrap something up."],late:["Late night session. I'm here.","Up late? Let's make it count.","Quiet hours -- best time to focus."]};
     const pool=h<5?pools.late:h<12?pools.morning:h<17?pools.afternoon:h<22?pools.evening:pools.late;
     return pool[Math.floor(Math.random()*pool.length)];
   },[activeConvId]);
 
-  // Suggestions — zero regex
+  // Suggestions -- zero regex
   const lastAI = useMemo(()=>[...messages].reverse().find(m=>m.role==="assistant"),[messages]);
   const suggestions = useMemo(()=>{
     if(!lastAI) return [];
@@ -523,7 +523,7 @@ function ChatPage() {
       const{data,error:e}=await supabase.functions.invoke("chat",{body:{mode:"audit",messages:[]}});
       if(e) throw e;
       const provs=data?.providers||{};
-      const lines=["**AEM System Health Report** — "+new Date().toLocaleString(),"","**AI Engines:**",...Object.entries(provs).map(([k,v]:any)=>"- "+(v.ok?"✅":"❌")+" **"+k+"** "+(v.ok?v.ms+"ms":(v.error||"offline"))),"","**Image Studio:** "+(data?.image_generation?.ok?"✅ Pollinations.ai active":"❌ check config"),"**ZIP Reader:** ✅ byte-verified extraction","**PDF Reader:** ✅ pdf.js active","**Voice Input:** ✅ Web Speech API","**Puter.js:** ✅ Claude Sonnet browser layer","","*AEM Adaptive Router is managing all routing automatically.*"];
+      const lines=["**AEM System Health Report** -- "+new Date().toLocaleString(),"","**AI Engines:**",...Object.entries(provs).map(([k,v]:any)=>"- "+(v.ok?"on":"x")+" **"+k+"** "+(v.ok?v.ms+"ms":(v.error||"offline"))),"","**Image Studio:** "+(data?.image_generation?.ok?"on Pollinations.ai active":"x check config"),"**ZIP Reader:** on byte-verified extraction","**PDF Reader:** on pdf.js active","**Voice Input:** on Web Speech API","**Puter.js:** on Claude Sonnet browser layer","","*AEM Adaptive Router is managing all routing automatically.*"];
       setAuditReport(lines.join("\n"));
     }catch(e:any){setAuditReport("Audit failed: "+friendlyErr(e));}finally{setAuditing(false);}
   };
@@ -535,7 +535,7 @@ function ChatPage() {
   const saveVoice=async(n:string)=>{setVoiceName(n);if(userId)await supabase.from("profiles").update({voice_name:n} as never).eq("user_id",userId);};
   const delMsg=async(m:Msg)=>{if(!window.confirm("Delete this message?"))return;await supabase.from("messages").delete().eq("id",m.id);setMessages(ms=>ms.filter(x=>x.id!==m.id));};
   const delConv=async(id:string)=>{if(!window.confirm("Delete this conversation?"))return;await supabase.from("conversations").delete().eq("id",id);setConversations(cs=>cs.filter(c=>c.id!==id));if(activeConvId===id){const next=conversations.find(c=>c.id!==id)?.id??null;setActiveConvId(next);if(!next)setMessages([]);}};
-  const dlConv=(id=activeConvId)=>{if(!id)return;const conv=conversations.find(c=>c.id===id);const rows=id===activeConvId?messages:[];const body=rows.length?rows.map(m=>"## "+(m.role==="assistant"?"HI THERE":"You")+" — "+new Date(m.created_at).toLocaleString()+"\n\n"+m.content).join("\n\n---\n\n"):"Open this chat first.";const blob=new Blob(["# "+(conv?.title||"Chat")+"\n\n"+body],{type:"text/markdown"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;const st=(conv?.title||"chat").split("").map(c=>{const code=c.charCodeAt(0);return(code>=48&&code<=57)||(code>=65&&code<=90)||(code>=97&&code<=122)?c:"-";}).join("").slice(0,50);a.download=st+".md";a.click();URL.revokeObjectURL(u);};
+  const dlConv=(id=activeConvId)=>{if(!id)return;const conv=conversations.find(c=>c.id===id);const rows=id===activeConvId?messages:[];const body=rows.length?rows.map(m=>"## "+(m.role==="assistant"?"HI THERE":"You")+" -- "+new Date(m.created_at).toLocaleString()+"\n\n"+m.content).join("\n\n---\n\n"):"Open this chat first.";const blob=new Blob(["# "+(conv?.title||"Chat")+"\n\n"+body],{type:"text/markdown"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;const st=(conv?.title||"chat").split("").map(c=>{const code=c.charCodeAt(0);return(code>=48&&code<=57)||(code>=65&&code<=90)||(code>=97&&code<=122)?c:"-";}).join("").slice(0,50);a.download=st+".md";a.click();URL.revokeObjectURL(u);};
   const startEdit=(m:Msg)=>{setEditingId(m.id);setEditingText(m.content);};
   const saveEdit=async(m:Msg)=>{const t=editingText.trim();if(!t||t===m.content){setEditingId(null);return;}await supabase.from("messages").update({content:t}).eq("id",m.id);setMessages(ms=>ms.map(x=>x.id===m.id?{...x,content:t}:x));setEditingId(null);};
   const speak=(m:Msg)=>{if(!window.speechSynthesis){setError("Speech not supported");return;}if(speakingId===m.id){window.speechSynthesis.cancel();setSpeakingId(null);return;}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(m.content);const fn=["female","samantha","victoria","zira","karen","tessa"];const mn=["male","daniel","alex","david","fred"];const wf=voiceName.toLowerCase().includes("female");const wm=voiceName.toLowerCase().includes("male");const pick=voices.find(v=>v.name.toLowerCase().includes(voiceName.toLowerCase()))??voices.find(v=>wf&&fn.some(n=>v.name.toLowerCase().includes(n)))??voices.find(v=>wm&&mn.some(n=>v.name.toLowerCase().includes(n)))??voices[0];if(pick)u.voice=pick;u.onend=()=>setSpeakingId(null);setSpeakingId(m.id);window.speechSynthesis.speak(u);};
@@ -557,7 +557,7 @@ const downloadAsFile=(m:Msg)=>{
   const translate=async(m:Msg)=>{setTranslatingId(m.id);try{const{data,error:e}=await supabase.functions.invoke("chat",{body:{messages:[{role:"user",content:m.content}],language,mode:"translate"}});if(e||data?.error)throw new Error(data?.error||e?.message);setTranslations(t=>({...t,[m.id]:data.content}));}catch(e:unknown){setError(friendlyErr(e));}finally{setTranslatingId(null);};};
   const signOut=async()=>{await supabase.auth.signOut();navigate({to:"/"});};
 
-  // ── SEND ──────────────────────────────────────────────────────────────────
+  // - SEND -
   const send = async()=>{
     if((!input.trim()&&pendingFiles.length===0)||!userId||sending) return;
     setError(null);
@@ -570,7 +570,7 @@ const downloadAsFile=(m:Msg)=>{
     if(raw==="/summary"){setInput("Summarise this entire conversation in clear bullet points.");return;}
     if(raw==="/explain"){setInput("Explain the last code block in plain English, section by section.");return;}
     if(raw==="/fix"){setInput("Find and fix every bug in the last code I shared. Show the exact changes for each file.");return;}
-    if(raw==="/aem"){setInput("");setAemMode(v=>!v);setError(aemMode?"AEM Mode deactivated":"✨ AEM Mode activated — your personal AI context is now active");return;}
+    if(raw==="/aem"){setInput("");setAemMode(v=>!v);setError(aemMode?"AEM Mode deactivated":"* AEM Mode activated -- your personal AI context is now active");return;}
     if(raw==="/compare"){setInput("");if(lastAI){await runCompare(messages[messages.length-2]?.content||"Compare two approaches");}return;}
     if(raw==="/think"){setInput("Use deep reasoning. Think through this step by step before answering: "+input.replace("/think","").trim());return;}
 
@@ -592,11 +592,11 @@ const downloadAsFile=(m:Msg)=>{
       // File context
       const textBlocks=atts.filter(a=>a.text).map(a=>"\n\n=== File: "+a.name+" ===\n"+a.text).join("");
       const hasImgs=atts.some(isImg);
-      const attCtx=atts.length?"\n\n[Attached "+atts.length+" file(s): "+atts.map(a=>a.name+"("+a.type+")").join(", ")+". "+(hasImgs?"Images attached — describe what you see.":"File contents below.")+"]"+textBlocks:"";
+      const attCtx=atts.length?"\n\n[Attached "+atts.length+" file(s): "+atts.map(a=>a.name+"("+a.type+")").join(", ")+". "+(hasImgs?"Images attached -- describe what you see.":"File contents below.")+"]"+textBlocks:"";
 
       const hist=[...messages,{...userMsg,content:text+attCtx}].map(m=>({role:m.role,content:m.content}));
 
-      // Intent detection — zero regex
+      // Intent detection -- zero regex
       const low=text.toLowerCase().trim();
       const imgVerbs=["generate","create","draw","make","design","render","produce","paint","sketch","show me"];
       const imgNouns=["image","picture","photo","pic","logo","illustration","wallpaper","art","drawing","painting","portrait","poster","flyer","banner","avatar"];
@@ -616,7 +616,7 @@ const downloadAsFile=(m:Msg)=>{
         catch{}
       }
 
-      // CLIENT-SIDE image generation via Pollinations — no server needed
+      // CLIENT-SIDE image generation via Pollinations -- no server needed
       if(wantsImg&&!data){
         setStatusMsg("Creating image...");
         try{
@@ -655,7 +655,7 @@ const downloadAsFile=(m:Msg)=>{
       const citations:{title:string;url:string}[]|undefined=data.citations;
       const aid=crypto.randomUUID();
 
-      // Typewriter — word by word like ChatGPT
+      // Typewriter -- word by word like ChatGPT
       if(!data.image_b64&&!data.video_b64){
         const words=reply.split(" ");let built="";setTyping("");
         await new Promise<void>(res=>{
@@ -679,7 +679,7 @@ const downloadAsFile=(m:Msg)=>{
         const recent=all.slice(-10).map(m=>m.role+": "+m.content).join("\n").slice(0,3000);
         supabase.functions.invoke("chat",{body:{messages:[{role:"system",content:"Extract personal facts about the user from this conversation as bullet points starting with '-'. Max 10. Only real verified facts."},{role:"user",content:recent}],prefs:{personality:"direct",length:"short"}}}).then(({data:md})=>{if(md?.content&&userId){supabase.from("profiles").update({memory_summary:md.content} as any).eq("user_id",userId);setMemory(md.content);}});
       }
-    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:"⚠️ "+msg,created_at:new Date().toISOString()}]);}
+    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:"Warning: "+msg,created_at:new Date().toISOString()}]);}
     finally{setSending(false);setStatusMsg("Thinking...");}
   };
 
@@ -687,7 +687,7 @@ const downloadAsFile=(m:Msg)=>{
 
   const pinnedMsgs=messages.filter(m=>pinned[m.id]);
 
-  // ── Sidebar ───────────────────────────────────────────────────────────────
+  // - Sidebar -
   const SB=(
     <aside className="flex h-full w-64 shrink-0 flex-col bg-gradient-to-b from-zinc-950 to-zinc-900 border-r border-white/5 p-3">
       <button onClick={newChat} className="mb-3 flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-primary to-violet-600 px-3 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 hover:opacity-90 transition-opacity">
@@ -695,7 +695,7 @@ const downloadAsFile=(m:Msg)=>{
       </button>
       <div className="relative mb-2">
         <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500"/>
-        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search conversations…" className="w-full rounded-xl border border-white/5 bg-white/5 py-1.5 pl-8 pr-2 text-xs text-zinc-300 outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/10"/>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search conversations..." className="w-full rounded-xl border border-white/5 bg-white/5 py-1.5 pl-8 pr-2 text-xs text-zinc-300 outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/10"/>
       </div>
       <div className="flex-1 space-y-0.5 overflow-y-auto">
         {filteredConvs.map(c=>(
@@ -715,8 +715,8 @@ const downloadAsFile=(m:Msg)=>{
 
   return (
     <div className={"flex h-screen flex-col bg-zinc-950 text-white "+(fontSize==="sm"?"text-[13px]":fontSize==="lg"?"text-[17px]":"text-[15px]")}>
-      {isOffline&&<div className="flex items-center justify-center gap-2 border-b border-red-500/20 bg-gradient-to-r from-red-950/50 to-red-900/30 px-4 py-2 text-center text-xs text-red-400"><span className="h-1.5 w-1.5 rounded-full bg-red-400"/> No internet connection — reconnecting automatically...</div>}
-      {aemMode&&<div className="bg-gradient-to-r from-primary/20 to-violet-600/20 border-b border-primary/30 px-4 py-1.5 text-center text-xs text-primary">✨ AEM Mode Active — Personal AI Context Enabled</div>}
+      {isOffline&&<div className="flex items-center justify-center gap-2 border-b border-red-500/20 bg-gradient-to-r from-red-950/50 to-red-900/30 px-4 py-2 text-center text-xs text-red-400"><span className="h-1.5 w-1.5 rounded-full bg-red-400"/> No internet connection -- reconnecting automatically...</div>}
+      {aemMode&&<div className="bg-gradient-to-r from-primary/20 to-violet-600/20 border-b border-primary/30 px-4 py-1.5 text-center text-xs text-primary">* AEM Mode Active -- Personal AI Context Enabled</div>}
 
       {/* Health panel */}
       {auditOpen&&(
@@ -733,10 +733,10 @@ const downloadAsFile=(m:Msg)=>{
                 <span className="text-sm">{sending?statusMsg:"All systems operational"}</span>
               </div>
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-zinc-500">
-                <span className={"rounded-lg px-2 py-0.5 "+(memory?"bg-green-500/10 text-green-400":"bg-white/5")}>Memory: {memory?"✅":"⬜"}</span>
-                <span className={"rounded-lg px-2 py-0.5 "+(voiceListening?"bg-blue-500/10 text-blue-400":"bg-white/5")}>Voice: {voiceListening?"🎤":""⬜"}</span>
-                <span className={"rounded-lg px-2 py-0.5 "+(aemMode?"bg-primary/10 text-primary":"bg-white/5")}>AEM: {aemMode?"✅":"⬜"}</span>
-                <span className={"rounded-lg px-2 py-0.5 "+(kidsMode?"bg-yellow-500/10 text-yellow-400":"bg-white/5")}>Kids: {kidsMode?"🔒":"⬜"}</span>
+                <span className={"rounded-lg px-2 py-0.5 "+(memory?"bg-green-500/10 text-green-400":"bg-white/5")}>Memory: {memory?"on":"off"}</span>
+                <span className={"rounded-lg px-2 py-0.5 "+(voiceListening?"bg-blue-500/10 text-blue-400":"bg-white/5")}>Voice: {voiceListening?"":""off"}</span>
+                <span className={"rounded-lg px-2 py-0.5 "+(aemMode?"bg-primary/10 text-primary":"bg-white/5")}>AEM: {aemMode?"on":"off"}</span>
+                <span className={"rounded-lg px-2 py-0.5 "+(kidsMode?"bg-yellow-500/10 text-yellow-400":"bg-white/5")}>Kids: {kidsMode?"on":"off"}</span>
               </div>
             </div>
             {auditing&&<div className="mb-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-zinc-400 animate-pulse">Pinging all AI engines...</div>}
@@ -749,7 +749,7 @@ const downloadAsFile=(m:Msg)=>{
               ))}
             </div>
             <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-zinc-400">
-              <p className="mb-1 font-semibold text-amber-400">⚠️ Code Safety</p>
+              <p className="mb-1 font-semibold text-amber-400">Warning: Code Safety</p>
               Before pushing any generated code to GitHub: verify the complete file was returned, all imports are intact, and no closing bracket is missing.
             </div>
             {isAdmin&&<Link to="/admin" onClick={()=>setAuditOpen(false)} className="mt-3 flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary hover:bg-primary/10"><Shield className="h-3.5 w-3.5"/> Open Admin Panel</Link>}
@@ -827,9 +827,9 @@ const downloadAsFile=(m:Msg)=>{
                       {aemMode&&<div className="absolute -top-1 -right-1 rounded-full bg-primary px-2 py-0.5 text-[9px] font-bold text-white shadow-lg">AEM</div>}
                     </div>
                     <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{greeting}{displayName?", "+displayName:""}</h1>
-                    <p className="mt-3 text-sm text-zinc-500 max-w-md mx-auto">Your intelligent AI platform — reads files, builds code, generates images, searches the web, and more.</p>
+                    <p className="mt-3 text-sm text-zinc-500 max-w-md mx-auto">Your intelligent AI platform -- reads files, builds code, generates images, searches the web, and more.</p>
                     <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-zinc-500">
-                      {["📎 ZIP & PDF","🖼️ Images","🎤 Voice","💻 Full code","🌍 6 languages","⚡ Live preview","🔍 Web search"].map(c=><span key={c} className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{c}</span>)}
+                      {[" ZIP & PDF"," Images"," Voice"," Full code"," 6 languages","! Live preview"," Web search"].map(c=><span key={c} className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{c}</span>)}
                     </div>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -917,10 +917,10 @@ const downloadAsFile=(m:Msg)=>{
                 {[{icon:Paperclip,action:()=>fileRef.current?.click(),title:"Attach file"},{icon:Camera,action:()=>cameraRef.current?.click(),title:"Camera",mobile:true},{icon:voiceListening?MicOff:Mic,action:()=>voiceListening?stopVoice():startVoice(),title:voiceListening?"Stop":"Voice",active:voiceListening},{icon:Activity,action:()=>setAuditOpen(true),title:"AEM Hub"}].map((b,i)=>(
                   (!b.mobile||true)&&<button key={i} onClick={b.action} title={b.title} className={"grid h-11 w-11 shrink-0 place-items-center rounded-2xl border transition-colors "+(b.active?"border-primary bg-primary/10 text-primary animate-pulse":"border-white/10 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white")+(b.mobile?" md:hidden":"")}><b.icon className="h-4.5 w-4.5"/></button>
                 ))}
-                <textarea value={input} onChange={e=>{setInput(e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} rows={1} placeholder="Message HI THERE…" className="max-h-40 min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/8 transition-colors"/>
+                <textarea value={input} onChange={e=>{setInput(e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} rows={1} placeholder="Message HI THERE..." className="max-h-40 min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/8 transition-colors"/>
                 <button id="aem-send" onClick={send} disabled={sending||(!input.trim()&&pendingFiles.length===0)} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 text-white shadow-lg shadow-primary/20 hover:opacity-90 disabled:opacity-30 transition-opacity"><Send className="h-4.5 w-4.5"/></button>
               </div>
-              <p className="mt-2 text-center text-[10px] text-zinc-700">HI THERE · AEM Platform · AI may make mistakes — verify important information</p>
+              <p className="mt-2 text-center text-[10px] text-zinc-700">HI THERE . AEM Platform . AI may make mistakes -- verify important information</p>
             </div>
           </div>
           <Footer/>
