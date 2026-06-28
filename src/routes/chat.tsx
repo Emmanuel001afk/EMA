@@ -5,10 +5,10 @@ import {
   Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
   Settings as SettingsIcon, Search, Paperclip, Camera, Languages,
   User, Pencil, Volume2, VolumeX, Share2, Flag, Trash2, Download,
-  ImageIcon, FileText, Film, ChevronDown, ChevronRight, Bookmark,
-  BookmarkCheck, Activity, Wand2, Bug, ListChecks, FileDown,
-  Type as TypeIcon, Mic, MicOff, Globe, Zap, Brain, Eye, EyeOff,
-  Star, Clock, BarChart2, RefreshCw, ExternalLink, Play, Pause,
+  FileText, Film, ChevronDown, ChevronRight, Bookmark,
+  BookmarkCheck, Activity, FileDown, Bug,
+  Type as TypeIcon, Mic, MicOff, Globe, Brain,
+  Star, ExternalLink, Play,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
