@@ -5,7 +5,7 @@ import {
   Sparkles, Send, Plus, Copy, LogOut, Shield, Check, Menu, X,
   Settings as SettingsIcon, Search, Paperclip, Camera, Languages,
   User, Pencil, Volume2, VolumeX, Share2, Flag, Trash2, Download,
-  FileText, Film, ChevronDown, ChevronRight, Bookmark,
+  FileText, Film, ChevronDown, ChevronLeft, ChevronRight, Bookmark,
   BookmarkCheck, Activity, FileDown, Bug,
   Type as TypeIcon, Mic, MicOff, Globe, Brain,
   Star, ExternalLink, Play,
@@ -211,8 +211,8 @@ function Carousel({images}:{images:{src:string;name:string}[]}) {
       <div className="relative">
         <img src={cur.src} alt={isGen?"AI Generated":cur.name} className="max-h-96 w-full object-contain bg-black/20"/>
         {images.length>1&&<>
-          <button onClick={()=>setI(n=>(n-1+images.length)%images.length)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg"><</button>
-          <button onClick={()=>setI(n=>(n+1)%images.length)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 text-lg">></button>
+          <button onClick={()=>setI(n=>(n-1+images.length)%images.length)} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80"><ChevronLeft className="h-4 w-4"/></button>
+          <button onClick={()=>setI(n=>(n+1)%images.length)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80"><ChevronRight className="h-4 w-4"/></button>
           <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
             {images.map((_,n)=><button key={n} onClick={()=>setI(n)} className={"h-1.5 w-1.5 rounded-full transition-all "+(n===i?"bg-white w-4":"bg-white/40")}/>)}
           </div>
@@ -734,7 +734,7 @@ const downloadAsFile=(m:Msg)=>{
               </div>
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-zinc-500">
                 <span className={"rounded-lg px-2 py-0.5 "+(memory?"bg-green-500/10 text-green-400":"bg-white/5")}>Memory: {memory?"on":"off"}</span>
-                <span className={"rounded-lg px-2 py-0.5 "+(voiceListening?"bg-blue-500/10 text-blue-400":"bg-white/5")}>Voice: {voiceListening?"":""off"}</span>
+                <span className={"rounded-lg px-2 py-0.5 "+(voiceListening?"bg-blue-500/10 text-blue-400":"bg-white/5")}>Voice: {voiceListening?"on":"off"}</span>
                 <span className={"rounded-lg px-2 py-0.5 "+(aemMode?"bg-primary/10 text-primary":"bg-white/5")}>AEM: {aemMode?"on":"off"}</span>
                 <span className={"rounded-lg px-2 py-0.5 "+(kidsMode?"bg-yellow-500/10 text-yellow-400":"bg-white/5")}>Kids: {kidsMode?"on":"off"}</span>
               </div>
