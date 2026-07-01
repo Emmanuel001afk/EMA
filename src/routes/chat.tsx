@@ -49,21 +49,49 @@ async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string
 }
 
 // - Pollinations.ai image generation -- NO API KEY NEEDED -
-async function generateImagePollinations(prompt: string): Promise<string> {
+type ImgOpts = { aspect: "1:1"|"9:16"|"16:9"; quantity: number; quality: "standard"|"high" };
+function aspectDims(a: ImgOpts["aspect"], q: ImgOpts["quality"]) {
+  const hi = q === "high";
+  if (a === "9:16") return hi ? { w: 896, h: 1600 } : { w: 640, h: 1152 };
+  if (a === "16:9") return hi ? { w: 1600, h: 896 } : { w: 1152, h: 640 };
+  return hi ? { w: 1280, h: 1280 } : { w: 1024, h: 1024 };
+}
+function slugifyPrompt(text: string, max = 48): string {
+  const cleaned = text.toLowerCase().split("").map(ch => {
+    const c = ch.charCodeAt(0);
+    if ((c >= 48 && c <= 57) || (c >= 97 && c <= 122)) return ch;
+    return "-";
+  }).join("");
+  const parts = cleaned.split("-").filter(Boolean).slice(0, 8);
+  const slug = parts.join("-").slice(0, max);
+  return slug || "image";
+}
+async function generateImagePollinations(prompt: string, opts?: Partial<ImgOpts>): Promise<string[]> {
+  const o: ImgOpts = { aspect: opts?.aspect || "1:1", quantity: Math.max(1, Math.min(4, opts?.quantity || 1)), quality: opts?.quality || "standard" };
+  const { w, h } = aspectDims(o.aspect, o.quality);
   const encoded = encodeURIComponent(prompt);
   const models = ["flux", "turbo", "seedream"];
-  for (const model of models) {
-    try {
-      const url = "https://image.pollinations.ai/prompt/" + encoded + "?model=" + model + "&width=1024&height=1024&nologo=true";
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const buf = new Uint8Array(await r.arrayBuffer());
-      let bin = "";
-      for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
-      return btoa(bin);
-    } catch { continue; }
+  const out: string[] = [];
+  for (let i = 0; i < o.quantity; i++) {
+    const seed = Math.floor(Math.random() * 1_000_000);
+    let ok = false;
+    for (const model of models) {
+      try {
+        const url = "https://image.pollinations.ai/prompt/" + encoded + "?model=" + model + "&width=" + w + "&height=" + h + "&seed=" + seed + "&nologo=true" + (o.quality === "high" ? "&enhance=true" : "");
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const buf = new Uint8Array(await r.arrayBuffer());
+        let bin = "";
+        for (let j = 0; j < buf.length; j++) bin += String.fromCharCode(buf[j]);
+        out.push(btoa(bin));
+        ok = true;
+        break;
+      } catch { continue; }
+    }
+    if (!ok && out.length === 0) throw new Error("Image generation unavailable");
   }
-  throw new Error("Image generation unavailable");
+  if (!out.length) throw new Error("Image generation unavailable");
+  return out;
 }
 
 // - Types -
@@ -263,10 +291,16 @@ function ChatPage() {
     const err = e as {message?:string;error?:string};
     if (!navigator.onLine) return "You're offline. Check your connection.";
     const raw = (err?.message||err?.error||"").toString().toLowerCase();
-    if (raw.includes("failed to fetch")||raw.includes("networkerror")) return "Network issue -- please try again.";
-    if (raw.includes("429")||raw.includes("cooldown")||raw.includes("limit")) return err?.message||"Daily limit reached. Try again later or upgrade.";
-    if (raw.includes("401")) return "Session expired. Please sign in again.";
-    return err?.message||"Something went wrong. Please try again.";
+    if (raw.includes("failed to fetch")||raw.includes("networkerror")||raw.includes("network request")) return "Network issue -- please try again in a moment.";
+    if (raw.includes("429")||raw.includes("cooldown")||raw.includes("rate limit")||raw.includes("too many")) return "You've hit the daily limit. Try again later or upgrade your plan.";
+    if (raw.includes("limit")&&raw.includes("day")) return "Daily message limit reached. Try again later or upgrade.";
+    if (raw.includes("401")||raw.includes("unauthor")||raw.includes("jwt")) return "Session expired. Please sign in again.";
+    if (raw.includes("edge function")||raw.includes("non-2xx")||raw.includes("502")||raw.includes("503")||raw.includes("504")||raw.includes("gateway")) return "AI is temporarily unavailable. Please try again shortly.";
+    if (raw.includes("timeout")||raw.includes("timed out")) return "That took too long. Please try again.";
+    if (raw.includes("image generation unavailable")) return "Image service is busy. Please try again in a moment.";
+    if (raw.includes("all providers failed")||raw.includes("providers")) return "AI is offline right now. Please try again soon.";
+    if (raw.includes("500")||raw.includes("internal")) return "Something went wrong on our side. Please try again.";
+    return "AI unavailable right now. Please try again in a moment.";
   };
 
   // - State -
@@ -314,6 +348,12 @@ function ChatPage() {
   const [showBriefing,setShowBriefing] = useState(false);
   const [webSearchEnabled,setWebSearchEnabled] = useState(true);
   const [streamingMsg,setStreamingMsg] = useState("");
+  const [imgAspect,setImgAspect] = useState<ImgOpts["aspect"]>(()=>((typeof localStorage!=="undefined"&&localStorage.getItem("aem-img-aspect")) as any)||"1:1");
+  const [imgQty,setImgQty] = useState<number>(()=>{try{return Math.max(1,Math.min(4,parseInt(localStorage.getItem("aem-img-qty")||"1")||1));}catch{return 1;}});
+  const [imgQuality,setImgQuality] = useState<ImgOpts["quality"]>(()=>((typeof localStorage!=="undefined"&&localStorage.getItem("aem-img-quality")) as any)||"standard");
+  const [showImgOpts,setShowImgOpts] = useState(false);
+  const [aiGreeting,setAiGreeting] = useState<string>("");
+  const [faqItems,setFaqItems] = useState<string[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -325,6 +365,9 @@ function ChatPage() {
   useEffect(()=>{try{localStorage.setItem("aem-length",respLen);}catch{}},[respLen]);
   useEffect(()=>{try{localStorage.setItem("aem-fontsize",fontSize);}catch{}},[fontSize]);
   useEffect(()=>{try{localStorage.setItem("aem-pinned",JSON.stringify(pinned));}catch{}},[pinned]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-aspect",imgAspect);}catch{}},[imgAspect]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-qty",String(imgQty));}catch{}},[imgQty]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-quality",imgQuality);}catch{}},[imgQuality]);
   useEffect(()=>{const on=()=>setIsOffline(false);const off=()=>setIsOffline(true);window.addEventListener("online",on);window.addEventListener("offline",off);return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};},[]);
 
   // TTS
@@ -384,6 +427,46 @@ function ChatPage() {
     const pool=h<5?pools.late:h<12?pools.morning:h<17?pools.afternoon:h<22?pools.evening:pools.late;
     return pool[Math.floor(Math.random()*pool.length)];
   },[activeConvId]);
+
+  // AI-personalised greeting + FAQ -- refreshed each login
+  useEffect(()=>{
+    if(!userId) return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const{data:mine}=await supabase.from("messages").select("content,role,created_at").eq("user_id",userId).eq("role","user").order("created_at",{ascending:false}).limit(60);
+        const mineArr=(mine||[]) as {content:string;created_at:string}[];
+        const hours=mineArr.map(m=>new Date(m.created_at).getHours());
+        const activeHour=hours.length?Math.round(hours.reduce((a,b)=>a+b,0)/hours.length):new Date().getHours();
+        const topics=mineArr.map(m=>String(m.content||"").slice(0,120)).filter(Boolean).slice(0,15).join(" | ");
+        const now=new Date().getHours();
+        const timeLabel=now<5?"late night":now<12?"morning":now<17?"afternoon":now<22?"evening":"night";
+        const name=displayName||"friend";
+        const prompt="You are HI THERE, a warm AI companion. Write ONE short unique greeting (max 22 words, no emojis, no quotes) for "+name+" opening the app in the "+timeLabel+". They usually chat around "+activeHour+":00. Recent things they've asked about: "+(topics||"nothing yet")+". Make it feel personal, fresh, and never repeat past greetings. Return only the greeting sentence.";
+        try{
+          const g=await callPuterAI([{role:"user",content:prompt}]);
+          if(!cancelled&&g) setAiGreeting(String(g).replace(/^["']|["']$/g,"").trim().slice(0,220));
+        }catch{}
+
+        // FAQ -- learn from real user questions across the platform
+        const{data:pop}=await supabase.from("messages").select("content").eq("role","user").order("created_at",{ascending:false}).limit(200);
+        const seen=new Set<string>();
+        const qs:string[]=[];
+        for(const r of (pop||[]) as {content:string}[]){
+          const t=String(r.content||"").trim();
+          if(t.length<8||t.length>140) continue;
+          if(!t.includes("?")&&!/^(how|what|why|can|do|does|is|are|when|where|who|should|could|would)\b/i.test(t)) continue;
+          const k=t.toLowerCase().replace(/[^a-z0-9 ]/g," ").split(" ").filter(Boolean).slice(0,6).join(" ");
+          if(seen.has(k)) continue;
+          seen.add(k); qs.push(t);
+          if(qs.length>=6) break;
+        }
+        if(!cancelled) setFaqItems(qs);
+      }catch{}
+    })();
+    return()=>{cancelled=true;};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[userId]);
 
   // Suggestions -- zero regex
   const lastAI = useMemo(()=>[...messages].reverse().find(m=>m.role==="assistant"),[messages]);
@@ -621,8 +704,8 @@ const downloadAsFile=(m:Msg)=>{
         setStatusMsg("Creating image...");
         try{
           const imgPrompt=low.startsWith("/image ")?text.slice(7):text;
-          const b64=await generateImagePollinations(imgPrompt);
-          data={image_b64:b64,provider:"hi-there"};
+          const arr=await generateImagePollinations(imgPrompt,{aspect:imgAspect,quantity:imgQty,quality:imgQuality});
+          data={image_b64_list:arr,image_prompt:imgPrompt,provider:"hi-there"};
         }catch{/* fall through to server */}
       }
 
@@ -638,10 +721,25 @@ const downloadAsFile=(m:Msg)=>{
 
       let aAtts:Attachment[]=[]; let sAtts:Attachment[]=[];
 
-      if(data.image_b64){
-        const fn="artwork-"+Date.now()+".png";const ip=userId+"/generated/"+fn;
-        try{const blob=b64ToBlob(data.image_b64,"image/png");const{error:ie}=await supabase.storage.from("chat-uploads").upload(ip,blob,{contentType:"image/png",upsert:true});if(ie)throw ie;const{data:sig}=await supabase.storage.from("chat-uploads").createSignedUrl(ip,60*60*24*7);aAtts=[{name:fn,type:"image/png",size:blob.size,path:ip,url:sig?.signedUrl||"",data:data.image_b64}];sAtts=stripData(aAtts);}
-        catch{aAtts=[{name:"generated-"+Date.now()+".png",type:"image/png",size:data.image_b64.length,url:"data:image/png;base64,"+data.image_b64,data:data.image_b64}];sAtts=aAtts;}
+      const imgList:string[]=Array.isArray(data.image_b64_list)?data.image_b64_list:(data.image_b64?[data.image_b64]:[]);
+      if(imgList.length){
+        const baseName=slugifyPrompt(String(data.image_prompt||text||"image"));
+        for(let idx=0;idx<imgList.length;idx++){
+          const b64=imgList[idx];
+          const suffix=imgList.length>1?("-"+(idx+1)):"";
+          const fn=baseName+suffix+".png";
+          const ip=userId+"/generated/"+Date.now()+"-"+idx+"-"+fn;
+          try{
+            const blob=b64ToBlob(b64,"image/png");
+            const{error:ie}=await supabase.storage.from("chat-uploads").upload(ip,blob,{contentType:"image/png",upsert:true});
+            if(ie)throw ie;
+            const{data:sig}=await supabase.storage.from("chat-uploads").createSignedUrl(ip,60*60*24*7);
+            aAtts.push({name:fn,type:"image/png",size:blob.size,path:ip,url:sig?.signedUrl||"",data:b64});
+          }catch{
+            aAtts.push({name:fn,type:"image/png",size:b64.length,url:"data:image/png;base64,"+b64,data:b64});
+          }
+        }
+        sAtts=stripData(aAtts);
       }
 
       if(data.video_b64){
@@ -650,13 +748,13 @@ const downloadAsFile=(m:Msg)=>{
         catch{aAtts=[{name:"animated-"+Date.now()+".mp4",type:"video/mp4",size:data.video_b64.length,url:"data:video/mp4;base64,"+data.video_b64,data:data.video_b64}];sAtts=aAtts;}
       }
 
-      const reply:string=data.image_b64?"Here's what I created:":data.video_b64?"Here's your animation:":data.content||"(no response)";
+      const reply:string=imgList.length?(imgList.length>1?"Here are your "+imgList.length+" images:":"Here's what I created:"):data.video_b64?"Here's your animation:":data.content||"(no response)";
       const thinking:string|undefined=data.thinking;
       const citations:{title:string;url:string}[]|undefined=data.citations;
       const aid=crypto.randomUUID();
 
       // Typewriter -- word by word like ChatGPT
-      if(!data.image_b64&&!data.video_b64){
+      if(!imgList.length&&!data.video_b64){
         const words=reply.split(" ");let built="";setTyping("");
         await new Promise<void>(res=>{
           let wi=0;
@@ -679,7 +777,7 @@ const downloadAsFile=(m:Msg)=>{
         const recent=all.slice(-10).map(m=>m.role+": "+m.content).join("\n").slice(0,3000);
         supabase.functions.invoke("chat",{body:{messages:[{role:"system",content:"Extract personal facts about the user from this conversation as bullet points starting with '-'. Max 10. Only real verified facts."},{role:"user",content:recent}],prefs:{personality:"direct",length:"short"}}}).then(({data:md})=>{if(md?.content&&userId){supabase.from("profiles").update({memory_summary:md.content} as any).eq("user_id",userId);setMemory(md.content);}});
       }
-    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:"Warning: "+msg,created_at:new Date().toISOString()}]);}
+    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:msg,created_at:new Date().toISOString()}]);}
     finally{setSending(false);setStatusMsg("Thinking...");}
   };
 
@@ -826,12 +924,25 @@ const downloadAsFile=(m:Msg)=>{
                       </div>
                       {aemMode&&<div className="absolute -top-1 -right-1 rounded-full bg-primary px-2 py-0.5 text-[9px] font-bold text-white shadow-lg">AEM</div>}
                     </div>
-                    <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{greeting}{displayName?", "+displayName:""}</h1>
+                    <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{aiGreeting||(greeting+(displayName?", "+displayName:""))}</h1>
                     <p className="mt-3 text-sm text-zinc-500 max-w-md mx-auto">Your intelligent AI platform -- reads files, builds code, generates images, searches the web, and more.</p>
                     <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-zinc-500">
                       {[" ZIP & PDF"," Images"," Voice"," Full code"," 6 languages","! Live preview"," Web search"].map(c=><span key={c} className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{c}</span>)}
                     </div>
                   </div>
+                  {faqItems.length>0&&(
+                    <div className="mx-auto max-w-2xl rounded-3xl border border-white/5 bg-white/3 p-4">
+                      <p className="mb-3 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-primary"><Sparkles className="h-3.5 w-3.5"/> What people are asking</p>
+                      <div className="space-y-1.5">
+                        {faqItems.map((q,i)=>(
+                          <button key={i} onClick={()=>setInput(q)} className="flex w-full items-start gap-2 rounded-2xl px-3 py-2 text-left text-sm text-zinc-400 hover:bg-white/5 hover:text-zinc-200 transition-colors">
+                            <span className="mt-0.5 text-zinc-600">Q.</span><span className="flex-1">{q}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[10px] text-zinc-600">Learns from real conversations across HI THERE.</p>
+                    </div>
+                  )}
                   <div className="grid gap-2 sm:grid-cols-2">
                     {[{icon:ImageIcon,label:"Generate an image",prompt:"Generate an image of "},{icon:Bug,label:"Audit my project",prompt:"Here is my project ZIP. Find all bugs sorted by severity:\n"},{icon:Globe,label:"Search the web",prompt:"Search and summarize: "},{icon:Brain,label:"Deep reasoning",prompt:"/think "}].map(q=>(
                       <button key={q.label} onClick={()=>setInput(q.prompt)} className="group flex items-center gap-3 rounded-2xl border border-white/5 bg-white/3 p-4 text-left text-sm backdrop-blur transition-all hover:border-primary/30 hover:bg-white/5 hover:shadow-lg hover:shadow-primary/5">
@@ -905,6 +1016,46 @@ const downloadAsFile=(m:Msg)=>{
           {/* Input area */}
           <div className="border-t border-white/5 bg-zinc-950/90 p-3 backdrop-blur-xl sm:p-4">
             <div className="mx-auto max-w-3xl">
+              {/* Personality + length quick-select */}
+              <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px]">
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-600 uppercase tracking-wider">Tone</span>
+                  {[{v:"direct",l:"Direct"},{v:"friendly",l:"Friendly"},{v:"detailed",l:"Detailed"}].map(o=>(
+                    <button key={o.v} onClick={()=>setPersonality(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(personality===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-600 uppercase tracking-wider">Length</span>
+                  {[{v:"short",l:"Short"},{v:"normal",l:"Normal"},{v:"detailed",l:"Long"}].map(o=>(
+                    <button key={o.v} onClick={()=>setRespLen(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(respLen===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                  ))}
+                </div>
+                <button onClick={()=>setShowImgOpts(v=>!v)} className={"ml-auto flex items-center gap-1 rounded-lg px-2 py-0.5 transition-colors "+(showImgOpts?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>
+                  <ImageIcon className="h-3 w-3"/> Image options
+                </button>
+              </div>
+              {showImgOpts&&(
+                <div className="mb-2 flex flex-wrap items-center gap-3 rounded-2xl border border-white/5 bg-white/3 px-3 py-2 text-[10px]">
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Aspect</span>
+                    {[{v:"1:1",l:"Square"},{v:"9:16",l:"Portrait"},{v:"16:9",l:"Landscape"}].map(o=>(
+                      <button key={o.v} onClick={()=>setImgAspect(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgAspect===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l} {o.v}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Quantity</span>
+                    {[1,2,3,4].map(n=>(
+                      <button key={n} onClick={()=>setImgQty(n)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgQty===n?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{n}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Quality</span>
+                    {[{v:"standard",l:"Standard"},{v:"high",l:"High"}].map(o=>(
+                      <button key={o.v} onClick={()=>setImgQuality(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgQuality===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Slash menu */}
               {slashMatches.length>0&&<div className="mb-2 rounded-2xl border border-white/10 bg-zinc-900/95 p-1.5 shadow-xl backdrop-blur">{slashMatches.map(c=><button key={c.cmd} onClick={()=>{setInput(c.cmd+" ");}} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/5"><span className="font-mono text-xs font-bold text-primary">{c.cmd}</span><span className="text-xs text-zinc-500">{c.desc}</span></button>)}</div>}
 
