@@ -924,12 +924,25 @@ const downloadAsFile=(m:Msg)=>{
                       </div>
                       {aemMode&&<div className="absolute -top-1 -right-1 rounded-full bg-primary px-2 py-0.5 text-[9px] font-bold text-white shadow-lg">AEM</div>}
                     </div>
-                    <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{greeting}{displayName?", "+displayName:""}</h1>
+                    <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{aiGreeting||(greeting+(displayName?", "+displayName:""))}</h1>
                     <p className="mt-3 text-sm text-zinc-500 max-w-md mx-auto">Your intelligent AI platform -- reads files, builds code, generates images, searches the web, and more.</p>
                     <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-zinc-500">
                       {[" ZIP & PDF"," Images"," Voice"," Full code"," 6 languages","! Live preview"," Web search"].map(c=><span key={c} className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{c}</span>)}
                     </div>
                   </div>
+                  {faqItems.length>0&&(
+                    <div className="mx-auto max-w-2xl rounded-3xl border border-white/5 bg-white/3 p-4">
+                      <p className="mb-3 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-primary"><Sparkles className="h-3.5 w-3.5"/> What people are asking</p>
+                      <div className="space-y-1.5">
+                        {faqItems.map((q,i)=>(
+                          <button key={i} onClick={()=>setInput(q)} className="flex w-full items-start gap-2 rounded-2xl px-3 py-2 text-left text-sm text-zinc-400 hover:bg-white/5 hover:text-zinc-200 transition-colors">
+                            <span className="mt-0.5 text-zinc-600">Q.</span><span className="flex-1">{q}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[10px] text-zinc-600">Learns from real conversations across HI THERE.</p>
+                    </div>
+                  )}
                   <div className="grid gap-2 sm:grid-cols-2">
                     {[{icon:ImageIcon,label:"Generate an image",prompt:"Generate an image of "},{icon:Bug,label:"Audit my project",prompt:"Here is my project ZIP. Find all bugs sorted by severity:\n"},{icon:Globe,label:"Search the web",prompt:"Search and summarize: "},{icon:Brain,label:"Deep reasoning",prompt:"/think "}].map(q=>(
                       <button key={q.label} onClick={()=>setInput(q.prompt)} className="group flex items-center gap-3 rounded-2xl border border-white/5 bg-white/3 p-4 text-left text-sm backdrop-blur transition-all hover:border-primary/30 hover:bg-white/5 hover:shadow-lg hover:shadow-primary/5">
