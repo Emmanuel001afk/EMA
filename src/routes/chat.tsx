@@ -291,10 +291,16 @@ function ChatPage() {
     const err = e as {message?:string;error?:string};
     if (!navigator.onLine) return "You're offline. Check your connection.";
     const raw = (err?.message||err?.error||"").toString().toLowerCase();
-    if (raw.includes("failed to fetch")||raw.includes("networkerror")) return "Network issue -- please try again.";
-    if (raw.includes("429")||raw.includes("cooldown")||raw.includes("limit")) return err?.message||"Daily limit reached. Try again later or upgrade.";
-    if (raw.includes("401")) return "Session expired. Please sign in again.";
-    return err?.message||"Something went wrong. Please try again.";
+    if (raw.includes("failed to fetch")||raw.includes("networkerror")||raw.includes("network request")) return "Network issue -- please try again in a moment.";
+    if (raw.includes("429")||raw.includes("cooldown")||raw.includes("rate limit")||raw.includes("too many")) return "You've hit the daily limit. Try again later or upgrade your plan.";
+    if (raw.includes("limit")&&raw.includes("day")) return "Daily message limit reached. Try again later or upgrade.";
+    if (raw.includes("401")||raw.includes("unauthor")||raw.includes("jwt")) return "Session expired. Please sign in again.";
+    if (raw.includes("edge function")||raw.includes("non-2xx")||raw.includes("502")||raw.includes("503")||raw.includes("504")||raw.includes("gateway")) return "AI is temporarily unavailable. Please try again shortly.";
+    if (raw.includes("timeout")||raw.includes("timed out")) return "That took too long. Please try again.";
+    if (raw.includes("image generation unavailable")) return "Image service is busy. Please try again in a moment.";
+    if (raw.includes("all providers failed")||raw.includes("providers")) return "AI is offline right now. Please try again soon.";
+    if (raw.includes("500")||raw.includes("internal")) return "Something went wrong on our side. Please try again.";
+    return "AI unavailable right now. Please try again in a moment.";
   };
 
   // - State -
@@ -342,6 +348,12 @@ function ChatPage() {
   const [showBriefing,setShowBriefing] = useState(false);
   const [webSearchEnabled,setWebSearchEnabled] = useState(true);
   const [streamingMsg,setStreamingMsg] = useState("");
+  const [imgAspect,setImgAspect] = useState<ImgOpts["aspect"]>(()=>((typeof localStorage!=="undefined"&&localStorage.getItem("aem-img-aspect")) as any)||"1:1");
+  const [imgQty,setImgQty] = useState<number>(()=>{try{return Math.max(1,Math.min(4,parseInt(localStorage.getItem("aem-img-qty")||"1")||1));}catch{return 1;}});
+  const [imgQuality,setImgQuality] = useState<ImgOpts["quality"]>(()=>((typeof localStorage!=="undefined"&&localStorage.getItem("aem-img-quality")) as any)||"standard");
+  const [showImgOpts,setShowImgOpts] = useState(false);
+  const [aiGreeting,setAiGreeting] = useState<string>("");
+  const [faqItems,setFaqItems] = useState<string[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -353,6 +365,9 @@ function ChatPage() {
   useEffect(()=>{try{localStorage.setItem("aem-length",respLen);}catch{}},[respLen]);
   useEffect(()=>{try{localStorage.setItem("aem-fontsize",fontSize);}catch{}},[fontSize]);
   useEffect(()=>{try{localStorage.setItem("aem-pinned",JSON.stringify(pinned));}catch{}},[pinned]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-aspect",imgAspect);}catch{}},[imgAspect]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-qty",String(imgQty));}catch{}},[imgQty]);
+  useEffect(()=>{try{localStorage.setItem("aem-img-quality",imgQuality);}catch{}},[imgQuality]);
   useEffect(()=>{const on=()=>setIsOffline(false);const off=()=>setIsOffline(true);window.addEventListener("online",on);window.addEventListener("offline",off);return()=>{window.removeEventListener("online",on);window.removeEventListener("offline",off);};},[]);
 
   // TTS
