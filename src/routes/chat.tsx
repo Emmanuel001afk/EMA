@@ -1016,6 +1016,46 @@ const downloadAsFile=(m:Msg)=>{
           {/* Input area */}
           <div className="border-t border-white/5 bg-zinc-950/90 p-3 backdrop-blur-xl sm:p-4">
             <div className="mx-auto max-w-3xl">
+              {/* Personality + length quick-select */}
+              <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px]">
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-600 uppercase tracking-wider">Tone</span>
+                  {[{v:"direct",l:"Direct"},{v:"friendly",l:"Friendly"},{v:"detailed",l:"Detailed"}].map(o=>(
+                    <button key={o.v} onClick={()=>setPersonality(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(personality===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-600 uppercase tracking-wider">Length</span>
+                  {[{v:"short",l:"Short"},{v:"normal",l:"Normal"},{v:"detailed",l:"Long"}].map(o=>(
+                    <button key={o.v} onClick={()=>setRespLen(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(respLen===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                  ))}
+                </div>
+                <button onClick={()=>setShowImgOpts(v=>!v)} className={"ml-auto flex items-center gap-1 rounded-lg px-2 py-0.5 transition-colors "+(showImgOpts?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>
+                  <ImageIcon className="h-3 w-3"/> Image options
+                </button>
+              </div>
+              {showImgOpts&&(
+                <div className="mb-2 flex flex-wrap items-center gap-3 rounded-2xl border border-white/5 bg-white/3 px-3 py-2 text-[10px]">
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Aspect</span>
+                    {[{v:"1:1",l:"Square"},{v:"9:16",l:"Portrait"},{v:"16:9",l:"Landscape"}].map(o=>(
+                      <button key={o.v} onClick={()=>setImgAspect(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgAspect===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l} {o.v}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Quantity</span>
+                    {[1,2,3,4].map(n=>(
+                      <button key={n} onClick={()=>setImgQty(n)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgQty===n?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{n}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-600 uppercase tracking-wider">Quality</span>
+                    {[{v:"standard",l:"Standard"},{v:"high",l:"High"}].map(o=>(
+                      <button key={o.v} onClick={()=>setImgQuality(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(imgQuality===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Slash menu */}
               {slashMatches.length>0&&<div className="mb-2 rounded-2xl border border-white/10 bg-zinc-900/95 p-1.5 shadow-xl backdrop-blur">{slashMatches.map(c=><button key={c.cmd} onClick={()=>{setInput(c.cmd+" ");}} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/5"><span className="font-mono text-xs font-bold text-primary">{c.cmd}</span><span className="text-xs text-zinc-500">{c.desc}</span></button>)}</div>}
 
