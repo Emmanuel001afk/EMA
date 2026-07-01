@@ -704,8 +704,8 @@ const downloadAsFile=(m:Msg)=>{
         setStatusMsg("Creating image...");
         try{
           const imgPrompt=low.startsWith("/image ")?text.slice(7):text;
-          const b64=await generateImagePollinations(imgPrompt);
-          data={image_b64:b64,provider:"hi-there"};
+          const arr=await generateImagePollinations(imgPrompt,{aspect:imgAspect,quantity:imgQty,quality:imgQuality});
+          data={image_b64_list:arr,image_prompt:imgPrompt,provider:"hi-there"};
         }catch{/* fall through to server */}
       }
 
@@ -721,10 +721,25 @@ const downloadAsFile=(m:Msg)=>{
 
       let aAtts:Attachment[]=[]; let sAtts:Attachment[]=[];
 
-      if(data.image_b64){
-        const fn="artwork-"+Date.now()+".png";const ip=userId+"/generated/"+fn;
-        try{const blob=b64ToBlob(data.image_b64,"image/png");const{error:ie}=await supabase.storage.from("chat-uploads").upload(ip,blob,{contentType:"image/png",upsert:true});if(ie)throw ie;const{data:sig}=await supabase.storage.from("chat-uploads").createSignedUrl(ip,60*60*24*7);aAtts=[{name:fn,type:"image/png",size:blob.size,path:ip,url:sig?.signedUrl||"",data:data.image_b64}];sAtts=stripData(aAtts);}
-        catch{aAtts=[{name:"generated-"+Date.now()+".png",type:"image/png",size:data.image_b64.length,url:"data:image/png;base64,"+data.image_b64,data:data.image_b64}];sAtts=aAtts;}
+      const imgList:string[]=Array.isArray(data.image_b64_list)?data.image_b64_list:(data.image_b64?[data.image_b64]:[]);
+      if(imgList.length){
+        const baseName=slugifyPrompt(String(data.image_prompt||text||"image"));
+        for(let idx=0;idx<imgList.length;idx++){
+          const b64=imgList[idx];
+          const suffix=imgList.length>1?("-"+(idx+1)):"";
+          const fn=baseName+suffix+".png";
+          const ip=userId+"/generated/"+Date.now()+"-"+idx+"-"+fn;
+          try{
+            const blob=b64ToBlob(b64,"image/png");
+            const{error:ie}=await supabase.storage.from("chat-uploads").upload(ip,blob,{contentType:"image/png",upsert:true});
+            if(ie)throw ie;
+            const{data:sig}=await supabase.storage.from("chat-uploads").createSignedUrl(ip,60*60*24*7);
+            aAtts.push({name:fn,type:"image/png",size:blob.size,path:ip,url:sig?.signedUrl||"",data:b64});
+          }catch{
+            aAtts.push({name:fn,type:"image/png",size:b64.length,url:"data:image/png;base64,"+b64,data:b64});
+          }
+        }
+        sAtts=stripData(aAtts);
       }
 
       if(data.video_b64){
@@ -733,13 +748,13 @@ const downloadAsFile=(m:Msg)=>{
         catch{aAtts=[{name:"animated-"+Date.now()+".mp4",type:"video/mp4",size:data.video_b64.length,url:"data:video/mp4;base64,"+data.video_b64,data:data.video_b64}];sAtts=aAtts;}
       }
 
-      const reply:string=data.image_b64?"Here's what I created:":data.video_b64?"Here's your animation:":data.content||"(no response)";
+      const reply:string=imgList.length?(imgList.length>1?"Here are your "+imgList.length+" images:":"Here's what I created:"):data.video_b64?"Here's your animation:":data.content||"(no response)";
       const thinking:string|undefined=data.thinking;
       const citations:{title:string;url:string}[]|undefined=data.citations;
       const aid=crypto.randomUUID();
 
       // Typewriter -- word by word like ChatGPT
-      if(!data.image_b64&&!data.video_b64){
+      if(!imgList.length&&!data.video_b64){
         const words=reply.split(" ");let built="";setTyping("");
         await new Promise<void>(res=>{
           let wi=0;
@@ -762,7 +777,7 @@ const downloadAsFile=(m:Msg)=>{
         const recent=all.slice(-10).map(m=>m.role+": "+m.content).join("\n").slice(0,3000);
         supabase.functions.invoke("chat",{body:{messages:[{role:"system",content:"Extract personal facts about the user from this conversation as bullet points starting with '-'. Max 10. Only real verified facts."},{role:"user",content:recent}],prefs:{personality:"direct",length:"short"}}}).then(({data:md})=>{if(md?.content&&userId){supabase.from("profiles").update({memory_summary:md.content} as any).eq("user_id",userId);setMemory(md.content);}});
       }
-    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:"Warning: "+msg,created_at:new Date().toISOString()}]);}
+    }catch(e:unknown){const msg=friendlyErr(e);setError(msg);setMessages(m=>[...m,{id:crypto.randomUUID(),role:"assistant",content:msg,created_at:new Date().toISOString()}]);}
     finally{setSending(false);setStatusMsg("Thinking...");}
   };
 
