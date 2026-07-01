@@ -49,21 +49,49 @@ async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string
 }
 
 // - Pollinations.ai image generation -- NO API KEY NEEDED -
-async function generateImagePollinations(prompt: string): Promise<string> {
+type ImgOpts = { aspect: "1:1"|"9:16"|"16:9"; quantity: number; quality: "standard"|"high" };
+function aspectDims(a: ImgOpts["aspect"], q: ImgOpts["quality"]) {
+  const hi = q === "high";
+  if (a === "9:16") return hi ? { w: 896, h: 1600 } : { w: 640, h: 1152 };
+  if (a === "16:9") return hi ? { w: 1600, h: 896 } : { w: 1152, h: 640 };
+  return hi ? { w: 1280, h: 1280 } : { w: 1024, h: 1024 };
+}
+function slugifyPrompt(text: string, max = 48): string {
+  const cleaned = text.toLowerCase().split("").map(ch => {
+    const c = ch.charCodeAt(0);
+    if ((c >= 48 && c <= 57) || (c >= 97 && c <= 122)) return ch;
+    return "-";
+  }).join("");
+  const parts = cleaned.split("-").filter(Boolean).slice(0, 8);
+  const slug = parts.join("-").slice(0, max);
+  return slug || "image";
+}
+async function generateImagePollinations(prompt: string, opts?: Partial<ImgOpts>): Promise<string[]> {
+  const o: ImgOpts = { aspect: opts?.aspect || "1:1", quantity: Math.max(1, Math.min(4, opts?.quantity || 1)), quality: opts?.quality || "standard" };
+  const { w, h } = aspectDims(o.aspect, o.quality);
   const encoded = encodeURIComponent(prompt);
   const models = ["flux", "turbo", "seedream"];
-  for (const model of models) {
-    try {
-      const url = "https://image.pollinations.ai/prompt/" + encoded + "?model=" + model + "&width=1024&height=1024&nologo=true";
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const buf = new Uint8Array(await r.arrayBuffer());
-      let bin = "";
-      for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
-      return btoa(bin);
-    } catch { continue; }
+  const out: string[] = [];
+  for (let i = 0; i < o.quantity; i++) {
+    const seed = Math.floor(Math.random() * 1_000_000);
+    let ok = false;
+    for (const model of models) {
+      try {
+        const url = "https://image.pollinations.ai/prompt/" + encoded + "?model=" + model + "&width=" + w + "&height=" + h + "&seed=" + seed + "&nologo=true" + (o.quality === "high" ? "&enhance=true" : "");
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const buf = new Uint8Array(await r.arrayBuffer());
+        let bin = "";
+        for (let j = 0; j < buf.length; j++) bin += String.fromCharCode(buf[j]);
+        out.push(btoa(bin));
+        ok = true;
+        break;
+      } catch { continue; }
+    }
+    if (!ok && out.length === 0) throw new Error("Image generation unavailable");
   }
-  throw new Error("Image generation unavailable");
+  if (!out.length) throw new Error("Image generation unavailable");
+  return out;
 }
 
 // - Types -
