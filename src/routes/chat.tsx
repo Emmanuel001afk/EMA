@@ -8,7 +8,7 @@ import {
   FileText, Film, ChevronDown, ChevronLeft, ChevronRight, Bookmark,
   BookmarkCheck, Activity, FileDown, Bug,
   Type as TypeIcon, Mic, MicOff, Globe, Brain,
-  Star, ExternalLink, Play,
+  Star, ExternalLink, Play, Image as ImageIcon,
 } from "lucide-react";
 import { Footer } from "@/components/Footer";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -435,9 +435,9 @@ function ChatPage() {
           const dotCount=first.trim().split(".").length-1;
           const isBare=first.trim().length>0&&first.trim().length<60&&dotCount>=1&&!first.trim().includes(" ");
           let body=raw; let fname:string|undefined;
-          if(fh){fname=fh[1];body=raw.split("\n").slice(1).join("\n");}
+          if(fh){fname=fh[1]||undefined;body=raw.split("\n").slice(1).join("\n");}
           else if(lg&&isBare){fname=first.trim();body=raw.split("\n").slice(1).join("\n");}
-          return <Code code={body} lang={lg} filename={fname}/>;
+          return <Code code={body} lang={lg||undefined} filename={fname}/>;
         },
         code:({inline,className,children,...p}:any)=>inline?<code className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[0.85em] text-primary" {...p}>{children}</code>:<code className={className} {...p}>{children}</code>,
       }}>{text}</ReactMarkdown>
