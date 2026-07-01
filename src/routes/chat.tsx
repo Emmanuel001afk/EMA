@@ -428,6 +428,46 @@ function ChatPage() {
     return pool[Math.floor(Math.random()*pool.length)];
   },[activeConvId]);
 
+  // AI-personalised greeting + FAQ -- refreshed each login
+  useEffect(()=>{
+    if(!userId) return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const{data:mine}=await supabase.from("messages").select("content,role,created_at").eq("user_id",userId).eq("role","user").order("created_at",{ascending:false}).limit(60);
+        const mineArr=(mine||[]) as {content:string;created_at:string}[];
+        const hours=mineArr.map(m=>new Date(m.created_at).getHours());
+        const activeHour=hours.length?Math.round(hours.reduce((a,b)=>a+b,0)/hours.length):new Date().getHours();
+        const topics=mineArr.map(m=>String(m.content||"").slice(0,120)).filter(Boolean).slice(0,15).join(" | ");
+        const now=new Date().getHours();
+        const timeLabel=now<5?"late night":now<12?"morning":now<17?"afternoon":now<22?"evening":"night";
+        const name=displayName||"friend";
+        const prompt="You are HI THERE, a warm AI companion. Write ONE short unique greeting (max 22 words, no emojis, no quotes) for "+name+" opening the app in the "+timeLabel+". They usually chat around "+activeHour+":00. Recent things they've asked about: "+(topics||"nothing yet")+". Make it feel personal, fresh, and never repeat past greetings. Return only the greeting sentence.";
+        try{
+          const g=await callPuterAI([{role:"user",content:prompt}]);
+          if(!cancelled&&g) setAiGreeting(String(g).replace(/^["']|["']$/g,"").trim().slice(0,220));
+        }catch{}
+
+        // FAQ -- learn from real user questions across the platform
+        const{data:pop}=await supabase.from("messages").select("content").eq("role","user").order("created_at",{ascending:false}).limit(200);
+        const seen=new Set<string>();
+        const qs:string[]=[];
+        for(const r of (pop||[]) as {content:string}[]){
+          const t=String(r.content||"").trim();
+          if(t.length<8||t.length>140) continue;
+          if(!t.includes("?")&&!/^(how|what|why|can|do|does|is|are|when|where|who|should|could|would)\b/i.test(t)) continue;
+          const k=t.toLowerCase().replace(/[^a-z0-9 ]/g," ").split(" ").filter(Boolean).slice(0,6).join(" ");
+          if(seen.has(k)) continue;
+          seen.add(k); qs.push(t);
+          if(qs.length>=6) break;
+        }
+        if(!cancelled) setFaqItems(qs);
+      }catch{}
+    })();
+    return()=>{cancelled=true;};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[userId]);
+
   // Suggestions -- zero regex
   const lastAI = useMemo(()=>[...messages].reverse().find(m=>m.role==="assistant"),[messages]);
   const suggestions = useMemo(()=>{
