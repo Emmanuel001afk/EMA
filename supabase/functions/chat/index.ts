@@ -105,9 +105,9 @@ async function callHuggingFaceText(messages: any[], key: string, model: string) 
     messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n") + "\nASSISTANT:";
   const candidates = [
     model,
-    "Davlan/afro-xlmr-large",
-    "castorini/afriberta_large",
-    "google/mt5-base",
+    "CohereForAI/aya-101",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "mistralai/Mistral-7B-Instruct-v0.3",
   ];
   let lastErr = "";
   const safeKey = sanitizeHeaderValue(key);
@@ -161,7 +161,7 @@ async function callProvider(
     if (!k) throw new Error("GROQ_API_KEY missing");
     return await callOpenAICompat(
       "https://api.groq.com/openai/v1/chat/completions",
-      "llama-3.3-70b-versatile",
+      "openai/gpt-oss-120b",
       messages,
       k,
       "groq",
@@ -194,7 +194,7 @@ async function callProvider(
     if (!k) throw new Error("OPENAI_API_KEY missing");
     return await callOpenAICompat(
       "https://api.openai.com/v1/chat/completions",
-      "gpt-4o-mini",
+      "gpt-5.4-mini",
       messages,
       k,
       "openai",
@@ -205,7 +205,7 @@ async function callProvider(
     if (!k) throw new Error("CEREBRAS_API_KEY missing");
     return await callOpenAICompat(
       "https://api.cerebras.ai/v1/chat/completions",
-      "llama-3.3-70b",
+      "llama-3.3-70b-instruct-fp8",
       messages,
       k,
       "cerebras",
@@ -214,14 +214,14 @@ async function callProvider(
   if (p === "huggingface") {
     const k = getKey("HUGGINGFACE_API_KEY");
     if (!k) throw new Error("HUGGINGFACE_API_KEY missing");
-    return await callHuggingFaceText(messages, k, "Davlan/afro-xlmr-large");
+    return await callHuggingFaceText(messages, k, "CohereForAI/aya-101");
   }
   // openrouter — universal failover
   const k = getKey("OPENROUTER_API_KEY");
   if (!k) throw new Error("OPENROUTER_API_KEY missing");
   return await callOpenAICompat(
     "https://openrouter.ai/api/v1/chat/completions",
-    "meta-llama/llama-3.3-70b-instruct",
+    "meta-llama/llama-4-maverick",
     messages,
     k,
     "openrouter",
