@@ -601,6 +601,7 @@ function ChatPage() {
 
   // Self audit
   const runAudit = async()=>{
+    if(!isAdmin){setError("AEM Neural Hub is only available to the site admin.");return;}
     setAuditOpen(true);setAuditing(true);setAuditReport(null);
     try{
       const{data,error:e}=await supabase.functions.invoke("chat",{body:{mode:"audit",messages:[]}});
@@ -653,7 +654,7 @@ const downloadAsFile=(m:Msg)=>{
     if(raw==="/summary"){setInput("Summarise this entire conversation in clear bullet points.");return;}
     if(raw==="/explain"){setInput("Explain the last code block in plain English, section by section.");return;}
     if(raw==="/fix"){setInput("Find and fix every bug in the last code I shared. Show the exact changes for each file.");return;}
-    if(raw==="/aem"){setInput("");setAemMode(v=>!v);setError(aemMode?"AEM Mode deactivated":"* AEM Mode activated -- your personal AI context is now active");return;}
+    if(raw==="/aem"){setInput("");setAemMode(v=>!v);return;}
     if(raw==="/compare"){setInput("");if(lastAI){await runCompare(messages[messages.length-2]?.content||"Compare two approaches");}return;}
     if(raw==="/think"){setInput("Use deep reasoning. Think through this step by step before answering: "+input.replace("/think","").trim());return;}
 
@@ -688,7 +689,7 @@ const downloadAsFile=(m:Msg)=>{
       const vidTerms=["animate","animation","make it move","image to video","turn into video","moving image","video from image"];
       const wantsVid=vidTerms.some(v=>low.includes(v));
 
-      const histWithMemory=memory?[{role:"system",content:"User memory:\n"+memory+(aemMode?"\n\nAEM MODE ACTIVE: This is the AEM platform creator. Provide elevated technical detail, remember all previous projects, and operate as the user's personal AI architect.":"")},...hist]:hist;
+      const histWithMemory=memory?[{role:"system",content:"User memory:\n"+memory+(aemMode&&isAdmin?"\n\nAEM MODE ACTIVE: This is the AEM platform creator. Provide elevated technical detail, remember all previous projects, and operate as the user's personal AI architect.":"")},...hist]:hist;
 
       let data:any=null;let invokeError:any=null;
 
@@ -699,20 +700,30 @@ const downloadAsFile=(m:Msg)=>{
         catch{}
       }
 
-      // CLIENT-SIDE image generation via Pollinations -- no server needed
+      // PRIMARY for images: paid chain via Supabase Edge Function (gpt-image-2 -> Gemini -> HuggingFace FLUX)
       if(wantsImg&&!data){
-        setStatusMsg("Creating image...");
+        setStatusMsg("Generating image...");
+        try{
+          const ir=await supabase.functions.invoke("chat",{body:{messages:histWithMemory,language,mode:"image",prefs:{personality,length:respLen,kidsMode,webSearch:webSearchEnabled,aemMode},attachments:atts.map(a=>({url:a.url,type:a.type,name:a.name,data:a.data}))}});
+          if(ir.error) throw ir.error;
+          data=ir.data;
+        }catch{/* fall through to free fallback below */}
+      }
+
+      // FALLBACK for images only: free Pollinations engine, used only if the paid chain above failed
+      if(wantsImg&&!data){
+        setStatusMsg("Creating image (free engine)...");
         try{
           const imgPrompt=low.startsWith("/image ")?text.slice(7):text;
           const arr=await generateImagePollinations(imgPrompt,{aspect:imgAspect,quantity:imgQty,quality:imgQuality});
           data={image_b64_list:arr,image_prompt:imgPrompt,provider:"hi-there"};
-        }catch{/* fall through to server */}
+        }catch{/* fall through to generic call below as a last resort */}
       }
 
-      // SECONDARY: Supabase Edge Function
+      // SECONDARY: Supabase Edge Function for everything else (text, video, files) or as a last-resort fallback
       if(!data){
-        setStatusMsg(wantsImg?"Generating image...":wantsVid?"Creating animation...":atts.some(a=>a.name.endsWith(".zip"))?"Reading ZIP...":atts.some(a=>isPdf(a))?"Reading PDF...":atts.length>0?"Processing files...":"Routing to best AI engine...");
-        const ir=await supabase.functions.invoke("chat",{body:{messages:histWithMemory,language,mode:wantsImg?"image":undefined,prefs:{personality,length:respLen,kidsMode,webSearch:webSearchEnabled,aemMode},attachments:atts.map(a=>({url:a.url,type:a.type,name:a.name,data:a.data}))}});
+        setStatusMsg(wantsVid?"Creating animation...":atts.some(a=>a.name.endsWith(".zip"))?"Reading ZIP...":atts.some(a=>isPdf(a))?"Reading PDF...":atts.length>0?"Processing files...":"Routing to best AI engine...");
+        const ir=await supabase.functions.invoke("chat",{body:{messages:histWithMemory,language,mode:undefined,prefs:{personality,length:respLen,kidsMode,webSearch:webSearchEnabled,aemMode},attachments:atts.map(a=>({url:a.url,type:a.type,name:a.name,data:a.data}))}});
         data=ir.data;invokeError=ir.error;
       }
 
@@ -1016,20 +1027,8 @@ const downloadAsFile=(m:Msg)=>{
           {/* Input area */}
           <div className="border-t border-white/5 bg-zinc-950/90 p-3 backdrop-blur-xl sm:p-4">
             <div className="mx-auto max-w-3xl">
-              {/* Personality + length quick-select */}
+              {/* Image options toggle only -- Tone/Length now live in the profile menu, no more duplicate bar */}
               <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px]">
-                <div className="flex items-center gap-1">
-                  <span className="text-zinc-600 uppercase tracking-wider">Tone</span>
-                  {[{v:"direct",l:"Direct"},{v:"friendly",l:"Friendly"},{v:"detailed",l:"Detailed"}].map(o=>(
-                    <button key={o.v} onClick={()=>setPersonality(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(personality===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
-                  ))}
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-zinc-600 uppercase tracking-wider">Length</span>
-                  {[{v:"short",l:"Short"},{v:"normal",l:"Normal"},{v:"detailed",l:"Long"}].map(o=>(
-                    <button key={o.v} onClick={()=>setRespLen(o.v as any)} className={"rounded-lg px-2 py-0.5 transition-colors "+(respLen===o.v?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>{o.l}</button>
-                  ))}
-                </div>
                 <button onClick={()=>setShowImgOpts(v=>!v)} className={"ml-auto flex items-center gap-1 rounded-lg px-2 py-0.5 transition-colors "+(showImgOpts?"bg-primary/20 text-primary":"text-zinc-500 hover:bg-white/5")}>
                   <ImageIcon className="h-3 w-3"/> Image options
                 </button>
