@@ -24,7 +24,7 @@ function Landing() {
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
             <Sparkles className="h-5 w-5" />
           </div>
-          <span className="text-lg font-bold tracking-tight">HI THERE</span>
+          <span className="text-lg font-bold tracking-tight">Hitab</span>
         </div>
         <Link
           to="/auth"
@@ -40,7 +40,7 @@ function Landing() {
           Multi-provider AI · Auto failover
         </div>
         <h1 className="bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-5xl font-extrabold tracking-tight text-transparent sm:text-6xl">
-          HI THERE
+          Hitab
         </h1>
         <p className="mt-4 max-w-xl text-lg text-muted-foreground">
           A sleek, friendly AI chat platform — fast, reliable, and always here when you need it.
