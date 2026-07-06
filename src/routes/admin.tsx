@@ -271,7 +271,7 @@ function AdminPage() {
           <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
             <Sparkles className="h-4 w-4" />
           </div>
-          <span className="text-base font-bold tracking-tight">HI THERE Admin</span>
+          <span className="text-base font-bold tracking-tight">Hitab Admin</span>
         </div>
       </header>
 
