@@ -57,7 +57,7 @@ function Settings() {
   const [prices, setPrices] = useState({ basic: 2000, premium: 5000 });
 
   // Personalization
-  const [aiName, setAiName] = useState("HI THERE");
+  const [aiName, setAiName] = useState("Hitab");
   const [customInstructions, setCustomInstructions] = useState("");
   const [neverDo, setNeverDo] = useState("");
 
@@ -100,7 +100,7 @@ function Settings() {
         setVoiceName((p as any).voice_name || "default");
         // Load extended prefs from profile json field if present
         const prefs = (p as any).prefs || {};
-        setAiName(prefs.ai_name || "HI THERE");
+        setAiName(prefs.ai_name || "Hitab");
         setCustomInstructions(prefs.custom_instructions || "");
         setNeverDo(prefs.never_do || "");
         setCapWebSearch(prefs.cap_web_search !== false);
@@ -380,7 +380,7 @@ function Settings() {
         {tab === "personalization" && (
           <Section title="Personalization">
             <Field label="Name the AI uses for you">
-              <input value={aiName} onChange={(e) => setAiName(e.target.value)} placeholder="HI THERE" className="input" />
+              <input value={aiName} onChange={(e) => setAiName(e.target.value)} placeholder="Hitab" className="input" />
             </Field>
             <Field label="Custom instructions (what should the AI always know about you?)">
               <textarea value={customInstructions} onChange={(e) => setCustomInstructions(e.target.value)}
@@ -451,7 +451,7 @@ function Settings() {
         {/* DATA TAB */}
         {tab === "data" && (
           <Section title="Your Data">
-            <p className="text-sm text-muted-foreground">Download everything HI THERE has stored about you — all conversations and messages — as a JSON file.</p>
+            <p className="text-sm text-muted-foreground">Download everything Hitab has stored about you — all conversations and messages — as a JSON file.</p>
             <button onClick={downloadData} className="btn-primary"><Download className="h-4 w-4" /> Download my data</button>
           </Section>
         )}
@@ -487,8 +487,9 @@ function Settings() {
         {/* ABOUT TAB */}
         {tab === "about" && (
           <>
-            <Section title="About HI THERE">
-              <p className="text-sm text-muted-foreground">HI THERE is a warm, intelligent AI assistant built for Nigerians and the world. It supports multiple languages, file reading, image generation, voice, and more.</p>
+            <Section title="About Hitab">
+              <p className="text-sm text-muted-foreground">Hitab is a warm, intelligent AI assistant built for Nigerians and the world. It supports multiple languages, file reading, image generation, voice, and more.</p>
+              <p className="text-sm text-muted-foreground mt-2">Hitab started life as "Hi There AI Buddy" — the name grew up, the AI underneath kept growing too.</p>
               <p className="text-sm text-muted-foreground mt-2">Version: 2.0 — built with ❤️</p>
             </Section>
             <Section title="Report a Problem">
