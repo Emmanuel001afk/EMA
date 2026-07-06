@@ -16,6 +16,7 @@ function AuthPage() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,6 +56,20 @@ function AuthPage() {
           options: { emailRedirectTo: redirectUrl, data: { display_name: name || email.split("@")[0] } },
         });
         if (error) throw error;
+        // Quietly set up Puter access in the background -- shows a branded "Setting up your AI" screen
+        // for the couple of seconds this takes. Never blocks signup if it fails; Puter-dependent
+        // features just fall back to the free engines and this gets retried next time it's needed.
+        setSettingUp(true);
+        try {
+          const w = window as any;
+          if (w.puter?.auth?.signIn) {
+            await w.puter.auth.signIn({ attempt_temp_user_creation: true });
+          }
+        } catch {
+          // Silent -- Puter setup is a nice-to-have, not a signup blocker
+        } finally {
+          setSettingUp(false);
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -82,12 +97,23 @@ function AuthPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
+      {settingUp && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-background/95 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-foreground animate-pulse">
+              <Sparkles className="h-7 w-7" />
+            </div>
+            <p className="text-lg font-bold tracking-tight">Setting up your AI, {name || "there"}...</p>
+            <p className="text-sm text-muted-foreground">Welcome to Hitab.</p>
+          </div>
+        </div>
+      )}
       <header className="px-6 py-4">
         <Link to="/" className="inline-flex items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
             <Sparkles className="h-5 w-5" />
           </div>
-          <span className="text-lg font-bold tracking-tight">HI THERE</span>
+          <span className="text-lg font-bold tracking-tight">Hitab</span>
         </Link>
       </header>
 
