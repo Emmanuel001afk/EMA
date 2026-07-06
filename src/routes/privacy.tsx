@@ -36,7 +36,7 @@ function Privacy() {
           <p>You can edit your profile, change language, export by copying messages, and delete your account at any time from Settings. Account deletion permanently removes your data.</p>
 
           <h2 className="text-lg font-semibold">Children</h2>
-          <p>HI THERE is not directed to children under 13. Do not use the Service if you are under 13.</p>
+          <p>Hitab is not directed to children under 13. Do not use the Service if you are under 13.</p>
 
           <h2 className="text-lg font-semibold">Contact</h2>
           <p>For privacy questions, use the in-app contact form on the Contact page.</p>
