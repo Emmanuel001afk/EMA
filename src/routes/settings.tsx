@@ -266,6 +266,7 @@ function Settings() {
     { id: "privacy", label: "Privacy" },
     { id: "data", label: "Data" },
     { id: "memory", label: "Memory" },
+    { id: "developer", label: "Developer" },
     { id: "about", label: "About" },
   ] as const;
 
@@ -484,6 +485,16 @@ function Settings() {
           </Section>
         )}
 
+        {/* DEVELOPER TAB */}
+        {tab === "developer" && (
+          <>
+            <Section title="API Access">
+              <p className="text-sm text-muted-foreground mb-3">Generate a key to call Hitab from your own app. Free tier: 100 requests/month.</p>
+              <DeveloperKeys userId={userId} />
+            </Section>
+          </>
+        )}
+
         {/* ABOUT TAB */}
         {tab === "about" && (
           <>
@@ -505,6 +516,65 @@ function Settings() {
         .btn-primary { display:inline-flex; align-items:center; gap:0.5rem; border-radius:0.5rem; background:var(--primary); color:var(--primary-foreground); padding:0.5rem 0.875rem; font-size:0.875rem; font-weight:600; }
         .btn-outline { display:inline-flex; align-items:center; justify-content:center; gap:0.5rem; border-radius:0.5rem; border:1px solid var(--border); background:var(--card); padding:0.5rem 0.875rem; font-size:0.875rem; font-weight:500; }
       `}</style>
+    </div>
+  );
+}
+
+function DeveloperKeys({ userId }: { userId: string | null }) {
+  const [keys, setKeys] = useState<any[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [justCreated, setJustCreated] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    if (!userId) return;
+    const { data } = await supabase.from("developer_api_keys").select("id,key_value,tier,usage_count,usage_limit,active,created_at,last_used_at").eq("user_id", userId).order("created_at", { ascending: false });
+    setKeys(data ?? []);
+  };
+  useEffect(() => { load(); }, [userId]);
+
+  const generate = async () => {
+    if (!userId) return;
+    setGenerating(true);
+    // Cryptographically random, not something a person types -- this is what makes it unguessable.
+    const raw = crypto.getRandomValues(new Uint8Array(24));
+    const key = "hitab_sk_" + Array.from(raw).map(b => b.toString(16).padStart(2, "0")).join("");
+    const { error } = await supabase.from("developer_api_keys").insert({ user_id: userId, key_value: key } as any);
+    setGenerating(false);
+    if (!error) { setJustCreated(key); await load(); }
+  };
+
+  const copy = async () => {
+    if (!justCreated) return;
+    await navigator.clipboard.writeText(justCreated);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="space-y-4">
+      {justCreated && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3">
+          <p className="text-xs text-muted-foreground mb-1">Copy this now -- it won't be shown again.</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 overflow-x-auto text-xs">{justCreated}</code>
+            <button onClick={copy} className="rounded-lg bg-primary px-2 py-1 text-xs text-primary-foreground">{copied ? "Copied" : "Copy"}</button>
+          </div>
+        </div>
+      )}
+      <button onClick={generate} disabled={generating} className="btn-primary">{generating ? "Generating..." : "Generate new key"}</button>
+      <div className="space-y-2">
+        {keys.map(k => (
+          <div key={k.id} className="flex items-center justify-between rounded-xl border border-border p-3 text-sm">
+            <div>
+              <p className="font-mono text-xs text-muted-foreground">{k.key_value.slice(0, 14)}...{k.key_value.slice(-4)}</p>
+              <p className="text-xs text-muted-foreground">{k.usage_count}/{k.usage_limit} used this month · {k.tier}</p>
+            </div>
+            <span className={"rounded-full px-2 py-0.5 text-xs " + (k.active ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground")}>{k.active ? "Active" : "Disabled"}</span>
+          </div>
+        ))}
+        {keys.length === 0 && <p className="text-sm text-muted-foreground">No keys yet.</p>}
+      </div>
     </div>
   );
 }
