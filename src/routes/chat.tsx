@@ -28,6 +28,21 @@ declare const puter: {
   auth: { isSignedIn: () => Promise<boolean>; signIn: () => Promise<void> };
 };
 
+// Makes sure the person actually has a live Puter session before a paid-tier feature tries to
+// use it. Covers the case where the silent sign-in at signup time failed (bad connection, etc.) --
+// instead of leaving them stuck forever, this quietly retries right when they actually need it.
+async function ensurePuterReady(): Promise<boolean> {
+  const w = window as any;
+  if (!w.puter?.auth) return false;
+  try {
+    if (await w.puter.auth.isSignedIn()) return true;
+    await w.puter.auth.signIn({ attempt_temp_user_creation: true });
+    return await w.puter.auth.isSignedIn();
+  } catch {
+    return false;
+  }
+}
+
 async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string> {
   if (typeof puter === "undefined") {
     await new Promise<void>((resolve, reject) => {
@@ -123,6 +138,10 @@ function b64ToBlob(b64:string, type:string) {
 async function fileToB64(file:File): Promise<string> {
   return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result||"").split(",")[1]||"");r.onerror=rej;r.readAsDataURL(file);});
 }
+async function mediaSrcToB64(src:string): Promise<string> {
+  const blob = await (await fetch(src)).blob();
+  return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result||"").split(",")[1]||"");r.onerror=rej;r.readAsDataURL(blob);});
+}
 async function readText(file:Blob, max=200000): Promise<string> {
   const sl = file.size > max ? file.slice(0,max) : file;
   const t = await sl.text();
@@ -203,6 +222,11 @@ function Code({code,lang,filename}:{code:string;lang?:string;filename?:string}) 
   const lbl = filename||(lang?lang+" snippet":"code");
   const copy = async()=>{try{await navigator.clipboard.writeText(code);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{}};
   const dl = ()=>{const b=new Blob([code],{type:"text/plain"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=filename?.split("/").pop()||("snippet."+(lang||"txt"));a.click();URL.revokeObjectURL(u);};
+  const share = async()=>{
+    const shareText=(filename?filename+"\n\n":"")+code;
+    if(navigator.share){try{await navigator.share({text:shareText});return;}catch{return;}}
+    window.open("https://wa.me/?text="+encodeURIComponent(shareText.slice(0,1500)),"_blank");
+  };
   const isRunnable = lang==="html"||lang==="jsx"||lang==="tsx"||lang==="react"||lang==="svg";
   const [preview,setPreview] = useState(false);
   let iframeDoc = code;
@@ -221,8 +245,9 @@ function Code({code,lang,filename}:{code:string;lang?:string;filename?:string}) 
         {isRunnable&&<button onClick={()=>{setPreview(v=>!v);if(!open)setOpen(true);}} className="rounded-md bg-primary/20 px-2 py-0.5 text-primary hover:bg-primary/30"><Play className="inline h-2.5 w-2.5"/> Preview</button>}
         <button onClick={copy} className="rounded-md px-2 py-0.5 text-zinc-400 hover:bg-white/10 hover:text-white">{copied?<Check className="h-3 w-3"/>:<Copy className="h-3 w-3"/>}</button>
         <button onClick={dl} className="rounded-md px-2 py-0.5 text-zinc-400 hover:bg-white/10 hover:text-white"><Download className="h-3 w-3"/></button>
+        <button onClick={share} className="rounded-md px-2 py-0.5 text-zinc-400 hover:bg-white/10 hover:text-white"><Share2 className="h-3 w-3"/></button>
       </div>
-      {open&&<pre className="m-0 max-h-[500px] overflow-auto p-4 text-[12px] leading-relaxed text-zinc-200"><code>{code}</code></pre>}
+      {open&&<pre className="m-0 max-h-[500px] overflow-auto p-4 text-[12px] leading-relaxed text-zinc-200"><code>{code.split("\n").map((line,i)=>(<div key={i} className="table-row"><span className="table-cell select-none pr-4 text-right text-zinc-600">{i+1}</span><span className="table-cell whitespace-pre">{line}</span></div>))}</code></pre>}
       {open&&isRunnable&&preview&&<iframe srcDoc={iframeDoc} sandbox="allow-scripts allow-same-origin" className="h-72 w-full border-0 bg-white" title="preview"/>}
     </div>
   );
@@ -356,6 +381,11 @@ function ChatPage() {
   const [faqItems,setFaqItems] = useState<string[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [plan,setPlan] = useState<string>("free");
+  const [puterFreeUses,setPuterFreeUses] = useState(0);
+  const [puterFreeResetAt,setPuterFreeResetAt] = useState<string>(new Date().toISOString());
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const recogRef = useRef<any>(null);
@@ -397,7 +427,7 @@ function ChatPage() {
   useEffect(()=>{if(!userId)return;supabase.from("profiles").select("memory_summary,display_name").eq("user_id",userId).maybeSingle().then(({data})=>{setMemory((data as any)?.memory_summary||"");setDisplayName((data as any)?.display_name||"");});},[userId]);
 
   // Scroll
-  useEffect(()=>{scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight,behavior:"smooth"});},[messages,typing,streamingMsg]);
+  useEffect(()=>{if(stickToBottom.current)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight,behavior:"smooth"});},[messages,typing,streamingMsg]);
 
   // PDF export
   const exportPdf = useCallback(async()=>{
@@ -406,7 +436,7 @@ function ChatPage() {
       const pw=window.open("","_blank");if(!pw){setExportingPdf(false);return;}
       const nl=String.fromCharCode(10);const br="<br>";
       const rows=messages.map(m=>"<div class=\"msg "+m.role+"\"><div class=\"role\">"+m.role+"</div>"+m.content.split(nl).join(br)+"</div>").join("");
-      pw.document.write(["<!DOCTYPE html><html><head><title>HI THERE Chat Export</title>","<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}",".msg{margin:16px 0;padding:12px 16px;border-radius:12px;}",".user{background:#1e1e2e;color:#cdd6f4;text-align:right;}",".assistant{background:#181825;color:#cdd6f4;}",".role{font-size:11px;color:#6c7086;margin-bottom:4px;text-transform:uppercase;}","h1{color:#cba6f7;border-bottom:1px solid #313244;padding-bottom:8px;}","</style></head><body>","<h1>HI THERE -- Chat Export</h1>","<p style='color:#6c7086;font-size:12px;'>"+new Date().toLocaleString()+"</p>",rows,"</body></html>"].join(""));
+      pw.document.write(["<!DOCTYPE html><html><head><title>Hitab Chat Export</title>","<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}",".msg{margin:16px 0;padding:12px 16px;border-radius:12px;}",".user{background:#1e1e2e;color:#cdd6f4;text-align:right;}",".assistant{background:#181825;color:#cdd6f4;}",".role{font-size:11px;color:#6c7086;margin-bottom:4px;text-transform:uppercase;}","h1{color:#cba6f7;border-bottom:1px solid #313244;padding-bottom:8px;}","</style></head><body>","<h1>Hitab -- Chat Export</h1>","<p style='color:#6c7086;font-size:12px;'>"+new Date().toLocaleString()+"</p>",rows,"</body></html>"].join(""));
       pw.document.close();pw.focus();setTimeout(()=>{pw.print();pw.close();},500);
     } finally{setExportingPdf(false);}
   },[messages]);
@@ -442,7 +472,7 @@ function ChatPage() {
         const now=new Date().getHours();
         const timeLabel=now<5?"late night":now<12?"morning":now<17?"afternoon":now<22?"evening":"night";
         const name=displayName||"friend";
-        const prompt="You are HI THERE, a warm AI companion. Write ONE short unique greeting (max 22 words, no emojis, no quotes) for "+name+" opening the app in the "+timeLabel+". They usually chat around "+activeHour+":00. Recent things they've asked about: "+(topics||"nothing yet")+". Make it feel personal, fresh, and never repeat past greetings. Return only the greeting sentence.";
+        const prompt="You are Hitab, a warm AI companion. Write ONE short unique greeting (max 22 words, no emojis, no quotes) for "+name+" opening the app in the "+timeLabel+". They usually chat around "+activeHour+":00. Recent things they've asked about: "+(topics||"nothing yet")+". Make it feel personal, fresh, and never repeat past greetings. Return only the greeting sentence.";
         try{
           const g=await callPuterAI([{role:"user",content:prompt}]);
           if(!cancelled&&g) setAiGreeting(String(g).replace(/^["']|["']$/g,"").trim().slice(0,220));
@@ -550,10 +580,12 @@ function ChatPage() {
   useEffect(()=>{
     if(!userId) return;
     (async()=>{
-      const[{data:roles},{data:profile}]=await Promise.all([supabase.from("user_roles").select("role").eq("user_id",userId),supabase.from("profiles").select("subscription_plan,language,voice_name,display_name").eq("user_id",userId).maybeSingle()]);
+      const[{data:roles},{data:profile}]=await Promise.all([supabase.from("user_roles").select("role").eq("user_id",userId),supabase.from("profiles").select("subscription_plan,language,voice_name,display_name,puter_free_uses_this_month,puter_free_reset_at").eq("user_id",userId).maybeSingle()]);
       setIsAdmin(!!roles?.some((r:any)=>r.role==="admin"));
-      if(profile){setLanguage((profile as any).language||"en");setVoiceName((profile as any).voice_name||"default");setDisplayName((profile as any).display_name||"");}
+      if(profile){setLanguage((profile as any).language||"en");setVoiceName((profile as any).voice_name||"default");setDisplayName((profile as any).display_name||"");setPlan((profile as any).subscription_plan||"free");setPuterFreeUses((profile as any).puter_free_uses_this_month||0);setPuterFreeResetAt((profile as any).puter_free_reset_at||new Date().toISOString());}
       await loadConvs();
+      const{data:settings}=await supabase.from("app_settings").select("value").eq("key","puter_free_taste_limit").maybeSingle();
+      if(settings?.value) setFreeTasteLimit(parseInt(settings.value)||3);
     })();
   },[userId]);
 
@@ -619,19 +651,19 @@ function ChatPage() {
   const saveVoice=async(n:string)=>{setVoiceName(n);if(userId)await supabase.from("profiles").update({voice_name:n} as never).eq("user_id",userId);};
   const delMsg=async(m:Msg)=>{if(!window.confirm("Delete this message?"))return;await supabase.from("messages").delete().eq("id",m.id);setMessages(ms=>ms.filter(x=>x.id!==m.id));};
   const delConv=async(id:string)=>{if(!window.confirm("Delete this conversation?"))return;await supabase.from("conversations").delete().eq("id",id);setConversations(cs=>cs.filter(c=>c.id!==id));if(activeConvId===id){const next=conversations.find(c=>c.id!==id)?.id??null;setActiveConvId(next);if(!next)setMessages([]);}};
-  const dlConv=(id=activeConvId)=>{if(!id)return;const conv=conversations.find(c=>c.id===id);const rows=id===activeConvId?messages:[];const body=rows.length?rows.map(m=>"## "+(m.role==="assistant"?"HI THERE":"You")+" -- "+new Date(m.created_at).toLocaleString()+"\n\n"+m.content).join("\n\n---\n\n"):"Open this chat first.";const blob=new Blob(["# "+(conv?.title||"Chat")+"\n\n"+body],{type:"text/markdown"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;const st=(conv?.title||"chat").split("").map(c=>{const code=c.charCodeAt(0);return(code>=48&&code<=57)||(code>=65&&code<=90)||(code>=97&&code<=122)?c:"-";}).join("").slice(0,50);a.download=st+".md";a.click();URL.revokeObjectURL(u);};
+  const dlConv=(id=activeConvId)=>{if(!id)return;const conv=conversations.find(c=>c.id===id);const rows=id===activeConvId?messages:[];const body=rows.length?rows.map(m=>"## "+(m.role==="assistant"?"Hitab":"You")+" -- "+new Date(m.created_at).toLocaleString()+"\n\n"+m.content).join("\n\n---\n\n"):"Open this chat first.";const blob=new Blob(["# "+(conv?.title||"Chat")+"\n\n"+body],{type:"text/markdown"});const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;const st=(conv?.title||"chat").split("").map(c=>{const code=c.charCodeAt(0);return(code>=48&&code<=57)||(code>=65&&code<=90)||(code>=97&&code<=122)?c:"-";}).join("").slice(0,50);a.download=st+".md";a.click();URL.revokeObjectURL(u);};
   const startEdit=(m:Msg)=>{setEditingId(m.id);setEditingText(m.content);};
   const saveEdit=async(m:Msg)=>{const t=editingText.trim();if(!t||t===m.content){setEditingId(null);return;}await supabase.from("messages").update({content:t}).eq("id",m.id);setMessages(ms=>ms.map(x=>x.id===m.id?{...x,content:t}:x));setEditingId(null);};
   const speak=(m:Msg)=>{if(!window.speechSynthesis){setError("Speech not supported");return;}if(speakingId===m.id){window.speechSynthesis.cancel();setSpeakingId(null);return;}window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(m.content);const fn=["female","samantha","victoria","zira","karen","tessa"];const mn=["male","daniel","alex","david","fred"];const wf=voiceName.toLowerCase().includes("female");const wm=voiceName.toLowerCase().includes("male");const pick=voices.find(v=>v.name.toLowerCase().includes(voiceName.toLowerCase()))??voices.find(v=>wf&&fn.some(n=>v.name.toLowerCase().includes(n)))??voices.find(v=>wm&&mn.some(n=>v.name.toLowerCase().includes(n)))??voices[0];if(pick)u.voice=pick;u.onend=()=>setSpeakingId(null);setSpeakingId(m.id);window.speechSynthesis.speak(u);};
   const shareMsg=async(m:Msg)=>{
-  const text="From HI THERE:\n\n"+m.content;
+  const text="From Hitab:\n\n"+m.content;
   const nav=navigator as any;
   // Try native share (includes WhatsApp, Telegram etc on mobile)
-  if(nav.share){try{await nav.share({title:"HI THERE",text,url:window.location.href});return;}catch{}}
+  if(nav.share){try{await nav.share({title:"Hitab",text,url:window.location.href});return;}catch{}}
   // Fallback: copy to clipboard
   await navigator.clipboard.writeText(text);setCopiedId(m.id);setTimeout(()=>setCopiedId(null),1500);
 };
-const shareToWhatsApp=(m:Msg)=>{const text=encodeURIComponent("From HI THERE:\n\n"+m.content.slice(0,500));window.open("https://wa.me/?text="+text,"_blank");};
+const shareToWhatsApp=(m:Msg)=>{const text=encodeURIComponent("From Hitab:\n\n"+m.content.slice(0,500));window.open("https://wa.me/?text="+text,"_blank");};
 const downloadAsFile=(m:Msg)=>{
   const blob=new Blob([m.content],{type:"text/plain"});
   const url=URL.createObjectURL(blob);const a=document.createElement("a");
@@ -642,6 +674,21 @@ const downloadAsFile=(m:Msg)=>{
   const signOut=async()=>{await supabase.auth.signOut();navigate({to:"/"});};
 
   // - SEND -
+  const [freeTasteLimit,setFreeTasteLimit] = useState(3); // default until settings load; admin-adjustable in the panel
+  const hasFreeTaste = ()=>{
+    const monthAgo = Date.now()-30*24*60*60*1000;
+    if(new Date(puterFreeResetAt).getTime()<monthAgo) return true; // a month has passed, allowance has refreshed
+    return puterFreeUses<freeTasteLimit;
+  };
+  const useFreeTaste = async()=>{
+    const monthAgo = Date.now()-30*24*60*60*1000;
+    const expired = new Date(puterFreeResetAt).getTime()<monthAgo;
+    const nextCount = expired?1:puterFreeUses+1;
+    const nextReset = expired?new Date().toISOString():puterFreeResetAt;
+    setPuterFreeUses(nextCount);setPuterFreeResetAt(nextReset);
+    if(userId) await supabase.from("profiles").update({puter_free_uses_this_month:nextCount,puter_free_reset_at:nextReset}).eq("user_id",userId);
+  };
+
   const send = async()=>{
     if((!input.trim()&&pendingFiles.length===0)||!userId||sending) return;
     setError(null);
@@ -664,7 +711,7 @@ const downloadAsFile=(m:Msg)=>{
     const text=input.trim();
     const atts=pendingFiles;
     const storedAtts=stripData(atts);
-    setInput("");setPendingFiles([]);setSending(true);
+    setInput("");setPendingFiles([]);setSending(true);if(inputRef.current)inputRef.current.style.height="44px";
 
     const userMsg:Msg={id:crypto.randomUUID(),role:"user",content:text,created_at:new Date().toISOString(),attachments:atts};
     setMessages(m=>[...m,userMsg]);
@@ -693,14 +740,62 @@ const downloadAsFile=(m:Msg)=>{
 
       let data:any=null;let invokeError:any=null;
 
-      // PRIMARY: Puter.js (real Claude, free) for text-only
-      if(!wantsImg&&!wantsVid&&atts.length===0){
-        setStatusMsg("Connecting to AI...");
-        try{const pr=await callPuterAI(histWithMemory);if(pr)data={content:pr,provider:"hi-there"};}
-        catch{}
+      // PRIMARY for plain text: Puter's top-tier models are first in line for everyone --
+      // the tier check below is what actually blocks free users from reaching them, it's
+      // not a separate chain, just a gate in front of the same one.
+      if(!wantsImg&&!wantsVid&&!data){
+        const isPaidTier = plan==="premium"||plan==="basic";
+        if(isPaidTier){
+          try{
+            const w = window as any;
+            if(w.puter?.ai?.chat && await ensurePuterReady()){
+              const pr = await w.puter.ai.chat(text,{model:"claude-opus-4-8"});
+              const puterReply = typeof pr==="string"?pr:(pr?.message?.content||pr?.toString?.());
+              if(puterReply) data = {content:puterReply,provider:"puter"};
+            }
+          }catch{/* fall through to the free-tier chain below, same as if Puter were never tried */}
+        }
       }
 
-      // PRIMARY for images: paid chain via Supabase Edge Function (gpt-image-2 -> Gemini -> HuggingFace FLUX)
+      // Motion: Puter's video generation (Veo, with built-in audio) for paid users,
+      // plus a small monthly taste for free-tier users
+      if(wantsVid&&!data){
+        const isPaidTier = plan==="premium"||plan==="basic";
+        const canTry = isPaidTier||hasFreeTaste();
+        if(canTry){
+          try{
+            const w = window as any;
+            if(w.puter?.ai?.txt2vid){
+              setStatusMsg("Creating your video...");
+              const vidEl = await w.puter.ai.txt2vid(text,{model:"google/veo-3.1"});
+              const vb64 = await mediaSrcToB64(vidEl.src);
+              data = {video_b64:vb64,provider:"puter"};
+              if(!isPaidTier) await useFreeTaste();
+            }
+          }catch{/* no free video fallback exists -- falls through to a normal text reply below */}
+        }
+      }
+
+      // PRIMARY for images: Puter's top-tier image models first in line for paid users,
+      // plus a small monthly taste for free-tier users
+      if(wantsImg&&!data){
+        const isPaidTier = plan==="premium"||plan==="basic";
+        const canTry = isPaidTier||hasFreeTaste();
+        if(canTry){
+          try{
+            const w = window as any;
+            if(w.puter?.ai?.txt2img && await ensurePuterReady()){
+              const imgPrompt=low.startsWith("/image ")?text.slice(7):text;
+              const imgEl = await w.puter.ai.txt2img(imgPrompt,{model:"gpt-image-2"});
+              const b64 = await mediaSrcToB64(imgEl.src);
+              data = {image_b64_list:[b64],image_prompt:imgPrompt,provider:"puter"};
+              if(!isPaidTier) await useFreeTaste();
+            }
+          }catch{/* fall through to the free chain below, same as if Puter were never tried */}
+        }
+      }
+
+      // SECONDARY for images: paid chain via Supabase Edge Function (gpt-image-2 -> Gemini -> HuggingFace FLUX)
       if(wantsImg&&!data){
         setStatusMsg("Generating image...");
         try{
@@ -764,8 +859,9 @@ const downloadAsFile=(m:Msg)=>{
       const citations:{title:string;url:string}[]|undefined=data.citations;
       const aid=crypto.randomUUID();
 
-      // Typewriter -- word by word like ChatGPT
-      if(!imgList.length&&!data.video_b64){
+      // Typewriter -- word by word like ChatGPT, but skip it for code or long replies so they appear instantly
+      const isCodeHeavy = reply.includes("```") || reply.split(" ").length > 300;
+      if(!imgList.length&&!data.video_b64&&!isCodeHeavy){
         const words=reply.split(" ");let built="";setTyping("");
         await new Promise<void>(res=>{
           let wi=0;
@@ -875,14 +971,14 @@ const downloadAsFile=(m:Msg)=>{
               <Sparkles className="h-4.5 w-4.5 text-white"/>
             </div>
             <div>
-              <span className="text-base font-bold tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">HI THERE</span>
+              <span className="text-base font-bold tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">Hitab</span>
               <span className="ml-2 rounded-full bg-primary/20 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-primary">AEM</span>
             </div>
           </Link>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={()=>setWebSearchEnabled(v=>!v)} title={webSearchEnabled?"Web search on":"Web search off"} className={"rounded-xl p-1.5 transition-colors "+(webSearchEnabled?"text-primary hover:bg-primary/10":"text-zinc-600 hover:bg-white/5")}><Globe className="h-4 w-4"/></button>
-          <button onClick={()=>setAemMode(v=>!v)} title="AEM Mode" className={"rounded-xl p-1.5 transition-colors "+(aemMode?"text-primary hover:bg-primary/10":"text-zinc-600 hover:bg-white/5")}><Star className="h-4 w-4"/></button>
+          {isAdmin&&<button onClick={()=>setAemMode(v=>!v)} title="AEM Mode" className={"rounded-xl p-1.5 transition-colors "+(aemMode?"text-primary hover:bg-primary/10":"text-zinc-600 hover:bg-white/5")}><Star className="h-4 w-4"/></button>}
           <NotificationBell userId={userId}/>
           {isAdmin&&<Link to="/admin" className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-2 py-1 text-xs hover:bg-white/10"><Shield className="h-3 w-3"/> Admin</Link>}
           <div className="relative">
@@ -891,7 +987,7 @@ const downloadAsFile=(m:Msg)=>{
             </button>
             {profileOpen&&(
               <div className="absolute right-0 top-11 z-50 w-64 rounded-3xl border border-white/10 bg-zinc-900/95 p-2 shadow-2xl backdrop-blur-xl">
-                {[{icon:SettingsIcon,label:"Settings",to:"/settings"},{icon:Activity,label:"AEM Neural Hub",action:()=>{setProfileOpen(false);runAudit();}},{icon:FileDown,label:"Export PDF",action:()=>{setProfileOpen(false);exportPdf();}},{icon:Download,label:"Download chat",action:()=>{setProfileOpen(false);dlConv(activeConvId);}},{icon:LogOut,label:"Sign out",action:signOut}].map((item,i)=>(
+                {[{icon:SettingsIcon,label:"Settings",to:"/settings"},...(isAdmin?[{icon:Activity,label:"AEM Neural Hub",action:()=>{setProfileOpen(false);runAudit();}}]:[]),{icon:FileDown,label:"Export PDF",action:()=>{setProfileOpen(false);exportPdf();}},{icon:Download,label:"Download chat",action:()=>{setProfileOpen(false);dlConv(activeConvId);}},{icon:LogOut,label:"Sign out",action:signOut}].map((item,i)=>(
                   item.to?<Link key={i} to={item.to} onClick={()=>setProfileOpen(false)} className="flex items-center gap-2.5 rounded-2xl px-3 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white">
                     <item.icon className="h-4 w-4 text-zinc-500"/>{item.label}
                   </Link>:<button key={i} onClick={(item as any).action} className="flex w-full items-center gap-2.5 rounded-2xl px-3 py-2 text-left text-sm text-zinc-300 hover:bg-white/5 hover:text-white">
@@ -919,7 +1015,7 @@ const downloadAsFile=(m:Msg)=>{
         {drawerOpen&&<div className="fixed inset-0 z-40 md:hidden" onClick={()=>setDrawerOpen(false)}><div className="absolute inset-0 bg-black/70 backdrop-blur-sm"/><div className="absolute left-0 top-0 h-full" onClick={e=>e.stopPropagation()}><div className="relative h-full">{SB}<button onClick={()=>setDrawerOpen(false)} className="absolute right-2 top-2 rounded-xl p-1.5 hover:bg-white/10"><X className="h-4 w-4"/></button></div></div></div>}
 
         <main className="flex flex-1 flex-col overflow-hidden bg-zinc-950">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+          <div ref={scrollRef} onScroll={()=>{const el=scrollRef.current;if(!el)return;stickToBottom.current=el.scrollHeight-el.scrollTop-el.clientHeight<80;}} className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
             <div className="mx-auto max-w-3xl space-y-5">
 
               {/* Pinned */}
@@ -951,7 +1047,7 @@ const downloadAsFile=(m:Msg)=>{
                           </button>
                         ))}
                       </div>
-                      <p className="mt-2 text-[10px] text-zinc-600">Learns from real conversations across HI THERE.</p>
+                      <p className="mt-2 text-[10px] text-zinc-600">Learns from real conversations across Hitab.</p>
                     </div>
                   )}
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -1067,10 +1163,10 @@ const downloadAsFile=(m:Msg)=>{
                 {[{icon:Paperclip,action:()=>fileRef.current?.click(),title:"Attach file"},{icon:Camera,action:()=>cameraRef.current?.click(),title:"Camera",mobile:true},{icon:voiceListening?MicOff:Mic,action:()=>voiceListening?stopVoice():startVoice(),title:voiceListening?"Stop":"Voice",active:voiceListening},{icon:Activity,action:()=>setAuditOpen(true),title:"AEM Hub"}].map((b,i)=>(
                   (!b.mobile||true)&&<button key={i} onClick={b.action} title={b.title} className={"grid h-11 w-11 shrink-0 place-items-center rounded-2xl border transition-colors "+(b.active?"border-primary bg-primary/10 text-primary animate-pulse":"border-white/10 bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white")+(b.mobile?" md:hidden":"")}><b.icon className="h-4.5 w-4.5"/></button>
                 ))}
-                <textarea value={input} onChange={e=>{setInput(e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} rows={1} placeholder="Message HI THERE..." className="max-h-40 min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/8 transition-colors"/>
+                <textarea ref={inputRef} value={input} onChange={e=>{setInput(e.target.value);const el=e.target;el.style.height="auto";el.style.height=Math.min(el.scrollHeight,160)+"px";}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} rows={1} placeholder="Message Hitab..." className="max-h-40 min-h-[44px] flex-1 resize-none overflow-y-auto rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-primary/50 focus:bg-white/8 transition-colors"/>
                 <button id="aem-send" onClick={send} disabled={sending||(!input.trim()&&pendingFiles.length===0)} className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 text-white shadow-lg shadow-primary/20 hover:opacity-90 disabled:opacity-30 transition-opacity"><Send className="h-4.5 w-4.5"/></button>
               </div>
-              <p className="mt-2 text-center text-[10px] text-zinc-700">HI THERE . AEM Platform . AI may make mistakes -- verify important information</p>
+              <p className="mt-2 text-center text-[10px] text-zinc-700">Hitab . AEM Platform . AI may make mistakes -- verify important information</p>
             </div>
           </div>
           <Footer/>
