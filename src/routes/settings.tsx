@@ -486,7 +486,7 @@ function Settings() {
         )}
 
         {/* DEVELOPER TAB */}
-        {tab === "developer" && (
+        {(tab as string) === "developer" && (
           <>
             <Section title="API Access">
               <p className="text-sm text-muted-foreground mb-3">Generate a key to call Hitab from your own app. Free tier: 100 requests/month.</p>
@@ -528,7 +528,7 @@ function DeveloperKeys({ userId }: { userId: string | null }) {
 
   const load = async () => {
     if (!userId) return;
-    const { data } = await supabase.from("developer_api_keys").select("id,key_value,tier,usage_count,usage_limit,active,created_at,last_used_at").eq("user_id", userId).order("created_at", { ascending: false });
+    const { data } = await (supabase as any).from("developer_api_keys").select("id,key_value,tier,usage_count,usage_limit,active,created_at,last_used_at").eq("user_id", userId).order("created_at", { ascending: false });
     setKeys(data ?? []);
   };
   useEffect(() => { load(); }, [userId]);
@@ -539,7 +539,7 @@ function DeveloperKeys({ userId }: { userId: string | null }) {
     // Cryptographically random, not something a person types -- this is what makes it unguessable.
     const raw = crypto.getRandomValues(new Uint8Array(24));
     const key = "hitab_sk_" + Array.from(raw).map(b => b.toString(16).padStart(2, "0")).join("");
-    const { error } = await supabase.from("developer_api_keys").insert({ user_id: userId, key_value: key } as any);
+    const { error } = await (supabase as any).from("developer_api_keys").insert({ user_id: userId, key_value: key });
     setGenerating(false);
     if (!error) { setJustCreated(key); await load(); }
   };
