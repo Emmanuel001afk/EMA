@@ -686,7 +686,7 @@ const downloadAsFile=(m:Msg)=>{
     const nextCount = expired?1:puterFreeUses+1;
     const nextReset = expired?new Date().toISOString():puterFreeResetAt;
     setPuterFreeUses(nextCount);setPuterFreeResetAt(nextReset);
-    if(userId) await supabase.from("profiles").update({puter_free_uses_this_month:nextCount,puter_free_reset_at:nextReset}).eq("user_id",userId);
+    if(userId) await supabase.from("profiles").update({puter_free_uses_this_month:nextCount,puter_free_reset_at:nextReset} as any).eq("user_id",userId);
   };
 
   const send = async()=>{
