@@ -585,7 +585,7 @@ function ChatPage() {
       if(profile){setLanguage((profile as any).language||"en");setVoiceName((profile as any).voice_name||"default");setDisplayName((profile as any).display_name||"");setPlan((profile as any).subscription_plan||"free");setPuterFreeUses((profile as any).puter_free_uses_this_month||0);setPuterFreeResetAt((profile as any).puter_free_reset_at||new Date().toISOString());}
       await loadConvs();
       const{data:settings}=await supabase.from("app_settings").select("value").eq("key","puter_free_taste_limit").maybeSingle();
-      if(settings?.value) setFreeTasteLimit(parseInt(settings.value)||3);
+      if(settings?.value) setFreeTasteLimit(parseInt(String(settings.value))||3);
     })();
   },[userId]);
 
