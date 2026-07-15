@@ -55,7 +55,7 @@ async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string
       }, 100);
     });
   }
-  try { const si = await puter.auth.isSignedIn(); if (!si) await puter.auth.signIn(); } catch {}
+  try { const si = await puter.auth.isSignedIn(); if (!si) await puter.auth.signIn({ attempt_temp_user_creation: true }); } catch {}
   const res = await puter.ai.chat(msgs, { model: "claude-sonnet-4-6" });
   if (typeof res === "string") return res;
   if (res?.message?.content?.[0]?.text) return res.message.content[0].text;
