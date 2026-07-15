@@ -63,7 +63,13 @@ function AuthPage() {
         setSettingUp(true);
         try {
           const w = window as any;
+          // Wait up to ~6s for puter.js to finish loading before attempting silent sign-in.
+          const start = Date.now();
+          while (!w.puter?.auth?.signIn && Date.now() - start < 6000) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
           if (w.puter?.auth?.signIn) {
+            // attempt_temp_user_creation keeps this fully silent — no popup, no redirect.
             await w.puter.auth.signIn({ attempt_temp_user_creation: true });
           }
         } catch {
