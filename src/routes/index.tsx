@@ -2,9 +2,16 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Footer } from "@/components/Footer";
+import aemLogo from "@/assets/aem-logo.png";
 
 export const Route = createFileRoute("/")({
   component: Landing,
+  head: () => ({
+    meta: [
+      { title: "HITAB — Hi There AI Buddy" },
+      { name: "description", content: "A private AI workspace. Chat, code, generate, translate — one continuous stream." },
+    ],
+  }),
 });
 
 function Landing() {
@@ -18,139 +25,133 @@ function Landing() {
 
   return (
     <div className="min-h-screen w-full bg-background text-foreground flex flex-col">
-      <div className="flex-1 w-full flex flex-col p-6 md:p-12 overflow-hidden">
-        {/* Header */}
-        <header className="w-full flex flex-wrap justify-between items-end gap-4 border-b border-border pb-4 mb-12 md:mb-16">
-          <div className="font-serif text-3xl italic tracking-tight">Hitab</div>
-          <nav className="hidden md:flex gap-8 text-[11px] uppercase tracking-[0.25em] font-medium text-muted-foreground">
-            <a href="#engine" className="hover:text-primary transition-colors">The Engine</a>
-            <a href="#dispatch" className="hover:text-primary transition-colors">Dispatch</a>
-            <a href="#journal" className="hover:text-primary transition-colors">Journal</a>
+      {/* Nav */}
+      <header className="w-full border-b border-border">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <Link to="/" className="flex items-center gap-2.5">
+            <img src={aemLogo} alt="Hitab" width={32} height={32} className="h-8 w-8 object-contain" />
+            <span className="text-lg font-semibold tracking-tight">Hitab</span>
+          </Link>
+          <nav className="hidden md:flex gap-8 text-sm text-muted-foreground">
+            <a href="#capabilities" className="hover:text-foreground transition-colors">Capabilities</a>
+            <a href="#principles" className="hover:text-foreground transition-colors">Principles</a>
+            <a href="#pricing" className="hover:text-foreground transition-colors">Pricing</a>
           </nav>
-          <div className="flex gap-4 md:gap-6 items-center">
-            <Link to="/auth" className="text-[11px] uppercase tracking-[0.25em] hover:opacity-70 transition-opacity">
-              Sign in
-            </Link>
-            <Link
-              to="/auth"
-              className="bg-primary text-primary-foreground px-5 py-2.5 text-[11px] uppercase tracking-[0.25em] font-bold hover:bg-accent transition-all"
-            >
-              Start Chatting
+          <div className="flex items-center gap-3">
+            <Link to="/auth" className="text-sm text-muted-foreground hover:text-foreground">Sign in</Link>
+            <Link to="/auth" className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 transition-opacity">
+              Get started
             </Link>
           </div>
-        </header>
+        </div>
+      </header>
 
+      <main className="flex-1">
         {/* Hero */}
-        <main className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
-          <div className="lg:col-span-8">
-            <span className="text-primary font-mono text-xs md:text-sm mb-4 block tracking-[0.25em] italic">
-              Issue No. 002 — Intelligent Infinity
-            </span>
-            <h1 className="font-serif text-6xl sm:text-7xl md:text-[9rem] lg:text-[10rem] leading-[0.85] tracking-[-0.04em] mb-10">
-              AI that <br />
-              <span className="italic text-primary">never stops.</span>
+        <section className="mx-auto max-w-6xl px-6 pt-20 pb-24 md:pt-32 md:pb-32">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1 text-xs text-muted-foreground mb-8">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+              A new kind of AI workspace
+            </div>
+            <h1 className="font-serif font-bold text-7xl sm:text-8xl md:text-[10rem] leading-[0.9] tracking-[-0.04em] mb-4">
+              HITAB
             </h1>
-
-            <div className="max-w-xl border-l border-border pl-6 md:pl-8">
-              <p className="text-base md:text-xl leading-relaxed font-light mb-8 text-foreground/80">
-                A continuous stream of cognition. Hitab rewrites the paradigm of interaction —
-                a relentless, evolving intelligence built for the modern architect of thought.
-                Chat, generate, translate, read files, ship faster.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                <Link
-                  to="/auth"
-                  className="border border-primary text-primary px-6 md:px-8 py-3 md:py-4 text-xs uppercase tracking-[0.25em] font-bold hover:bg-primary hover:text-primary-foreground transition-all"
-                >
-                  Explore the Model
-                </Link>
-                <a
-                  href="#engine"
-                  className="px-6 md:px-8 py-3 md:py-4 text-xs uppercase tracking-[0.25em] font-bold text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  How it works →
-                </a>
-              </div>
+            <p className="text-base md:text-lg text-muted-foreground/80 tracking-wide mb-10">
+              Hi There AI Buddy.
+            </p>
+            <p className="text-lg md:text-xl leading-relaxed text-muted-foreground max-w-xl mb-10">
+              One private workspace. Every modality. Hitab reads your files,
+              writes your code, generates images, and speaks 40+ languages — presented as one voice.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Link to="/auth" className="rounded-full bg-foreground text-background px-6 py-3 text-sm font-medium hover:opacity-90 transition-opacity">
+                Start chatting — free
+              </Link>
+              <a href="#capabilities" className="rounded-full border border-border px-6 py-3 text-sm font-medium hover:bg-muted transition-colors">
+                See what it does
+              </a>
             </div>
           </div>
+        </section>
 
-          {/* Sidebar */}
-          <aside id="dispatch" className="lg:col-span-4 mt-8 lg:mt-0 flex flex-col gap-6">
-            <div className="bg-card p-6 md:p-8 relative overflow-hidden">
-              <div className="absolute top-0 right-0 p-4 font-mono text-primary text-xs">01</div>
-              <h3 className="font-serif text-2xl md:text-3xl mb-4 italic">Non-stop Synthesis</h3>
-              <p className="text-sm leading-relaxed text-muted-foreground mb-6">
-                Unlike static assistants, Hitab processes context in a perpetual loop —
-                your creative momentum is never broken by latency or memory decay.
+        {/* Big mark */}
+        <section className="border-y border-border bg-muted/30">
+          <div className="mx-auto max-w-6xl px-6 py-16 md:py-24 grid md:grid-cols-2 gap-12 items-center">
+            <div className="flex justify-center md:justify-start">
+              <img src={aemLogo} alt="" className="h-56 w-56 md:h-72 md:w-72 object-contain" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground mb-4">The mark</p>
+              <h2 className="font-serif text-4xl md:text-5xl italic mb-6">One symbol. Every answer.</h2>
+              <p className="text-muted-foreground leading-relaxed">
+                Hitab doesn&rsquo;t front for a single model. When you ask something, the best available
+                engine responds — routed silently, presented as one voice. You get the answer, never
+                the plumbing.
               </p>
-              <div className="w-full h-px bg-primary/20 mb-6" />
-              <div className="flex justify-between items-center text-[10px] uppercase tracking-[0.25em]">
-                <span className="text-muted-foreground">Neural Latency</span>
-                <span className="text-primary">0.02ms</span>
-              </div>
             </div>
-
-            <div className="border border-border p-6 md:p-8">
-              <div className="flex gap-2 items-center mb-5">
-                <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                <span className="text-[10px] uppercase tracking-[0.25em] font-bold">Live stream active</span>
-              </div>
-              <blockquote className="font-serif text-xl md:text-2xl italic leading-tight">
-                &ldquo;The most profound technologies are those that disappear into the fabric of everyday life.&rdquo;
-              </blockquote>
-              <cite className="not-italic block mt-4 text-[10px] uppercase tracking-[0.3em] text-primary">
-                — Weiser&rsquo;s Legacy
-              </cite>
-            </div>
-          </aside>
-        </main>
-
-        {/* Engine bars */}
-        <section id="engine" className="mt-20 md:mt-28 pt-10 grid grid-cols-2 md:grid-cols-4 gap-6 border-t border-border">
-          {[
-            { n: "01", label: "Stability", pct: "75%" },
-            { n: "02", label: "Logic", pct: "100%" },
-            { n: "03", label: "Creativity", pct: "50%" },
-            { n: "04", label: "Speed", pct: "90%" },
-          ].map((m) => (
-            <div key={m.n} className="flex flex-col gap-3">
-              <span className="text-[10px] text-primary uppercase font-bold tracking-[0.2em]">
-                {m.n} {m.label}
-              </span>
-              <div className="h-1 bg-secondary w-full">
-                <div className="h-full bg-primary" style={{ width: m.pct }} />
-              </div>
-            </div>
-          ))}
+          </div>
         </section>
 
-        {/* Journal / feature grid */}
-        <section id="journal" className="mt-20 md:mt-28 grid grid-cols-1 md:grid-cols-3 gap-8 md:gap-12">
-          {[
-            {
-              n: "I.",
-              title: "Multi-model",
-              body: "Route to GPT, Gemini, Claude, Groq, Mistral — automatic failover keeps the answer flowing.",
-            },
-            {
-              n: "II.",
-              title: "Files & vision",
-              body: "Drop PDFs, docs, code, images. Hitab reads bytes, not summaries — and cites what it saw.",
-            },
-            {
-              n: "III.",
-              title: "Voice & tongues",
-              body: "Native voice output, 40+ languages, tone controls. Speak in Yoruba, ship in English.",
-            },
-          ].map((c) => (
-            <article key={c.n} className="border-t border-border pt-6">
-              <div className="font-mono text-primary text-xs mb-3 tracking-[0.25em]">{c.n}</div>
-              <h4 className="font-serif text-2xl md:text-3xl italic mb-3">{c.title}</h4>
-              <p className="text-sm leading-relaxed text-muted-foreground">{c.body}</p>
-            </article>
-          ))}
+        {/* Capabilities */}
+        <section id="capabilities" className="mx-auto max-w-6xl px-6 py-20 md:py-28">
+          <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground mb-4">Capabilities</p>
+          <h2 className="font-serif text-4xl md:text-5xl mb-14 max-w-2xl">Everything you&rsquo;d open five apps for — in one.</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-x-10 gap-y-14">
+            {[
+              { n: "01", title: "Multi-engine chat", body: "Automatic routing across a private ensemble of top-tier engines. Failover is invisible; the conversation never breaks." },
+              { n: "02", title: "Files & vision", body: "Drop PDFs, ZIPs, docs, code, images. Hitab reads the bytes, not a summary — and cites exactly what it saw." },
+              { n: "03", title: "Image generation", body: "Generate, edit and iterate images inline. Aspect ratios, quality tiers, variants — no separate tool." },
+              { n: "04", title: "Voice & speech", body: "Speak to it, listen back. Live voice mode with tone controls, in every language it writes." },
+              { n: "05", title: "Web-aware", body: "Optional live search grounds answers in current sources, with inline citations you can click." },
+              { n: "06", title: "Private by default", body: "Your workspace, your data, your rules. Row-level security. Your keys, your control." },
+            ].map((c) => (
+              <article key={c.n}>
+                <div className="font-mono text-xs text-muted-foreground mb-3 tracking-[0.2em]">{c.n}</div>
+                <h3 className="text-xl font-semibold mb-2 tracking-tight">{c.title}</h3>
+                <p className="text-sm leading-relaxed text-muted-foreground">{c.body}</p>
+              </article>
+            ))}
+          </div>
         </section>
-      </div>
+
+        {/* Principles */}
+        <section id="principles" className="border-t border-border">
+          <div className="mx-auto max-w-6xl px-6 py-20 md:py-28">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground mb-4">Principles</p>
+            <h2 className="font-serif text-4xl md:text-5xl mb-14 max-w-2xl">Built on three commitments.</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-border">
+              {[
+                { title: "Continuity", body: "No dead ends. When one model can&rsquo;t answer, another does — silently, in the same turn." },
+                { title: "Neutrality", body: "You&rsquo;re never told which model spoke. Hitab is the interface; the ensemble is a private detail." },
+                { title: "Ownership", body: "Your data lives in your database. Your keys are your keys. Nothing is rented." },
+              ].map((p, i) => (
+                <div key={p.title} className={"py-6 md:py-0 " + (i === 0 ? "md:pr-8" : i === 1 ? "md:px-8" : "md:pl-8")}>
+                  <div className="font-mono text-xs text-accent mb-3 tracking-[0.2em]">— {String(i + 1).padStart(2, "0")}</div>
+                  <h3 className="font-serif text-2xl italic mb-3">{p.title}</h3>
+                  <p className="text-sm leading-relaxed text-muted-foreground" dangerouslySetInnerHTML={{ __html: p.body }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* CTA */}
+        <section id="pricing" className="border-t border-border bg-foreground text-background">
+          <div className="mx-auto max-w-6xl px-6 py-20 md:py-28 text-center">
+            <h2 className="font-serif text-4xl md:text-6xl mb-6 tracking-[-0.02em]">
+              Open the workspace.
+            </h2>
+            <p className="text-lg text-background/70 max-w-xl mx-auto mb-10">
+              Free to start. No credit card. Sign in and everything is already wired.
+            </p>
+            <Link to="/auth" className="inline-block rounded-full bg-background text-foreground px-8 py-4 text-sm font-medium hover:opacity-90 transition-opacity">
+              Start chatting →
+            </Link>
+          </div>
+        </section>
+      </main>
+
       <Footer />
     </div>
   );
