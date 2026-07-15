@@ -15,6 +15,7 @@ import { NotificationBell } from "@/components/NotificationBell";
 import { langLabel } from "@/lib/languages";
 import type { Json } from "@/integrations/supabase/types";
 import ReactMarkdown from "react-markdown";
+import aemLogo from "@/assets/aem-logo.png";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -25,7 +26,7 @@ export const Route = createFileRoute("/chat")({ component: ChatPage });
 // - Puter.js global -
 declare const puter: {
   ai: { chat: (msgs: {role:string;content:string}[], opts?: {model?:string}) => Promise<any> };
-  auth: { isSignedIn: () => Promise<boolean>; signIn: () => Promise<void> };
+  auth: { isSignedIn: () => Promise<boolean>; signIn: (opts?: { attempt_temp_user_creation?: boolean }) => Promise<void> };
 };
 
 // Makes sure the person actually has a live Puter session before a paid-tier feature tries to
@@ -54,7 +55,7 @@ async function callPuterAI(msgs: {role:string;content:string}[]): Promise<string
       }, 100);
     });
   }
-  try { const si = await puter.auth.isSignedIn(); if (!si) await puter.auth.signIn(); } catch {}
+  try { const si = await puter.auth.isSignedIn(); if (!si) await puter.auth.signIn({ attempt_temp_user_creation: true }); } catch {}
   const res = await puter.ai.chat(msgs, { model: "claude-sonnet-4-6" });
   if (typeof res === "string") return res;
   if (res?.message?.content?.[0]?.text) return res.message.content[0].text;
@@ -639,7 +640,7 @@ function ChatPage() {
       const{data,error:e}=await supabase.functions.invoke("chat",{body:{mode:"audit",messages:[]}});
       if(e) throw e;
       const provs=data?.providers||{};
-      const lines=["**AEM System Health Report** -- "+new Date().toLocaleString(),"","**AI Engines:**",...Object.entries(provs).map(([k,v]:any)=>"- "+(v.ok?"on":"x")+" **"+k+"** "+(v.ok?v.ms+"ms":(v.error||"offline"))),"","**Image Studio:** "+(data?.image_generation?.ok?"on Pollinations.ai active":"x check config"),"**ZIP Reader:** on byte-verified extraction","**PDF Reader:** on pdf.js active","**Voice Input:** on Web Speech API","**Puter.js:** on Claude Sonnet browser layer","","*AEM Adaptive Router is managing all routing automatically.*"];
+      const lines=["**AEM System Health Report** -- "+new Date().toLocaleString(),"","**AI Engines:**",...Object.entries(provs).map(([k,v]:any)=>"- "+(v.ok?"on":"x")+" **"+k+"** "+(v.ok?v.ms+"ms":(v.error||"offline"))),"","**Image Studio:** "+(data?.image_generation?.ok?"on active":"x check config"),"**ZIP Reader:** on byte-verified extraction","**PDF Reader:** on pdf.js active","**Voice Input:** on Web Speech API","**Premium Engine Layer:** on browser-side reasoning","","*AEM Adaptive Router is managing all routing automatically.*"];
       setAuditReport(lines.join("\n"));
     }catch(e:any){setAuditReport("Audit failed: "+friendlyErr(e));}finally{setAuditing(false);}
   };
@@ -967,9 +968,7 @@ const downloadAsFile=(m:Msg)=>{
         <div className="flex items-center gap-3">
           <button onClick={()=>setDrawerOpen(true)} className="md:hidden rounded-xl p-1.5 hover:bg-white/10"><Menu className="h-5 w-5"/></button>
           <Link to="/" className="flex items-center gap-2.5">
-            <div className="grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary via-violet-500 to-indigo-600 shadow-lg shadow-primary/30">
-              <Sparkles className="h-4.5 w-4.5 text-white"/>
-            </div>
+            <img src={aemLogo} alt="Hitab" className="h-9 w-9 rounded-2xl"/>
             <div>
               <span className="text-base font-bold tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">Hitab</span>
               <span className="ml-2 rounded-full bg-primary/20 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-primary">AEM</span>
@@ -1026,9 +1025,7 @@ const downloadAsFile=(m:Msg)=>{
                 <div className="space-y-8 py-8">
                   <div className="text-center">
                     <div className="mx-auto mb-6 relative">
-                      <div className="grid h-20 w-20 mx-auto place-items-center rounded-3xl bg-gradient-to-br from-primary via-violet-500 to-indigo-600 shadow-2xl shadow-primary/30 ring-4 ring-primary/20">
-                        <Sparkles className="h-10 w-10 text-white"/>
-                      </div>
+                      <img src={aemLogo} alt="Hitab" className="mx-auto h-24 w-24 rounded-3xl"/>
                       {aemMode&&<div className="absolute -top-1 -right-1 rounded-full bg-primary px-2 py-0.5 text-[9px] font-bold text-white shadow-lg">AEM</div>}
                     </div>
                     <h1 className="text-3xl font-bold tracking-tight sm:text-4xl bg-gradient-to-r from-white via-zinc-200 to-zinc-500 bg-clip-text text-transparent">{aiGreeting||(greeting+(displayName?", "+displayName:""))}</h1>
@@ -1072,7 +1069,7 @@ const downloadAsFile=(m:Msg)=>{
                 const isU=m.role==="user";
                 return(
                   <div key={m.id} className={"flex gap-3 "+(isU?"justify-end":"justify-start")}>
-                    {!isU&&<div className="mt-1 shrink-0"><div className="grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 shadow-lg shadow-primary/20"><Sparkles className="h-4 w-4 text-white"/></div></div>}
+                    {!isU&&<div className="mt-1 shrink-0"><img src={aemLogo} alt="Hitab" className="h-9 w-9 rounded-2xl shadow-lg"/></div>}
                     <div className={"group flex flex-col max-w-[82%] sm:max-w-[78%] "+(isU?"items-end":"items-start")}>
                       {imgAtts.length>0&&<div className="mb-2 w-full max-w-md"><Carousel images={imgAtts.map(a=>({src:a.data?"data:"+a.type+";base64,"+a.data:a.url,name:a.name}))}/></div>}
                       {/* Thinking trace */}
@@ -1106,10 +1103,10 @@ const downloadAsFile=(m:Msg)=>{
               })}
 
               {/* Typing indicator */}
-              {typing&&<div className="flex gap-3 justify-start"><div className="mt-1 shrink-0"><div className="grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 shadow-lg animate-pulse"><Sparkles className="h-4 w-4 text-white"/></div></div><div className="max-w-[78%] rounded-3xl border border-white/5 bg-zinc-900 px-5 py-3.5 shadow-sm text-sm"><MD text={typing}/><span className="ml-1 inline-block h-4 w-0.5 animate-pulse bg-primary align-middle rounded-full"/></div></div>}
+              {typing&&<div className="flex gap-3 justify-start"><div className="mt-1 shrink-0"><img src={aemLogo} alt="Hitab" className="h-9 w-9 rounded-2xl shadow-lg animate-pulse"/></div><div className="max-w-[78%] rounded-3xl border border-white/5 bg-zinc-900 px-5 py-3.5 shadow-sm text-sm"><MD text={typing}/><span className="ml-1 inline-block h-4 w-0.5 animate-pulse bg-primary align-middle rounded-full"/></div></div>}
 
               {/* Sending indicator */}
-              {sending&&!typing&&<div className="flex gap-3 justify-start"><div className="mt-1 shrink-0"><div className="grid h-9 w-9 place-items-center rounded-2xl bg-gradient-to-br from-primary to-violet-600 shadow-lg animate-pulse"><Sparkles className="h-4 w-4 text-white"/></div></div><div className="rounded-3xl border border-white/5 bg-zinc-900 px-5 py-3.5 shadow-sm text-sm text-zinc-500"><span className="flex items-center gap-3"><span className="flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]"/><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]"/><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary"/></span><span className="text-xs text-primary/60 animate-pulse">{statusMsg}</span></span></div></div>}
+              {sending&&!typing&&<div className="flex gap-3 justify-start"><div className="mt-1 shrink-0"><img src={aemLogo} alt="Hitab" className="h-9 w-9 rounded-2xl shadow-lg animate-pulse"/></div><div className="rounded-3xl border border-white/5 bg-zinc-900 px-5 py-3.5 shadow-sm text-sm text-zinc-500"><span className="flex items-center gap-3"><span className="flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]"/><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]"/><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary"/></span><span className="text-xs text-primary/60 animate-pulse">{statusMsg}</span></span></div></div>}
 
               {/* Suggestions */}
               {!sending&&!typing&&lastAI&&suggestions.length>0&&<div className="flex flex-wrap gap-2 pt-1">{suggestions.map(s=><button key={s} onClick={()=>setInput(s)} className="rounded-2xl border border-white/5 bg-white/3 px-4 py-1.5 text-xs text-zinc-500 hover:border-primary/30 hover:bg-white/5 hover:text-zinc-300 transition-all">{s}</button>)}</div>}

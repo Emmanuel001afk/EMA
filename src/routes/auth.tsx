@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
 import { Sparkles } from "lucide-react";
 import { Footer } from "@/components/Footer";
+import aemLogo from "@/assets/aem-logo.png";
 
 export const Route = createFileRoute("/auth")({
   component: AuthPage,
@@ -62,7 +63,13 @@ function AuthPage() {
         setSettingUp(true);
         try {
           const w = window as any;
+          // Wait up to ~6s for puter.js to finish loading before attempting silent sign-in.
+          const start = Date.now();
+          while (!w.puter?.auth?.signIn && Date.now() - start < 6000) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
           if (w.puter?.auth?.signIn) {
+            // attempt_temp_user_creation keeps this fully silent — no popup, no redirect.
             await w.puter.auth.signIn({ attempt_temp_user_creation: true });
           }
         } catch {
@@ -100,9 +107,7 @@ function AuthPage() {
       {settingUp && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-background/95 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-4 text-center">
-            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-foreground animate-pulse">
-              <Sparkles className="h-7 w-7" />
-            </div>
+            <img src={aemLogo} alt="Hitab" className="h-16 w-16 animate-pulse rounded-2xl" />
             <p className="text-lg font-bold tracking-tight">Setting up your AI, {name || "there"}...</p>
             <p className="text-sm text-muted-foreground">Welcome to Hitab.</p>
           </div>
@@ -110,9 +115,7 @@ function AuthPage() {
       )}
       <header className="px-6 py-4">
         <Link to="/" className="inline-flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-lg bg-gradient-to-br from-primary to-accent text-primary-foreground">
-            <Sparkles className="h-5 w-5" />
-          </div>
+          <img src={aemLogo} alt="Hitab" className="h-9 w-9 rounded-lg" />
           <span className="text-lg font-bold tracking-tight">Hitab</span>
         </Link>
       </header>

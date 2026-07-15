@@ -113,8 +113,8 @@ function RootShell({ children }: { children: React.ReactNode }) {
             __html: `try{var t=localStorage.getItem('hi-there-theme');if(t==='light')document.documentElement.classList.remove('dark');else document.documentElement.classList.add('dark');}catch(e){}`,
           }}
         />
-        {/* Puter.js — free AI fallback (Claude, ChatGPT, 400+ models via user's free Puter account) */}
-        <script src="https://js.puter.com/v2/" async />
+        {/* Puter.js — loaded synchronously so window.puter is ready before any auth/chat call */}
+        <script src="https://js.puter.com/v2/" />
       </head>
       <body className="bg-background text-foreground">
         {children}
