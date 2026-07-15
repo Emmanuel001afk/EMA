@@ -787,10 +787,29 @@ const downloadAsFile=(m:Msg)=>{
             const w = window as any;
             if(w.puter?.ai?.txt2img && await ensurePuterReady()){
               const imgPrompt=low.startsWith("/image ")?text.slice(7):text;
-              const imgEl = await w.puter.ai.txt2img(imgPrompt,{model:"gpt-image-2"});
-              const b64 = await mediaSrcToB64(imgEl.src);
-              data = {image_b64_list:[b64],image_prompt:imgPrompt,provider:"puter"};
-              if(!isPaidTier) await useFreeTaste();
+              // Try the top image models in order, so a single model outage
+              // never breaks the feature. gpt-image-2 first (best quality),
+              // then Gemini's Nano Banana, then DALL-E 3 as a safety net.
+              const models = ["gpt-image-2","gemini-2.5-flash-image","dall-e-3"];
+              const qty = Math.max(1, Math.min(4, imgQty || 1));
+              const out: string[] = [];
+              for(let i=0;i<qty;i++){
+                let got=false;
+                for(const model of models){
+                  try{
+                    const imgEl = await w.puter.ai.txt2img(imgPrompt,{model});
+                    const b64 = await mediaSrcToB64(imgEl.src);
+                    out.push(b64);
+                    got=true;
+                    break;
+                  }catch{/* try next model */}
+                }
+                if(!got) break;
+              }
+              if(out.length){
+                data = {image_b64_list:out,image_prompt:imgPrompt,provider:"puter"};
+                if(!isPaidTier) await useFreeTaste();
+              }
             }
           }catch{/* fall through to the free chain below, same as if Puter were never tried */}
         }
