@@ -18,6 +18,7 @@ function AuthPage() {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [settingUp, setSettingUp] = useState(false);
+  const [setupStep, setSetupStep] = useState<1 | 2>(1);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,6 +26,41 @@ function AuthPage() {
       if (data.session) navigate({ to: "/chat" });
     });
   }, [navigate]);
+
+  // Two-phase silent Puter setup (sign-up then confirmation). Runs on both
+  // account creation and sign-in, so returning users also get a fresh session
+  // if their previous temp user expired. Never blocks -- image/video features
+  // simply fall back to the free engines if this fails.
+  const runPuterSetup = async () => {
+    setSetupStep(1);
+    setSettingUp(true);
+    try {
+      const w = window as any;
+      const start = Date.now();
+      while (!w.puter?.auth?.signIn && Date.now() - start < 6000) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      if (!w.puter?.auth?.signIn) return;
+      // Phase 1: sign-up (creates a silent temp user if none exists yet).
+      try {
+        await w.puter.auth.signIn({ attempt_temp_user_creation: true });
+      } catch { /* swallow -- phase 2 will re-check */ }
+      // Small pause so the cover screen doesn't flicker past too fast.
+      await new Promise((r) => setTimeout(r, 700));
+      // Phase 2: confirmation -- verify the session is actually live, and
+      // retry once if the first attempt didn't stick.
+      setSetupStep(2);
+      try {
+        const ok = await w.puter.auth.isSignedIn?.();
+        if (!ok) {
+          await w.puter.auth.signIn({ attempt_temp_user_creation: true });
+        }
+      } catch { /* silent */ }
+      await new Promise((r) => setTimeout(r, 500));
+    } finally {
+      setSettingUp(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,29 +93,11 @@ function AuthPage() {
           options: { emailRedirectTo: redirectUrl, data: { display_name: name || email.split("@")[0] } },
         });
         if (error) throw error;
-        // Quietly set up Puter access in the background -- shows a branded "Setting up your AI" screen
-        // for the couple of seconds this takes. Never blocks signup if it fails; Puter-dependent
-        // features just fall back to the free engines and this gets retried next time it's needed.
-        setSettingUp(true);
-        try {
-          const w = window as any;
-          // Wait up to ~6s for puter.js to finish loading before attempting silent sign-in.
-          const start = Date.now();
-          while (!w.puter?.auth?.signIn && Date.now() - start < 6000) {
-            await new Promise((r) => setTimeout(r, 150));
-          }
-          if (w.puter?.auth?.signIn) {
-            // attempt_temp_user_creation keeps this fully silent — no popup, no redirect.
-            await w.puter.auth.signIn({ attempt_temp_user_creation: true });
-          }
-        } catch {
-          // Silent -- Puter setup is a nice-to-have, not a signup blocker
-        } finally {
-          setSettingUp(false);
-        }
+        await runPuterSetup();
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        await runPuterSetup();
       }
       navigate({ to: "/chat" });
     } catch (err: any) {
@@ -91,6 +109,9 @@ function AuthPage() {
 
   const signInWithGoogle = async () => {
     setError(null);
+    // Kick the Puter setup off before the redirect so returning Google users
+    // land in /chat with a live temp session already primed.
+    await runPuterSetup();
     const result = await lovable.auth.signInWithOAuth("google", {
       redirect_uri: `${window.location.origin}/chat`,
     });
@@ -106,10 +127,27 @@ function AuthPage() {
     <div className="flex min-h-screen flex-col bg-background">
       {settingUp && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-background/95 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex w-full max-w-xs flex-col items-center gap-4 px-6 text-center">
             <img src={aemLogo} alt="Hitab" className="h-16 w-16 animate-pulse rounded-2xl" />
-            <p className="text-lg font-bold tracking-tight">Setting up your AI, {name || "there"}...</p>
-            <p className="text-sm text-muted-foreground">Welcome to Hitab.</p>
+            <p className="text-lg font-bold tracking-tight">
+              {setupStep === 1
+                ? `Setting up your AI, ${name || "there"}...`
+                : `Almost ready, ${name || "there"}...`}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {setupStep === 1 ? "Creating your private AI workspace." : "Confirming access to premium models."}
+            </p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className={setupStep >= 1 ? "text-foreground" : ""}>① Sign up</span>
+              <span className="opacity-40">→</span>
+              <span className={setupStep >= 2 ? "text-foreground" : ""}>② Confirm</span>
+            </div>
+            <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-primary transition-all duration-500"
+                style={{ width: setupStep === 1 ? "50%" : "100%" }}
+              />
+            </div>
           </div>
         </div>
       )}
