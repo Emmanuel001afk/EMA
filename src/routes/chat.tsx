@@ -26,7 +26,7 @@ export const Route = createFileRoute("/chat")({ component: ChatPage });
 // - Puter.js global -
 declare const puter: {
   ai: { chat: (msgs: {role:string;content:string}[], opts?: {model?:string}) => Promise<any> };
-  auth: { isSignedIn: () => Promise<boolean>; signIn: () => Promise<void> };
+  auth: { isSignedIn: () => Promise<boolean>; signIn: (opts?: { attempt_temp_user_creation?: boolean }) => Promise<void> };
 };
 
 // Makes sure the person actually has a live Puter session before a paid-tier feature tries to
