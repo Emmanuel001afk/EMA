@@ -18,21 +18,14 @@ class EmaCommandRouter(
         when {
             lower.startsWith("open ") -> {
                 val request = command.substringAfter("open ").trim()
-                val markers = listOf(" and search for ", " and search ", " search for ", " search ")
-                val marker = markers.firstOrNull { lower.contains(it) }
-                if (marker != null) {
-                    val index = lower.indexOf(marker)
-                    openApp(
-                        request.substring(0, index).trim(),
-                        request.substring(index + marker.length).trim(),
-                        done
-                    )
-                } else {
-                    openApp(request, null, done)
-                }
+                openApp(request, done)
             }
-            lower.startsWith("search ") -> webSearch(command.substringAfter("search ").trim(), done)
-            lower.startsWith("go to ") -> openTarget(command.substringAfter("go to ").trim(), done)
+            lower.startsWith("search ") || lower.startsWith("find ") -> {
+                webSearch(command.substringAfter(' ').trim(), done)
+            }
+            lower.startsWith("go to ") || lower.startsWith("navigate to ") -> {
+                openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
+            }
             else -> CentralHubClient(context).ask(command) { answer ->
                 speak(answer)
                 done(answer)
@@ -40,7 +33,7 @@ class EmaCommandRouter(
         }
     }
 
-    private fun openApp(appName: String, query: String?, done: (String) -> Unit) {
+    private fun openApp(appName: String, done: (String) -> Unit) {
         val pm = context.packageManager
         val candidates = pm.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
@@ -65,13 +58,8 @@ class EmaCommandRouter(
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(launch)
 
-        if (!query.isNullOrBlank()) {
-            EmaAccessibilityService.requestTextSearch(query)
-        }
-
         val label = match.loadLabel(pm).toString()
-        val message = if (query.isNullOrBlank()) "Opening $label."
-        else "Opening $label and searching for $query."
+        val message = "Opening $label."
         speak(message)
         done(message)
     }
@@ -81,19 +69,27 @@ class EmaCommandRouter(
         val intent = Intent(Intent.ACTION_WEB_SEARCH)
             .putExtra("query", query)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(intent) }.onFailure {
+
+        runCatching { context.startActivity(intent) }.onSuccess {
+            val message = "Searching for $query."
+            speak(message); done(message)
+        }.onFailure {
             openTarget("https://www.google.com/search?q=" + Uri.encode(query), done)
-            return
         }
-        val message = "Searching for $query."
-        speak(message); done(message)
     }
 
     private fun openTarget(target: String, done: (String) -> Unit) {
         val uri = if (target.contains("://")) Uri.parse(target) else Uri.parse("https://$target")
-        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        val message = "Opening $target."
-        speak(message); done(message)
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val message = "Opening $target."
+            speak(message)
+            done(message)
+        }.onFailure {
+            val message = "I couldn't open $target."
+            speak(message)
+            done(message)
+        }
     }
 
     private fun speak(text: String) {
