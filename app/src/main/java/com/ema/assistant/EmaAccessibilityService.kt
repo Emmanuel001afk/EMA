@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Bundle
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.media.AudioManager
+import android.view.KeyEvent
 import android.os.Build
 import android.view.Display
 import com.google.mlkit.vision.common.InputImage
@@ -57,6 +59,9 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun tapFirstResult(): Boolean =
             instance?.tapFirstResultInternal() == true
+
+        fun toggleMediaPlayback(): Boolean =
+            instance?.toggleMediaPlaybackInternal() == true
 
         fun readScreenWithOcr(callback: (String) -> Unit) {
             instance?.captureAndRecognize(callback) ?: callback("")
@@ -136,6 +141,15 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+    }
+
+    private fun toggleMediaPlaybackInternal(): Boolean {
+        val audioManager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
+        val down = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+        val up = KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+        audioManager.dispatchMediaKeyEvent(down)
+        audioManager.dispatchMediaKeyEvent(up)
+        return true
     }
 
     private fun tapFirstResultInternal(): Boolean {
