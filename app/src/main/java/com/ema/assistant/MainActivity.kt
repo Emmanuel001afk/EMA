@@ -77,12 +77,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         root.addView(status)
 
-        val scroll = ScrollView(this).apply { addView(root) }
-        setContentView(scroll)
-
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 10)
-        }
+        setContentView(ScrollView(this).apply { addView(root) })
     }
 
     private fun executeTypedCommand() {
@@ -107,6 +102,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun listenOnce() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            status.text = "Microphone permission is required for Voice."
+            return
+        }
+
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             status.text = "Speech recognition is unavailable."
             return
@@ -126,8 +127,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                             runOnUiThread { status.text = result }
                         }
                     }
+                    recognizer?.destroy()
+                    recognizer = null
                 }
-                override fun onError(e: Int) { status.text = "I couldn't hear that. Try again." }
+
+                override fun onError(e: Int) {
+                    status.text = "I couldn't hear that. Try again."
+                    recognizer?.destroy()
+                    recognizer = null
+                }
+
                 override fun onReadyForSpeech(p: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(v: Float) {}
@@ -144,6 +153,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_MIC && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            status.text = "Microphone ready. Press Voice again to speak."
+        }
+    }
+
     override fun onInit(code: Int) {
         if (code == TextToSpeech.SUCCESS) tts.language = Locale.getDefault()
     }
@@ -152,5 +168,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         recognizer?.destroy()
         tts.shutdown()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val REQUEST_MIC = 10
     }
 }
