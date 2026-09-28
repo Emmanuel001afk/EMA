@@ -1,17 +1,102 @@
 package com.ema.assistant
+
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.speech.tts.TextToSpeech
-class EmaCommandRouter(private val context:Context,private val tts:TextToSpeech){
- fun execute(raw:String,done:(String)->Unit){val c=raw.trim();val l=c.lowercase();when{
-  l.startsWith("open youtube")->openSearch("com.google.android.youtube",c.drop(12).trim(),"https://www.youtube.com/results?search_query=")
-  l.startsWith("open spotify")->openSearch("com.spotify.music",c.drop(12).trim(),"https://open.spotify.com/search/")
-  l.startsWith("open ")->openKnownApp(c.substringAfter("open ").trim())
-  l.startsWith("search ")->{val q=c.substringAfter("search ").trim();context.startActivity(Intent(Intent.ACTION_WEB_SEARCH).putExtra("query",q).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));speak("Searching for $q");done("Searching for $q")}
-  else->CentralHubClient(context).ask(c){r->speak(r);done(r)}
- }}
- private fun openSearch(pkg:String,q:String,base:String){val launch=context.packageManager.getLaunchIntentForPackage(pkg);if(launch==null){speak("That app is not installed.");return};context.startActivity(launch);if(q.isNotBlank())context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(base+Uri.encode(q))));speak(if(q.isBlank())"Opening it." else "Opening it and searching for $q.")}
- private fun openKnownApp(name:String){val apps=context.packageManager.getInstalledApplications(0);val m=apps.firstOrNull{it.loadLabel(context.packageManager).toString().equals(name,true)};if(m==null){speak("I couldn't find $name on this phone.");return};context.startActivity(context.packageManager.getLaunchIntentForPackage(m.packageName));speak("Opening $name.")}
- private fun speak(s:String){tts.speak(s,TextToSpeech.QUEUE_FLUSH,null,"ema")}
+import java.util.Locale
+
+class EmaCommandRouter(
+    private val context: Context,
+    private val tts: TextToSpeech
+) {
+    fun execute(raw: String, done: (String) -> Unit) {
+        val command = raw.trim()
+        if (command.isBlank()) return
+        val lower = command.lowercase(Locale.getDefault())
+
+        when {
+            lower.startsWith("open ") -> {
+                val request = command.substringAfter("open ").trim()
+                val markers = listOf(" and search for ", " and search ", " search for ", " search ")
+                val marker = markers.firstOrNull { lower.contains(it) }
+                if (marker != null) {
+                    val index = lower.indexOf(marker)
+                    openApp(
+                        request.substring(0, index).trim(),
+                        request.substring(index + marker.length).trim(),
+                        done
+                    )
+                } else {
+                    openApp(request, null, done)
+                }
+            }
+            lower.startsWith("search ") -> webSearch(command.substringAfter("search ").trim(), done)
+            lower.startsWith("go to ") -> openTarget(command.substringAfter("go to ").trim(), done)
+            else -> CentralHubClient(context).ask(command) { answer ->
+                speak(answer)
+                done(answer)
+            }
+        }
+    }
+
+    private fun openApp(appName: String, query: String?, done: (String) -> Unit) {
+        val pm = context.packageManager
+        val candidates = pm.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
+        )
+        val match = candidates.firstOrNull {
+            it.loadLabel(pm).toString().equals(appName, true)
+        } ?: candidates.firstOrNull {
+            it.loadLabel(pm).toString().contains(appName, true)
+        }
+
+        if (match == null) {
+            val message = "I couldn't find $appName on this phone."
+            speak(message); done(message); return
+        }
+
+        val launch = pm.getLaunchIntentForPackage(match.activityInfo.packageName)
+        if (launch == null) {
+            val message = "I found $appName, but Android did not provide a launch action."
+            speak(message); done(message); return
+        }
+
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(launch)
+
+        if (!query.isNullOrBlank()) {
+            EmaAccessibilityService.requestTextSearch(query)
+        }
+
+        val label = match.loadLabel(pm).toString()
+        val message = if (query.isNullOrBlank()) "Opening $label."
+        else "Opening $label and searching for $query."
+        speak(message)
+        done(message)
+    }
+
+    private fun webSearch(query: String, done: (String) -> Unit) {
+        if (query.isBlank()) return
+        val intent = Intent(Intent.ACTION_WEB_SEARCH)
+            .putExtra("query", query)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }.onFailure {
+            openTarget("https://www.google.com/search?q=" + Uri.encode(query), done)
+            return
+        }
+        val message = "Searching for $query."
+        speak(message); done(message)
+    }
+
+    private fun openTarget(target: String, done: (String) -> Unit) {
+        val uri = if (target.contains("://")) Uri.parse(target) else Uri.parse("https://$target")
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        val message = "Opening $target."
+        speak(message); done(message)
+    }
+
+    private fun speak(text: String) {
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
+    }
 }
