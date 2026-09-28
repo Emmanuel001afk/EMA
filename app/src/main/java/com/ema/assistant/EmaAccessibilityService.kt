@@ -9,10 +9,21 @@ import java.util.concurrent.atomic.AtomicReference
 class EmaAccessibilityService : AccessibilityService() {
     companion object {
         @Volatile private var instance: EmaAccessibilityService? = null
-        private val pendingSearch = AtomicReference<String?>(null)
+        private val pendingSearch = AtomicReference<PendingSearch?>(null)
+
+        private data class PendingSearch(
+            val packageName: String?,
+            val query: String,
+            val callback: (Boolean) -> Unit
+        )
 
         fun requestTextSearch(query: String) {
-            pendingSearch.set(query)
+            pendingSearch.set(PendingSearch(null, query) {})
+            instance?.performPendingSearch()
+        }
+
+        fun searchInPackage(packageName: String, query: String, callback: (Boolean) -> Unit) {
+            pendingSearch.set(PendingSearch(packageName, query, callback))
             instance?.performPendingSearch()
         }
 
@@ -25,9 +36,11 @@ class EmaAccessibilityService : AccessibilityService() {
         fun performGlobalAction(action: Int): Boolean =
             instance?.performGlobalAction(action) == true
 
-        fun tapText(text: String): Boolean = instance?.tapTextInternal(text) == true
+        fun tapText(text: String): Boolean =
+            instance?.tapTextInternal(text) == true
 
-        fun setFocusedText(text: String): Boolean = instance?.setFocusedTextInternal(text) == true
+        fun setFocusedText(text: String): Boolean =
+            instance?.setFocusedTextInternal(text) == true
     }
 
     override fun onServiceConnected() {
@@ -43,6 +56,7 @@ class EmaAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        pendingSearch.getAndSet(null)?.callback?.invoke(false)
         if (instance === this) instance = null
         super.onDestroy()
     }
@@ -50,8 +64,10 @@ class EmaAccessibilityService : AccessibilityService() {
     private fun readCurrentWindow(maxChars: Int): String {
         val root = rootInActiveWindow ?: return ""
         val out = StringBuilder()
+
         fun walk(node: AccessibilityNodeInfo?) {
             if (node == null || out.length >= maxChars) return
+
             val text = node.text?.toString()?.trim().orEmpty()
             val description = node.contentDescription?.toString()?.trim().orEmpty()
             val value = when {
@@ -59,17 +75,18 @@ class EmaAccessibilityService : AccessibilityService() {
                 description.isNotBlank() -> description
                 else -> ""
             }
+
             if (value.isNotBlank()) {
                 val normalized = value.replace(Regex("\\s+"), " ")
-                if (normalized.length <= 500) {
-                    out.append(normalized).append('\n')
-                }
+                if (normalized.length <= 500) out.append(normalized).append('\n')
             }
+
             for (i in 0 until node.childCount) {
                 walk(node.getChild(i))
                 if (out.length >= maxChars) return
             }
         }
+
         walk(root)
         return out.toString().trim().take(maxChars)
     }
@@ -78,71 +95,106 @@ class EmaAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
+
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (node == null) return null
-            val label = (node.text?.toString().orEmpty() + " " + node.contentDescription?.toString().orEmpty())
-                .trim().lowercase()
-            if (label.contains(wanted) && node.isVisibleToUser && node.isClickable) return node
+
+            val label = (
+                node.text?.toString().orEmpty() + " " +
+                    node.contentDescription?.toString().orEmpty()
+                ).trim().lowercase()
+
+            if (label.contains(wanted) && node.isVisibleToUser && node.isClickable) {
+                return node
+            }
+
             for (i in 0 until node.childCount) {
                 val found = find(node.getChild(i))
                 if (found != null) return found
             }
             return null
         }
+
         return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
     private fun setFocusedTextInternal(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root) ?: return false
+        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: findEditable(root)
+            ?: return false
+
         if (!field.isEditable) return false
+
         val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                text
+            )
         }
+
         return field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
     private fun performPendingSearch() {
-        val query = pendingSearch.get() ?: return
+        val pending = pendingSearch.get() ?: return
         val root = rootInActiveWindow ?: return
 
-        val fields = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (pending.packageName != null && root.packageName?.toString() != pending.packageName) {
+            return
+        }
+
+        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findEditable(root)
             ?: findSearchNode(root)
 
-        if (fields != null && fields.isEditable) {
-            val args = Bundle().apply {
-                putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    query
-                )
-            }
-            if (fields.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-                fields.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                pendingSearch.compareAndSet(query, null)
-                return
-            }
+        if (field == null || !field.isEditable) return
+
+        val args = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                pending.query
+            )
+        }
+
+        if (field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+            /*
+             * Some apps submit immediately after ACTION_SET_TEXT. Others expose
+             * a Search button. We only click the field itself here; the next
+             * accessibility event gives EMA another chance to observe the UI.
+             */
+            field.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            pendingSearch.compareAndSet(pending, null)
+            pending.callback(true)
         }
     }
 
     private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isEditable) return node
+        if (node.isEditable && node.isVisibleToUser) return node
+
         for (i in 0 until node.childCount) {
-            val found = node.getChild(i)?.let { child ->
-                findEditable(child)
-            }
+            val found = node.getChild(i)?.let(::findEditable)
             if (found != null) return found
         }
+
         return null
     }
 
     private fun findSearchNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val text = (node.text ?: node.contentDescription ?: "").toString().lowercase()
-        if (text.contains("search") && node.isFocusable) return node
+        val text = (
+            node.text?.toString().orEmpty() + " " +
+                node.contentDescription?.toString().orEmpty()
+        ).lowercase()
+
+        if (text.contains("search") && node.isFocusable && node.isVisibleToUser) {
+            return node
+        }
+
         for (i in 0 until node.childCount) {
-            val found = node.getChild(i)?.let { child -> findSearchNode(child) }
+            val found = node.getChild(i)?.let(::findSearchNode)
             if (found != null) return found
         }
+
         return null
     }
 }
