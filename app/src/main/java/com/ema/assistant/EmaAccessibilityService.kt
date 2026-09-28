@@ -55,6 +55,9 @@ class EmaAccessibilityService : AccessibilityService() {
         fun tapCoordinates(x: Float, y: Float): Boolean =
             instance?.tapCoordinatesInternal(x, y) == true
 
+        fun tapFirstResult(): Boolean =
+            instance?.tapFirstResultInternal() == true
+
         fun readScreenWithOcr(callback: (String) -> Unit) {
             instance?.captureAndRecognize(callback) ?: callback("")
         }
@@ -133,6 +136,27 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+    }
+
+    private fun tapFirstResultInternal(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+
+        fun collect(node: AccessibilityNodeInfo?) {
+            if (node == null || !node.isVisibleToUser) return
+            if (node.isClickable && node.isEnabled) {
+                val label = (node.text?.toString().orEmpty() + " " + node.contentDescription?.toString().orEmpty()).trim()
+                val bounds = Rect().also { node.getBoundsInScreen(it) }
+                if (label.isNotBlank() && bounds.width() > 40 && bounds.height() > 30 &&
+                    label.lowercase() !in setOf("back", "home", "search", "menu", "more options")) {
+                    candidates.add(node)
+                }
+            }
+            for (i in 0 until node.childCount) collect(node.getChild(i))
+        }
+        collect(root)
+        val candidate = candidates.firstOrNull() ?: return false
+        return candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
     private fun setFocusedTextInternal(text: String): Boolean {
