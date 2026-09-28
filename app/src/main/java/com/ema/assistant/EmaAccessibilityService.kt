@@ -163,10 +163,39 @@ class EmaAccessibilityService : AccessibilityService() {
              * a Search button. We only click the field itself here; the next
              * accessibility event gives EMA another chance to observe the UI.
              */
-            field.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+            }
+            clickSearchControl(root)
             pendingSearch.compareAndSet(pending, null)
             pending.callback(true)
         }
+    }
+
+    private fun clickSearchControl(root: AccessibilityNodeInfo) {
+        fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null) return null
+            val label = (
+                node.text?.toString().orEmpty() + " " +
+                    node.contentDescription?.toString().orEmpty()
+            ).trim().lowercase()
+
+            val looksLikeSearch = label == "search" ||
+                label == "go" ||
+                label == "submit" ||
+                label == "enter" ||
+                label.contains("search")
+
+            if (looksLikeSearch && node.isVisibleToUser && node.isClickable) return node
+
+            for (i in 0 until node.childCount) {
+                val found = find(node.getChild(i))
+                if (found != null) return found
+            }
+            return null
+        }
+
+        find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
     private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
