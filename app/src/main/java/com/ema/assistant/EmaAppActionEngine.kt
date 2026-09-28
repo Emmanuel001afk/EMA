@@ -88,6 +88,17 @@ class EmaAppActionEngine(private val context: Context) {
         return false
     }
 
+    fun openAndSearchThenTapFirst(appName: String, query: String, done: (Boolean, String) -> Unit) {
+        val target = openApp(appName)
+        if (target == null) { done(false, "I couldn't find or open " + appName + " on this phone."); return }
+        EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
+            if (!searched) { done(false, "I opened " + target.label + ", but couldn't access its search field."); return@searchInPackage }
+            main.postDelayed({
+                val tapped = EmaAccessibilityService.tapFirstResult()
+                done(tapped, if (tapped) "I searched " + target.label + " for " + query + " and selected the first result." else "I searched " + target.label + ", but couldn't identify the first selectable result.")
+            }, 900L)
+        }
+    }
     /**
      * Open an application and ask Accessibility to search its visible UI.
      * Accessibility observes the target package and completes the search once
