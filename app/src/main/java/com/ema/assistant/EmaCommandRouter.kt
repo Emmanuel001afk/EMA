@@ -29,7 +29,7 @@ class EmaCommandRouter(
             lower.startsWith("tap ") || lower.startsWith("press ") -> {
                 val target = command.substringAfter(' ').trim()
                 val ok = EmaAccessibilityService.tapText(target)
-                val message = if (ok) "Tapped $target." else "I could not find a tappable "$target" on the current screen."
+                val message = if (ok) "Tapped $target." else "I could not find a tappable \"$target\" on the current screen."
                 speak(message); done(message)
             }
             lower.startsWith("type ") -> {
