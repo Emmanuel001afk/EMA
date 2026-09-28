@@ -16,6 +16,28 @@ class EmaCommandRouter(
         val lower = command.lowercase(Locale.getDefault())
 
         when {
+            lower == "back" || lower == "go back" -> globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK, "Going back.", done)
+            lower == "home" || lower == "go home" -> globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME, "Going home.", done)
+            lower == "read screen" || lower == "read this screen" || lower == "what is on my screen" -> {
+                val screen = EmaAccessibilityService.currentScreenText()
+                val message = if (screen.isBlank()) {
+                    "EMA cannot read the current screen yet. Enable EMA's Accessibility access first."
+                } else screen
+                speak(message.take(3000))
+                done(message)
+            }
+            lower.startsWith("tap ") || lower.startsWith("press ") -> {
+                val target = command.substringAfter(' ').trim()
+                val ok = EmaAccessibilityService.tapText(target)
+                val message = if (ok) "Tapped $target." else "I could not find a tappable "$target" on the current screen."
+                speak(message); done(message)
+            }
+            lower.startsWith("type ") -> {
+                val value = command.substringAfter("type ").trim()
+                val ok = EmaAccessibilityService.setFocusedText(value)
+                val message = if (ok) "Typed the requested text." else "I could not find an editable field on the current screen."
+                speak(message); done(message)
+            }
             lower.startsWith("open ") -> {
                 val request = command.substringAfter("open ").trim()
                 openApp(request, done)
@@ -26,11 +48,26 @@ class EmaCommandRouter(
             lower.startsWith("go to ") || lower.startsWith("navigate to ") -> {
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
             }
-            else -> CentralHubClient(context).ask(command) { answer ->
-                speak(answer)
-                done(answer)
+            else -> {
+                val needsScreen = listOf("this screen", "my screen", "on screen", "this page", "current page", "what am i looking at", "read this")
+                    .any(lower::contains)
+                val prompt = if (needsScreen) {
+                    val screen = EmaAccessibilityService.currentScreenText()
+                    if (screen.isBlank()) command else "Current screen context:\n$screen\n\nUser request: $command"
+                } else command
+                CentralHubClient(context).ask(prompt) { answer ->
+                    speak(answer)
+                    done(answer)
+                }
             }
         }
+    }
+
+    private fun globalAction(action: Int, message: String, done: (String) -> Unit) {
+        val ok = EmaAccessibilityService.performGlobalAction(action)
+        val result = if (ok) message else "EMA needs Accessibility access to perform that action."
+        speak(result)
+        done(result)
     }
 
     private fun openApp(appName: String, done: (String) -> Unit) {
