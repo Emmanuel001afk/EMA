@@ -28,6 +28,44 @@ class EmaCommandRouter(
         val lower = command.lowercase(Locale.getDefault())
 
         when {
+            lower == "scroll down" || lower == "scroll up" || lower == "scroll to top" -> {
+                val direction = if (lower.contains("up") || lower.contains("top")) "up" else "down"
+                val ok = EmaAccessibilityService.scroll(direction)
+                val message = if (ok) "Scrolled " + direction + "." else "I could not scroll the current screen."
+                speak(message); done(message)
+            }
+
+            lower == "tap the first result" || lower == "select the first result" || lower == "open the first result" -> {
+                val ok = EmaAccessibilityService.tapFirstResult()
+                val message = if (ok) "Selected the first visible result." else "I could not identify a selectable result on this screen."
+                speak(message); done(message)
+            }
+
+            lower == "read screen with camera" || lower == "read everything on screen" ||
+                lower == "what does the screen say" || lower == "what is written on my screen" -> {
+                statusWithOcr(done)
+            }
+
+            lower == "what time is it" || lower == "tell me the time" || lower == "current time" -> {
+                val time = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date())
+                val message = "It is " + time + "."
+                speak(message); done(message)
+            }
+
+            lower.startsWith("set an alarm for ") || lower.startsWith("set alarm for ") -> {
+                val value = command.substringAfter("alarm for ").trim()
+                openAlarm(value, done)
+            }
+
+            lower.startsWith("navigate to ") || lower.startsWith("directions to ") -> {
+                val destination = command.substringAfter(' ').substringAfter(' ').trim()
+                openMaps(destination, done)
+            }
+
+            lower.startsWith("text ") || lower.startsWith("send a text to ") || lower.startsWith("send a message to ") -> {
+                openMessageComposer(command, done)
+            }
+
             lower == "back" || lower == "go back" ->
                 globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK, "Going back.", done)
 
@@ -114,6 +152,76 @@ class EmaCommandRouter(
                     speak(answer); done(answer)
                 }
             }
+        }
+    }
+
+    private fun statusWithOcr(done: (String) -> Unit) {
+        val accessible = EmaAccessibilityService.currentScreenText()
+        EmaAccessibilityService.readScreenWithOcr { ocr ->
+            val combined = listOf(accessible, ocr).filter { it.isNotBlank() }.distinct().joinToString("\n")
+            val result = combined.ifBlank { "I could not read text from the current screen." }.take(6000)
+            speak(result); done(result)
+        }
+    }
+
+    private fun openAlarm(value: String, done: (String) -> Unit) {
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val time = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?", RegexOption.IGNORE_CASE).find(value)
+        if (time == null) {
+            val message = "I could not understand the alarm time."
+            speak(message); done(message); return
+        }
+        var hour = time.groupValues[1].toInt()
+        val minute = time.groupValues[2].ifBlank { "0" }.toInt()
+        when (time.groupValues[3].lowercase()) {
+            "pm" -> if (hour < 12) hour += 12
+            "am" -> if (hour == 12) hour = 0
+        }
+        intent.putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+        intent.putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+        runCatching { context.startActivity(intent) }.onSuccess {
+            val message = "Opening the alarm screen for " + value + "."
+            speak(message); done(message)
+        }.onFailure {
+            val message = "This phone does not allow EMA to open the alarm screen."
+            speak(message); done(message)
+        }
+    }
+
+    private fun openMaps(destination: String, done: (String) -> Unit) {
+        val uri = Uri.parse("geo:0,0?q=" + Uri.encode(destination))
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val message = "Opening directions to " + destination + "."
+            speak(message); done(message)
+        }.onFailure {
+            openTarget("https://www.google.com/maps/search/?api=1&query=" + Uri.encode(destination), done)
+        }
+    }
+
+    private fun openMessageComposer(command: String, done: (String) -> Unit) {
+        val lower = command.lowercase(Locale.getDefault())
+        val marker = when {
+            lower.startsWith("send a message to ") -> "send a message to "
+            lower.startsWith("send a text to ") -> "send a text to "
+            else -> "text "
+        }
+        val rest = command.substring(marker.length).trim()
+        val parts = rest.split(Regex("\\s+(?:saying|that says|message)\\s+"), limit = 2)
+        val recipient = parts.firstOrNull().orEmpty()
+        val body = parts.getOrNull(1).orEmpty()
+        val uri = Uri.parse("smsto:" + Uri.encode(recipient))
+        val intent = Intent(Intent.ACTION_SENDTO, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (body.isNotBlank()) intent.putExtra("sms_body", body)
+        runCatching { context.startActivity(intent) }.onSuccess {
+            val message = "Opening messages for " + recipient + "."
+            speak(message); done(message)
+        }.onFailure {
+            val message = "I could not open the messaging app."
+            speak(message); done(message)
         }
     }
 
