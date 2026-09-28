@@ -1,7 +1,0 @@
-project_id = "mqgabtofbqbhmvaoixdb"
-
-[functions.chat]
-verify_jwt = false
-
-[functions.paystack-verify]
-verify_jwt = false
