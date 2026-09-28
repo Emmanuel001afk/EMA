@@ -23,10 +23,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var status: TextView
     private lateinit var commandInput: EditText
     private var recognizer: SpeechRecognizer? = null
+    private lateinit var router: EmaCommandRouter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
+        router = EmaCommandRouter(this, tts)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -87,7 +89,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
         status.text = "Working…"
-        EmaCommandRouter(this, tts).execute(command) { result ->
+        router.execute(command) { result ->
             runOnUiThread { status.text = result }
         }
     }
