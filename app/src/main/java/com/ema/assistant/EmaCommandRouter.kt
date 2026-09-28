@@ -106,9 +106,15 @@ class EmaCommandRouter(
                     done("Try: go into YouTube and search for a topic.")
                 } else {
                     val (app, query) = parsed
-                    speak("Opening $app and searching for $query.")
-                    appEngine.openAndSearch(app, query) { _, result ->
-                        speak(result); done(result)
+                    speak("Opening " + app + " and searching for " + query + ".")
+                    if (lower.contains("first result") || lower.contains("first one")) {
+                        appEngine.openAndSearchThenTapFirst(app, query) { _, result ->
+                            speak(result); done(result)
+                        }
+                    } else {
+                        appEngine.openAndSearch(app, query) { _, result ->
+                            speak(result); done(result)
+                        }
                     }
                 }
             }
