@@ -21,6 +21,7 @@ class EmaCommandRouter(
     private val tts: TextToSpeech
 ) {
     private val appEngine = EmaAppActionEngine(context)
+    private var lastAppName: String? = null
 
     fun execute(raw: String, done: (String) -> Unit) {
         val command = raw.trim()
@@ -133,8 +134,13 @@ class EmaCommandRouter(
 
             lower.startsWith("open ") -> openApp(command.substringAfter("open ").trim(), done)
 
-            lower.startsWith("search ") || lower.startsWith("find ") ->
-                webSearch(command.substringAfter(' ').trim(), done)
+            lower.startsWith("search ") || lower.startsWith("find ") -> {
+                val query = command.substringAfter(' ').trim()
+                val app = lastAppName
+                if (!app.isNullOrBlank()) {
+                    appEngine.openAndSearch(app, query) { _, result -> speak(result); done(result) }
+                } else webSearch(query, done)
+            }
 
             lower.startsWith("go to ") || lower.startsWith("navigate to ") ->
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
@@ -343,6 +349,7 @@ class EmaCommandRouter(
 
     private fun openApp(appName: String, done: (String) -> Unit) {
         val target = appEngine.openApp(appName)
+        if (target != null) lastAppName = target.label
         val message = if (target == null) "I couldn't find or open $appName on this phone." else "${target.label}"
         val finalMessage = if (target == null) message else "Opening $message."
         speak(finalMessage); done(finalMessage)
