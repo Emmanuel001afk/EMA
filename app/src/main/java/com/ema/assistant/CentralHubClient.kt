@@ -26,8 +26,6 @@ class CentralHubClient(private val context: Context) {
         thread(name = "EMA-CentralHub-AI") {
             try {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                val deviceId = prefs.getString(TOKEN_KEY, null)
-                    ?.takeIf { false } // keep token and device namespaces separate
                 val stableDeviceId = prefs.getString(DEVICE_KEY, null)
                     ?: (Settings.Secure.getString(
                         context.contentResolver,
