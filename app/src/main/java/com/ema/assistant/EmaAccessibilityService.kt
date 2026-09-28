@@ -303,6 +303,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun findEditable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
         if (node.isEditable && node.isVisibleToUser) return node
 
         for (i in 0 until node.childCount) {
