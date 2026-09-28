@@ -2,6 +2,13 @@ package com.ema.assistant
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Bundle
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.Build
+import android.view.Display
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.atomic.AtomicReference
@@ -41,6 +48,16 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun setFocusedText(text: String): Boolean =
             instance?.setFocusedTextInternal(text) == true
+
+        fun scroll(direction: String): Boolean =
+            instance?.scrollInternal(direction) == true
+
+        fun tapCoordinates(x: Float, y: Float): Boolean =
+            instance?.tapCoordinatesInternal(x, y) == true
+
+        fun readScreenWithOcr(callback: (String) -> Unit) {
+            instance?.captureAndRecognize(callback) ?: callback("")
+        }
     }
 
     override fun onServiceConnected() {
@@ -198,7 +215,70 @@ class EmaAccessibilityService : AccessibilityService() {
         find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
-    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun scrollInternal(direction: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val target = findScrollable(root) ?: root
+        val action = when (direction.lowercase()) {
+            "up", "back", "top" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            else -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        }
+        return target.performAction(action)
+    }
+
+    private fun findScrollable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isVisibleToUser && node.isScrollable) return node
+        for (i in 0 until node.childCount) {
+            val found = node.getChild(i)?.let(::findScrollable)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun tapCoordinatesInternal(x: Float, y: Float): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 50))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    private fun captureAndRecognize(callback: (String) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback("")
+            return
+        }
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val bitmap = runCatching {
+                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                }.getOrNull()
+                screenshot.hardwareBuffer.close()
+                if (bitmap == null) {
+                    callback("")
+                    return
+                }
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                    .addOnSuccessListener { result ->
+                        callback(result.text)
+                        recognizer.close()
+                        bitmap.recycle()
+                    }
+                    .addOnFailureListener {
+                        callback("")
+                        recognizer.close()
+                        bitmap.recycle()
+                    }
+            }
+
+            override fun onFailure(errorCode: Int) {
+                callback("")
+            }
+        })
+    }
+
+    private fun findEditable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (node.isEditable && node.isVisibleToUser) return node
 
         for (i in 0 until node.childCount) {
