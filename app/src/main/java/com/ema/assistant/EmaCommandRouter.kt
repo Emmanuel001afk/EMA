@@ -73,8 +73,11 @@ class EmaCommandRouter(
             lower == "home" || lower == "go home" ->
                 globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME, "Going home.", done)
 
-            lower == "play" || lower == "pause" || lower == "play or pause" ->
-                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_MEDIA_PLAY_PAUSE, "Toggling media playback.", done)
+            lower == "play" || lower == "pause" || lower == "play or pause" -> {
+                val ok = EmaAccessibilityService.toggleMediaPlayback()
+                val message = if (ok) "Toggling media playback." else "I could not control media playback."
+                speak(message); done(message)
+            }
 
             lower == "read screen" || lower == "read this screen" || lower == "what is on my screen" -> {
                 val screen = EmaAccessibilityService.currentScreenText()
