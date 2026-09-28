@@ -11,8 +11,6 @@ import kotlin.concurrent.thread
 
 class CentralHubClient(private val context: Context) {
     companion object {
-        // EMA uses the existing shared Central Hub AI tunnel. This is not a new
-        // EMA-specific tunnel; appId identifies this installation to the shared service.
         private const val HUB_URL = "https://mayobuild-studio.lovable.app/api/ai-tunnel"
         private const val APP_ID = "ema"
         private const val PREFS = "ema_tunnel"
@@ -35,11 +33,7 @@ class CentralHubClient(private val context: Context) {
                     }
 
                 var token = prefs.getString(TOKEN_KEY, null)
-
-                if (token.isNullOrBlank()) {
-                    token = register(stableDeviceId, prefs)
-                }
-
+                if (token.isNullOrBlank()) token = register(stableDeviceId, prefs)
                 if (token.isNullOrBlank()) {
                     callback("Central Hub AI registration failed.")
                     return@thread
@@ -52,7 +46,6 @@ class CentralHubClient(private val context: Context) {
                     .put("message", message)
                     .toString())
 
-                // A stale/revoked installation token is repaired automatically.
                 if (result.code == 401) {
                     token = register(stableDeviceId, prefs)
                     if (token.isNullOrBlank()) {
@@ -69,18 +62,13 @@ class CentralHubClient(private val context: Context) {
 
                 val json = runCatching { JSONObject(result.body) }.getOrNull()
                 if (result.code !in 200..299 || json?.optBoolean("ok", false) != true) {
-                    val detail = json?.optString("error").orEmpty()
-                        .ifBlank { "HTTP ${result.code}" }
+                    val detail = json?.optString("error").orEmpty().ifBlank { "HTTP ${result.code}" }
                     callback("Central Hub AI error: $detail")
                     return@thread
                 }
 
                 val answer = json.optString("answer").trim()
-                callback(if (answer.isBlank()) {
-                    "Central Hub AI returned an empty answer."
-                } else {
-                    answer
-                })
+                callback(answer.ifBlank { "Central Hub AI returned an empty answer." })
             } catch (e: Exception) {
                 callback(
                     "I can still handle phone actions, but Central Hub AI is unavailable: " +
@@ -107,25 +95,28 @@ class CentralHubClient(private val context: Context) {
     }
 
     private fun post(token: String?, body: String): HttpResult {
-        val connection = (URL(HUB_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 10000
-            readTimeout = 30000
-            doOutput = true
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json")
+        val connection = URL(HUB_URL).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 30000
+            connection.doOutput = true
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Content-Type", "application/json")
             if (!token.isNullOrBlank()) {
-                setRequestProperty("Authorization", "Bearer $token")
+                connection.setRequestProperty("Authorization", "Bearer $token")
             }
-        }
 
-        return connection.use {
-            it.outputStream.use { output ->
+            connection.outputStream.use { output ->
                 output.write(body.toByteArray(Charsets.UTF_8))
             }
-            val stream = if (it.responseCode in 200..299) it.inputStream else it.errorStream
+
+            val responseCode = connection.responseCode
+            val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
             val responseBody = stream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
-            HttpResult(it.responseCode, responseBody)
+            return HttpResult(responseCode, responseBody)
+        } finally {
+            connection.disconnect()
         }
     }
 }
