@@ -1,1 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?><voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android" android:sessionService="com.ema.assistant.EmaVoiceInteractionService" android:supportsAssist="true" android:supportsLaunchFromKeyguard="true"/>
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.ema.assistant.EmaVoiceInteractionSessionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />
