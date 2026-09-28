@@ -62,7 +62,7 @@ class EmaAccessibilityService : AccessibilityService() {
             if (value.isNotBlank()) {
                 val normalized = value.replace(Regex("\\s+"), " ")
                 if (normalized.length <= 500) {
-                    out.append(normalized).append('\\n')
+                    out.append(normalized).append('\n')
                 }
             }
             for (i in 0 until node.childCount) {
