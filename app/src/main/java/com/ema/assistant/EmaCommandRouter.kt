@@ -622,30 +622,60 @@ class EmaCommandRouter(
     }
 
     private fun openAlarm(value: String, done: (String) -> Unit) {
-        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
-            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
         val time = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?", RegexOption.IGNORE_CASE).find(value)
         if (time == null) {
             val message = "I could not understand the alarm time."
             speak(message); done(message); return
         }
+
         var hour = time.groupValues[1].toInt()
         val minute = time.groupValues[2].ifBlank { "0" }.toInt()
         when (time.groupValues[3].lowercase()) {
             "pm" -> if (hour < 12) hour += 12
             "am" -> if (hour == 12) hour = 0
         }
-        intent.putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
-        intent.putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
-        intent.putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
-        intent.putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
+        if (hour !in 0..23 || minute !in 0..59) {
+            val message = "That is not a valid alarm time."
+            speak(message); done(message); return
+        }
+
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
+            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
         runCatching { context.startActivity(intent) }.onSuccess {
-            val message = "Alarm set for " + value + "."
-            speak(message); done(message)
+            // Some Clock implementations honor EXTRA_SKIP_UI and some do not.
+            // Deliberately leave the confirmation UI available, then use the
+            // same generic visual/accessibility action layer to press Set/Save.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val packageName = EmaAccessibilityService.currentScreenText()
+                val setLabels = listOf("Set alarm", "Set", "Save", "Done", "Create")
+                fun tryNext(index: Int) {
+                    if (index >= setLabels.size) {
+                        val message = "I opened the Clock alarm editor for $value, but could not verify the final Set/Save control."
+                        speak(message); done(message)
+                        return
+                    }
+                    EmaGenericUiController.tap(setLabels[index]) { ok, _ ->
+                        if (ok) {
+                            val message = "Alarm set for $value."
+                            speak(message); done(message)
+                        } else {
+                            tryNext(index + 1)
+                        }
+                    }
+                }
+                // Keep the variable intentionally tied to the current screen
+                // inspection so the accessibility service is given time to bind.
+                packageName.length
+                tryNext(0)
+            }, 900L)
         }.onFailure {
-            val message = "I could not set the alarm on this phone."
+            val message = "I could not open the Clock alarm editor on this phone."
             speak(message); done(message)
         }
     }
