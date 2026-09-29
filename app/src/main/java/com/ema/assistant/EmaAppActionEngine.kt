@@ -229,24 +229,58 @@ class EmaAppActionEngine(private val context: Context) {
         }
 
         if (intent == null || intent.resolveActivity(pm) == null) {
-            done(false, "I found $recipientName in your contacts, but $appName cannot receive this message through Android.")
+            composeThroughAccessibleUi(target, recipientName, body, done)
             return
         }
 
         runCatching { context.startActivity(intent) }.onSuccess {
             main.postDelayed({
                 val sent = EmaAccessibilityService.tapSendButton(packageName)
-                done(
-                    sent,
-                    if (sent) "Message sent to $recipientName on ${target.label}."
-                    else "I opened ${target.label} for $recipientName with the message ready, but I could not confirm the Send control."
-                )
+                if (sent) {
+                    done(true, "Message sent to " + recipientName + " on " + target.label + ".")
+                } else {
+                    composeThroughAccessibleUi(target, recipientName, body, done)
+                }
             }, 1400L)
         }.onFailure {
-            done(false, "I could not open $appName for $recipientName.")
+            composeThroughAccessibleUi(target, recipientName, body, done)
         }
-    }
 
+    private fun composeThroughAccessibleUi(target: AppTarget, recipientName: String, body: String, done: (Boolean, String) -> Unit) {
+        val opened = openApp(target.label)
+        if (opened == null) {
+            done(false, "I could not open " + target.label + " for " + recipientName + ".")
+            return
+        }
+        main.postDelayed({
+            EmaAccessibilityService.searchInPackage(target.packageName, recipientName) { foundRecipient ->
+                if (!foundRecipient) {
+                    EmaGenericUiController.type(body) { typed, _ ->
+                        if (!typed) {
+                            done(false, "I opened " + target.label + ", but its recipient/composer controls were not accessible.")
+                        } else {
+                            main.postDelayed({
+                                val sent = EmaAccessibilityService.tapSendButton(target.packageName)
+                                done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message in " + target.label + ", but could not verify Send.")
+                            }, 500L)
+                        }
+                    }
+                    return@searchInPackage
+                }
+                main.postDelayed({
+                    val typed = EmaAccessibilityService.setFocusedText(body)
+                    if (!typed) {
+                        done(false, "I found " + recipientName + " in " + target.label + ", but its message field was not accessible.")
+                        return@postDelayed
+                    }
+                    main.postDelayed({
+                        val sent = EmaAccessibilityService.tapSendButton(target.packageName)
+                        done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message for " + recipientName + ", but could not verify Send.")
+                    }, 500L)
+                }, 700L)
+            }
+        }, 900L)
+    }
     /**
      * Open an app, search, wait for its new UI, then try to activate a named
      * result. This remains generic and does not depend on a provider SDK.
