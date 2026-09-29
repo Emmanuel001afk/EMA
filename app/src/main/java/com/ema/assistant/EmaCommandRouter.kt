@@ -642,10 +642,10 @@ class EmaCommandRouter(
         intent.putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
         intent.putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
         runCatching { context.startActivity(intent) }.onSuccess {
-            val message = "Opening the alarm screen for " + value + "."
+            val message = "Alarm set for " + value + "."
             speak(message); done(message)
         }.onFailure {
-            val message = "This phone does not allow EMA to open the alarm screen."
+            val message = "I could not set the alarm on this phone."
             speak(message); done(message)
         }
     }
