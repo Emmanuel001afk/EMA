@@ -3,6 +3,7 @@ package com.ema.assistant
 import android.Manifest
 import android.app.Activity
 import android.media.AudioManager
+import android.telecom.TelecomManager
 import android.provider.Settings
 import android.content.Context
 import android.content.Intent
@@ -175,6 +176,15 @@ class EmaCommandRouter(
             }
 
             lower.startsWith("open ") -> openApp(command.substringAfter("open ").trim(), done)
+
+            lower.startsWith("search with google ") || lower.startsWith("search google for ") || lower.startsWith("google search ") -> {
+                val query = when {
+                    lower.startsWith("search with google ") -> command.substringAfter("search with google ").trim()
+                    lower.startsWith("search google for ") -> command.substringAfter("search google for ").trim()
+                    else -> command.substringAfter("google search ").trim()
+                }
+                googleSearch(query, done)
+            }
 
             lower.startsWith("search ") || lower.startsWith("find ") -> {
                 val query = command.substringAfter(' ').trim()
@@ -363,13 +373,15 @@ class EmaCommandRouter(
         return query to app
     }
 
-    private fun callContact(name: String, done: (String) -> Unit) {
+    private fun callContact(rawName: String, done: (String) -> Unit) {
+        val sim = Regex("(?i)\\b(?:sim|slot)\\s*([12])\\s*$").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val name = rawName.replace(Regex("(?i)\\s+(?:sim|slot)\\s*[12]\\s*$"), "").trim()
         if (name.isBlank()) {
             speak("Tell me who to call."); done("Tell me who to call."); return
         }
 
         if (name.matches(Regex("[+0-9()\\-\\s]{7,}"))) {
-            placeCall(name.replace(Regex("[^+0-9]"), ""), name, done)
+            placeCall(name.replace(Regex("[^+0-9]"), ""), name, done, sim)
             return
         }
 
@@ -409,10 +421,10 @@ class EmaCommandRouter(
             speak(result); done(result); return
         }
 
-        placeCall(foundNumber!!, foundName ?: name, done)
+        placeCall(foundNumber!!, foundName ?: name, done, sim)
     }
 
-    private fun placeCall(number: String, displayName: String, done: (String) -> Unit) {
+    private fun placeCall(number: String, displayName: String, done: (String) -> Unit, sim: Int? = null) {
         if (context.checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
             requestPermission(Manifest.permission.CALL_PHONE)
             val result = "EMA needs phone-call permission before it can call $displayName. Grant it, then say call $displayName again."
@@ -420,11 +432,17 @@ class EmaCommandRouter(
         }
 
         runCatching {
-            context.startActivity(
-                Intent(Intent.ACTION_CALL, Uri.parse("tel:$number")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$number")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (sim != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val telecom = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                val accounts = telecom?.callCapablePhoneAccounts.orEmpty()
+                val handle = accounts.getOrNull(sim - 1)
+                if (handle != null) intent.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+                else throw IllegalArgumentException("Requested SIM is not available")
+            }
+            context.startActivity(intent)
         }.onSuccess {
-            val result = "Calling $displayName."
+            val result = if (sim == null) "Calling $displayName." else "Calling $displayName on SIM $sim."
             speak(result); done(result)
         }.onFailure {
             val result = "Android did not allow EMA to place the call."
@@ -448,6 +466,23 @@ class EmaCommandRouter(
         val message = if (target == null) "I couldn't find or open $appName on this phone." else "${target.label}"
         val finalMessage = if (target == null) message else "Opening $message."
         speak(finalMessage); done(finalMessage)
+    }
+
+    private fun googleSearch(query: String, done: (String) -> Unit) {
+        if (query.isBlank()) {
+            val result = "Tell me what to search for."
+            speak(result); done(result); return
+        }
+        val target = "https://www.google.com/search?q=" + Uri.encode(query)
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onSuccess {
+            val result = "Searching Google for $query."
+            speak(result); done(result)
+        }.onFailure {
+            val result = "I could not open Google search."
+            speak(result); done(result)
+        }
     }
 
     private fun webSearch(query: String, done: (String) -> Unit) {
