@@ -149,6 +149,18 @@ class EmaCommandRouter(
                 done(message)
             }
 
+            lower == "inspect screen" || lower == "inspect this screen" ||
+                lower == "understand this screen" || lower == "analyze this screen" -> {
+                val ui = EmaAccessibilityService.inspectCurrentUi()
+                val message = if (ui.isBlank()) {
+                    "EMA cannot inspect the current application's accessible UI. The app may not expose accessible controls, or Accessibility access may not be active."
+                } else {
+                    ui
+                }
+                speak(if (ui.isBlank()) message else "I inspected the accessible controls on this screen.")
+                done(message)
+            }
+
             lower.startsWith("tap ") || lower.startsWith("press ") -> {
                 val target = command.substringAfter(' ').trim()
                 val ok = EmaAccessibilityService.tapText(target)
