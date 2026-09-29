@@ -426,10 +426,14 @@ class EmaCommandRouter(
             speak(result); done(result); return
         }
 
-        val normalized = recipient.trim()
-        var exactName: String? = null
-        var phone: String? = null
-        var email: String? = null
+        val requested = recipient.trim().lowercase()
+        data class MessageCandidate(
+            val displayName: String,
+            val phone: String?,
+            val email: String?,
+            val rank: Int
+        )
+        val candidates = mutableListOf<MessageCandidate>()
 
         context.contentResolver.query(
             ContactsContract.Data.CONTENT_URI,
@@ -438,32 +442,65 @@ class EmaCommandRouter(
                 ContactsContract.Data.MIMETYPE,
                 ContactsContract.Data.DATA1
             ),
-            "${ContactsContract.Data.DISPLAY_NAME} = ?",
-            arrayOf(normalized),
-            null
+            null, null, null
         )?.use { cursor ->
             val nameIndex = cursor.getColumnIndex(ContactsContract.Data.DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndex(ContactsContract.Data.MIMETYPE)
             val dataIndex = cursor.getColumnIndex(ContactsContract.Data.DATA1)
+
+            val grouped = linkedMapOf<String, Triple<String, String?, String?>>()
             while (cursor.moveToNext()) {
-                exactName = cursor.getString(nameIndex).orEmpty()
+                val displayName = cursor.getString(nameIndex).orEmpty().trim()
+                if (displayName.isBlank()) continue
+                val key = displayName.lowercase()
+                val current = grouped[key]
                 val mime = cursor.getString(mimeIndex).orEmpty()
                 val value = cursor.getString(dataIndex).orEmpty()
-                when (mime) {
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE ->
-                        if (phone.isNullOrBlank()) phone = value
-                    ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE ->
-                        if (email.isNullOrBlank()) email = value
+                var phone = current?.second
+                var email = current?.third
+                if (mime == ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE && phone.isNullOrBlank()) phone = value
+                if (mime == ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE && email.isNullOrBlank()) email = value
+                grouped[key] = Triple(displayName, phone, email)
+            }
+
+            val requestedWords = requested.split(Regex("\\s+")).filter { it.isNotBlank() }
+            for ((_, value) in grouped) {
+                val displayName = value.first
+                val candidate = displayName.lowercase()
+                val words = candidate.split(Regex("\\s+")).filter { it.isNotBlank() }
+                val rank = when {
+                    candidate == requested -> 0
+                    words.any { it == requested } -> 1
+                    requestedWords.size > 1 && requestedWords.all { word -> words.any { it == word } } -> 2
+                    candidate.startsWith("$requested ") || candidate.endsWith(" $requested") -> 3
+                    candidate.contains(" $requested ") -> 3
+                    candidate.startsWith(requested) || candidate.endsWith(requested) -> 4
+                    candidate.contains(requested) -> 5
+                    else -> Int.MAX_VALUE
+                }
+                if (rank != Int.MAX_VALUE) {
+                    candidates.add(MessageCandidate(displayName, value.second, value.third, rank))
                 }
             }
         }
 
-        if (exactName.isNullOrBlank()) {
-            val result = "I couldn't find an exact contact named $recipient."
+        if (candidates.isEmpty()) {
+            val result = "I couldn't find $recipient in your contacts."
             speak(result); done(result); return
         }
 
-        appEngine.sendMessage(app, exactName!!, phone, email, body) { _, result ->
+        val bestRank = candidates.minOf { it.rank }
+        val best = candidates.filter { it.rank == bestRank }
+            .distinctBy { it.displayName.lowercase() }
+
+        if (best.size > 1) {
+            val names = best.take(3).joinToString(", ") { it.displayName }
+            val result = "I found more than one possible contact for $recipient: $names. Tell me the full name."
+            speak(result); done(result); return
+        }
+
+        val selected = best.first()
+        appEngine.sendMessage(app, selected.displayName, selected.phone, selected.email, body) { _, result ->
             speak(result); done(result)
         }
     }
