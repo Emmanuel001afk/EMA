@@ -34,7 +34,9 @@ class EmaCommandRouter(
         val command = raw.trim()
         if (command.isBlank()) return
         if (handlePendingFollowUp(command, done)) return
+        pendingTask = null
         if (handleScheduledAction(command, done)) return
+        EmaConversationStore.add(context, "user", command)
         val lower = command.lowercase(Locale.getDefault())
 
         // Execute explicit multi-action requests sequentially. The existing
@@ -62,6 +64,31 @@ class EmaCommandRouter(
             lower == "read screen with camera" || lower == "read everything on screen" ||
                 lower == "what does the screen say" || lower == "what is written on my screen" -> {
                 statusWithOcr(done)
+            }
+
+            lower.startsWith("remind me ") || lower.startsWith("set a reminder ") -> {
+                handleReminder(command, done)
+            }
+
+            lower.startsWith("create a calendar event ") || lower.startsWith("add calendar event ") ||
+                lower.startsWith("calendar event ") || lower.startsWith("create an event ") -> {
+                handleCalendarEvent(command, done)
+            }
+
+            lower == "read notifications" || lower == "show notifications" || lower == "what are my notifications" -> {
+                val message = EmaNotificationListenerService.describeActiveNotifications()
+                speak(message); done(message)
+            }
+
+            lower.startsWith("dismiss notification") || lower.startsWith("clear notification") -> {
+                val target = command.substringAfter(' ').replaceFirst(Regex("(?i)^(notification|notifications)\\s*"), "").trim()
+                val ok = EmaNotificationListenerService.dismissMatching(target)
+                val message = if (ok) "I dismissed the matching notification." else "I could not find a matching active notification."
+                speak(message); done(message)
+            }
+
+            lower == "open notifications" || lower == "show notification shade" -> {
+                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "Showing notifications.", done)
             }
 
             lower == "what time is it" || lower == "tell me the time" || lower == "current time" -> {
@@ -260,32 +287,23 @@ class EmaCommandRouter(
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
 
             else -> {
-                val explicitAi = lower.startsWith("ema ai ") || lower.startsWith("emma ai ") ||
-                    lower.startsWith("ask ema ai ") || lower.startsWith("ask emma ai ")
-                val needsScreenUnderstanding = listOf(
-                    "what is on this screen", "what's on this screen", "what does this screen mean",
-                    "what am i looking at", "explain this screen", "understand this screen",
-                    "what is on this page", "explain this page"
-                ).any(lower::contains)
-
-                if (!explicitAi && !needsScreenUnderstanding) {
-                    val result = "I can do that on the phone, but I need a more specific command."
-                    speak(result); done(result); return
-                }
-
-                val promptCommand = command
-                    .replaceFirst(Regex("(?i)^ask\\s+emma\\s+ai\\s*"), "")
-                    .replaceFirst(Regex("(?i)^ask\\s+ema\\s+ai\\s*"), "")
-                    .replaceFirst(Regex("(?i)^emma\\s+ai\\s*"), "")
-                    .replaceFirst(Regex("(?i)^ema\\s+ai\\s*"), "")
-                    .trim()
-
-                val screen = EmaAccessibilityService.currentScreenText()
-                val prompt = if (screen.isBlank()) promptCommand
-                else "Current screen context:\n$screen\n\nUser request: $promptCommand"
-
-                CentralHubClient(context).ask(prompt) { answer ->
-                    speak(answer); done(answer)
+                val prompt = EmaAiCommandInterpreter.buildPrompt(context, command)
+                CentralHubClient(context).ask(prompt) { rawAnswer ->
+                    when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
+                        is EmaAiCommandInterpreter.Result.Actions -> {
+                            if (parsed.actions.isEmpty()) {
+                                val answer = parsed.answer.ifBlank { "I could not turn that request into a phone action." }
+                                EmaConversationStore.add(context, "assistant", answer)
+                                speak(answer); done(answer)
+                            } else {
+                                executeAiActions(parsed.actions, 0, parsed.answer, done)
+                            }
+                        }
+                        is EmaAiCommandInterpreter.Result.Answer -> {
+                            EmaConversationStore.add(context, "assistant", parsed.text)
+                            speak(parsed.text); done(parsed.text)
+                        }
+                    }
                 }
             }
         }
@@ -1016,6 +1034,72 @@ class EmaCommandRouter(
         }.onFailure {
             val message = "I couldn't open $target."
             speak(message); done(message)
+        }
+    }
+
+    private fun executeAiActions(actions: List<String>, index: Int, finalAnswer: String, done: (String) -> Unit) {
+        if (index >= actions.size) {
+            val answer = finalAnswer.ifBlank { "Done." }
+            EmaConversationStore.add(context, "assistant", answer)
+            speak(answer); done(answer); return
+        }
+        execute(actions[index]) { result ->
+            if (index == actions.lastIndex) {
+                val answer = finalAnswer.ifBlank { result }
+                EmaConversationStore.add(context, "assistant", answer)
+                speak(answer); done(answer)
+            } else {
+                executeAiActions(actions, index + 1, finalAnswer, done)
+            }
+        }
+    }
+
+    private fun handleReminder(command: String, done: (String) -> Unit) {
+        val match = Regex("(?i)^(?:remind me|set a reminder)(?: to| that)? (.+?) (?:at|by) (.+)$").find(command)
+        if (match == null) {
+            val result = "Tell me what to remind you about and when."
+            speak(result); done(result); return
+        }
+        val text = match.groupValues[1].trim()
+        val trigger = EmaReminderScheduler.parseTime(match.groupValues[2].trim())
+        if (trigger == null) {
+            val result = "I understood the reminder, but I could not understand the time."
+            speak(result); done(result); return
+        }
+        val ok = EmaReminderScheduler.schedule(context, text, trigger)
+        val formatted = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(trigger))
+        val result = if (ok) "Reminder set for $formatted: $text." else "Android could not schedule that reminder."
+        speak(result); done(result)
+    }
+
+    private fun handleCalendarEvent(command: String, done: (String) -> Unit) {
+        val title = command
+            .replaceFirst(Regex("(?i)^create (?:a )?calendar event\\s*"), "")
+            .replaceFirst(Regex("(?i)^add calendar event\\s*"), "")
+            .replaceFirst(Regex("(?i)^calendar event\\s*"), "")
+            .replaceFirst(Regex("(?i)^create an event\\s*"), "")
+            .trim()
+        val timeMatch = Regex("(?i)^(.+?)\\s+(?:at|on)\\s+(.+)$").find(title)
+        val eventTitle = timeMatch?.groupValues?.getOrNull(1)?.trim().orEmpty().ifBlank { title }
+        val timeText = timeMatch?.groupValues?.getOrNull(2)?.trim().orEmpty()
+        val trigger = if (timeText.isBlank()) null else EmaScheduler.parseTimeToFutureMillis(timeText)
+        val intent = Intent(Intent.ACTION_INSERT).apply {
+            data = Uri.parse("content://com.android.calendar/events")
+            putExtra("title", eventTitle)
+            if (trigger != null) {
+                putExtra("beginTime", trigger)
+                putExtra("endTime", trigger + 60 * 60 * 1000L)
+            }
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }.onSuccess {
+            val result = if (trigger != null) "I opened Calendar with $eventTitle scheduled for " +
+                java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(trigger)) + "."
+            else "I opened Calendar ready to create $eventTitle."
+            speak(result); done(result)
+        }.onFailure {
+            val result = "I could not open the calendar event editor."
+            speak(result); done(result)
         }
     }
 
