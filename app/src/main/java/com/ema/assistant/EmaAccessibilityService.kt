@@ -31,7 +31,7 @@ class EmaAccessibilityService : AccessibilityService() {
         )
 
         fun requestTextSearch(query: String) {
-            pendingSearch.set(PendingSearch(null, query) {})
+            pendingSearch.set(PendingSearch(null, query, {}))
             instance?.performPendingSearch()
         }
 
