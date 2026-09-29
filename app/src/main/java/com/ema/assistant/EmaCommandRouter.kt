@@ -897,6 +897,23 @@ class EmaCommandRouter(
 
     private fun parseMediaPlay(command: String): Pair<String, String>? {
         val lower = command.lowercase(Locale.getDefault())
+
+        // Support natural assistant phrasing such as "open Spotify and play Arcade"
+        // without requiring the AI layer to translate it first.
+        val appFirst = Regex("(?i)^open\\s+(.+?)\\s+and\\s+play\\s+(.+)$").find(command)
+        if (appFirst != null) {
+            val app = appFirst.groupValues[1].trim()
+            val query = appFirst.groupValues[2].trim()
+            if (app.isNotBlank() && query.isNotBlank()) return query to app
+        }
+
+        val inApp = Regex("(?i)^(?:in|inside|within)\\s+(.+?),?\\s+play\\s+(.+)$").find(command)
+        if (inApp != null) {
+            val app = inApp.groupValues[1].trim()
+            val query = inApp.groupValues[2].trim()
+            if (app.isNotBlank() && query.isNotBlank()) return query to app
+        }
+
         val markers = listOf(" on ", " in ", " using ")
         val marker = markers.firstOrNull { lower.lastIndexOf(it) > 5 } ?: return null
         val index = lower.lastIndexOf(marker)
