@@ -10,6 +10,9 @@ android {
         targetSdk = 35
         versionCode = providers.environmentVariable("EMA_VERSION_CODE").orNull?.toIntOrNull() ?: 1
         versionName = providers.environmentVariable("EMA_VERSION_NAME").orNull ?: "0.9.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
