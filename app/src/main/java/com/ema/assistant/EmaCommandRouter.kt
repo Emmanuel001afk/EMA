@@ -37,6 +37,7 @@ class EmaCommandRouter(
         pendingTask = null
         if (handleScheduledAction(command, done)) return
         EmaConversationStore.add(context, "user", command)
+        if (handleRecurringRoutine(command, done)) return
         val lower = command.lowercase(Locale.getDefault())
 
         // Execute explicit multi-action requests sequentially. The existing
@@ -337,6 +338,47 @@ class EmaCommandRouter(
         }
     }
 
+    private fun handleRecurringRoutine(command: String, done: (String) -> Unit): Boolean {
+        val match = Regex("(?i)^every\\s+(day|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\s+at\\s+(.+?)\\s*:\\s*(.+)$").find(command)
+            ?: Regex("(?i)^every\\s+(day|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\s+at\\s+(.+?)\\s+to\\s+(.+)$").find(command)
+            ?: return false
+        val recurrence = match.groupValues[1].lowercase()
+        val time = match.groupValues[2].trim()
+        val action = match.groupValues[3].trim()
+        val parsed = Regex("(?i)^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$").find(time) ?: return false
+        var hour = parsed.groupValues[1].toIntOrNull() ?: return false
+        val minute = parsed.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: 0
+        val meridiem = parsed.groupValues[3].lowercase()
+        if (meridiem == "am" && hour == 12) hour = 0
+        if (meridiem == "pm" && hour != 12) hour += 12
+        if (hour !in 0..23 || minute !in 0..59) return false
+
+        val ok = if (recurrence == "day" || recurrence == "weekday") {
+            if (recurrence == "weekday") {
+                val now = java.util.Calendar.getInstance()
+                var found = false
+                for (offset in 0..6) {
+                    val c = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR, offset) }
+                    if (c.get(java.util.Calendar.DAY_OF_WEEK) in 2..6) { found = true; break }
+                }
+                EmaRoutineScheduler.scheduleDaily(context, action, hour, minute) && found
+            } else {
+                EmaRoutineScheduler.scheduleDaily(context, action, hour, minute)
+            }
+        } else {
+            val day = mapOf(
+                "sunday" to java.util.Calendar.SUNDAY, "monday" to java.util.Calendar.MONDAY,
+                "tuesday" to java.util.Calendar.TUESDAY, "wednesday" to java.util.Calendar.WEDNESDAY,
+                "thursday" to java.util.Calendar.THURSDAY, "friday" to java.util.Calendar.FRIDAY,
+                "saturday" to java.util.Calendar.SATURDAY
+            )[recurrence] ?: return false
+            EmaRoutineScheduler.scheduleWeekly(context, action, day, hour, minute)
+        }
+        val result = if (ok) "Recurring routine scheduled: $recurrence at $time." else "Android could not schedule that recurring routine."
+        speak(result); done(result)
+        return true
+    }
+
     private fun handleScheduledAction(command: String, done: (String) -> Unit): Boolean {
         // Scheduling is deliberately an additional layer over the existing
         // command language. The scheduled item is the same command EMA would
@@ -349,11 +391,7 @@ class EmaCommandRouter(
         val timeText = match.groupValues[2].trim()
 
         val lowerBase = baseCommand.lowercase(Locale.getDefault())
-        val isSchedulableAction =
-            isMessageCommand(lowerBase) ||
-                lowerBase.startsWith("call ") ||
-                lowerBase.startsWith("dial ")
-
+        val isSchedulableAction = lowerBase.isNotBlank()
         if (!isSchedulableAction) return false
 
         val normalizedTime = when (timeText.lowercase(Locale.getDefault())) {
