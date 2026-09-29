@@ -109,21 +109,18 @@ jobs:
           source_release_id="github-actions-${{ github.run_id }}"
           meta="$(jq -n --arg action prepare --arg repo "Emmanuel001afk/EMA" --argjson run_id "${{ github.run_id }}" --arg filename "app-release.apk" --arg application_name "$app_name" --arg version_name "$version_name" --argjson version_code "$version_code" --arg channel stable --arg package_identity "$package" --arg title "EMA Digital Assistant APK" --arg source_release_id "$source_release_id" --arg signing_certificate_sha256 "$signing_cert" '{action:$action,repo:$repo,run_id:$run_id,filename:$filename,application_name:$application_name,version_name:$version_name,version_code:$version_code,channel:$channel,package_identity:$package_identity,title:$title,source_release_id:$source_release_id,signing_certificate_sha256:$signing_certificate_sha256}')"
           prepare="$(curl --fail-with-body -sS -X POST "https://wfvvmyixqcwosmuldxoq.supabase.co/functions/v1/aem-publish-github-artifact" -H "Content-Type: application/json" -H "x-github-token: ${{ github.token }}" --data "$meta")"
-          upload_url="$(jq -er '.upload_url' <<<"$prepare")"
+          upload_token="$(jq -er '.token' <<<"$prepare")"
           object_path="$(jq -er '.path // .Key' <<<"$prepare")"
 
-          # APKs over a few MB should use Supabase's resumable/TUS upload path.
-          # This avoids sending the whole APK through one HTTP request (the previous
-          # 44 MB EMA release was rejected with HTTP 413).
-          # Use the decoded token from the signed URL itself. This is the exact JWS
-          # Supabase issued; avoiding a raw/encoded JSON token prevents "Invalid Compact JWS".
-          upload_token="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[1]).query)["token"][0])' "$upload_url")"
+          # APKs over a few MB use Supabase's signed resumable/TUS endpoint.
+          # The signed route is the Storage route intended for createSignedUploadUrl
+          # tokens; use the token returned by the SDK/function directly.
           project_storage="https://wfvvmyixqcwosmuldxoq.storage.supabase.co"
-          upload_endpoint="$project_storage/storage/v1/upload/resumable"
+          upload_endpoint="$project_storage/storage/v1/upload/resumable/sign/$object_path"
           tus_headers="$(mktemp)"
           tus_body="$(mktemp)"
           metadata="bucketName $(printf '%s' 'aem-artifacts' | base64 -w0),objectName $(printf '%s' "$object_path" | base64 -w0),contentType $(printf '%s' 'application/vnd.android.package-archive' | base64 -w0)"
-          upload_http="$(curl -sS -D "$tus_headers" -o "$tus_body" -w '%{http_code}' -X POST "$upload_endpoint"             -H "x-signature: $upload_token"             -H "Tus-Resumable: 1.0.0"             -H "Upload-Length: $size_bytes"             -H "Upload-Metadata: $metadata")"
+          upload_http="$(curl -sS -D "$tus_headers" -o "$tus_body" -w '%{http_code}' -X POST "$upload_endpoint?token=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$upload_token")"             -H "Tus-Resumable: 1.0.0"             -H "Upload-Length: $size_bytes"             -H "Upload-Metadata: $metadata"             -H "x-upsert: true")"
           if [[ "$upload_http" != "201" ]]; then
             echo "AEM resumable upload initialization failed with HTTP $upload_http" >&2
             cat "$tus_body" >&2 || true
@@ -137,7 +134,7 @@ jobs:
             remaining=$((size_bytes - offset))
             current_chunk=$chunk_size
             if (( remaining < current_chunk )); then current_chunk=$remaining; fi
-            curl --fail-with-body -sS -X PATCH "$resumable_url"               -H "x-signature: $upload_token"               -H "Tus-Resumable: 1.0.0"               -H "Content-Type: application/offset+octet-stream"               -H "Upload-Offset: $offset"               --data-binary "@<(tail -c +$((offset + 1)) "$APK" | head -c "$current_chunk")"
+            curl --fail-with-body -sS -X PATCH "$resumable_url"               -H "Tus-Resumable: 1.0.0"               -H "Content-Type: application/offset+octet-stream"               -H "Upload-Offset: $offset"               --data-binary "@<(tail -c +$((offset + 1)) "$APK" | head -c "$current_chunk")"
             offset=$((offset + current_chunk))
             echo "Uploaded $offset / $size_bytes bytes"
           done
