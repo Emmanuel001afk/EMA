@@ -143,6 +143,7 @@ class EmaCommandRouter(
                     done("Try: go into YouTube and search for a topic.")
                 } else {
                     val (app, query) = parsed
+                    lastAppName = app
                     speak("Opening " + app + " and searching for " + query + ".")
                     if (lower.contains("first result") || lower.contains("first one")) {
                         appEngine.openAndSearchThenTapFirst(app, query) { _, result ->
@@ -353,34 +354,51 @@ class EmaCommandRouter(
     }
 
     private fun isAppSearchCommand(lower: String): Boolean {
-        val hasSearch = lower.contains(" search ") || lower.contains(" search for ") || lower.contains(" find ")
-        if (!hasSearch) return false
+        if (!lower.contains("search") && !lower.contains("find")) return false
 
-        // Platform-first commands: "YouTube search for life", "WhatsApp search student should go home".
-        val platformFirst = lower.substringBefore(" search ").trim()
-            .substringBefore(" search for ").trim()
-            .substringBefore(" find ").trim()
-        if (platformFirst.isNotBlank() && !platformFirst.startsWith("open ") &&
-            !platformFirst.startsWith("go into ") && !platformFirst.startsWith("go to ") &&
-            platformFirst !in setOf("google", "the web", "web")) return true
+        // Both natural word orders are supported:
+        // "YouTube search for cats" and "search for cats on YouTube".
+        // "open YouTube and search for cats" is also supported.
+        val appFirst = Regex(
+            "(?i)^(?:open\\s+|go\\s+(?:into|to)\\s+)?[^ ](?:.*?)(?:\\s+search(?:\\s+for)?\\s+|\\s+find\\s+).+"
+        ).matches(lower)
 
-        return lower.startsWith("open ") || lower.startsWith("go into ") || lower.startsWith("go to ")
+        val appLast = Regex(
+            "(?i)^(?:search(?:\\s+for)?|find)\\s+.+\\s+(?:on|in|using)\\s+.+$"
+        ).matches(lower)
+
+        return appFirst || appLast
     }
 
     private fun parseAppSearch(command: String): Pair<String, String>? {
         val lower = command.lowercase(Locale.getDefault())
-        val markers = listOf(" and search for ", " and search ", " search for ", " search ", " find ")
-        val marker = markers.firstOrNull { lower.contains(it) } ?: return null
-        val index = lower.indexOf(marker)
-        val appPart = command.substring(0, index)
-            .replaceFirst(Regex("(?i)^go into\\s+"), "")
-            .replaceFirst(Regex("(?i)^go to\\s+"), "")
-            .replaceFirst(Regex("(?i)^open\\s+"), "")
-            .replaceFirst(Regex("(?i)^find\\s+"), "")
-            .trim()
-        val query = command.substring(index + marker.length).trim()
-        if (appPart.isBlank() || query.isBlank()) return null
-        return appPart to query
+
+        // App-first: "YouTube search for cats", "open YouTube and search cats".
+        val appFirst = Regex(
+            "(?i)^(.*?)\\s+(?:and\\s+)?search(?:\\s+for)?\\s+(.+)$"
+        ).find(command)
+
+        if (appFirst != null) {
+            val app = appFirst.groupValues[1]
+                .replaceFirst(Regex("(?i)^go\\s+(?:into|to)\\s+"), "")
+                .replaceFirst(Regex("(?i)^open\\s+"), "")
+                .trim()
+            val query = appFirst.groupValues[2].trim()
+            if (app.isNotBlank() && query.isNotBlank()) return app to query
+        }
+
+        // Search-first: "search Lonely on Spotify", "find a video in YouTube".
+        val appLast = Regex(
+            "(?i)^(?:search(?:\\s+for)?|find)\\s+(.+?)\\s+(?:on|in|using)\\s+(.+)$"
+        ).find(command)
+
+        if (appLast != null) {
+            val query = appLast.groupValues[1].trim()
+            val app = appLast.groupValues[2].trim()
+            if (app.isNotBlank() && query.isNotBlank()) return app to query
+        }
+
+        return null
     }
 
     private fun isMediaPlayCommand(lower: String): Boolean =
