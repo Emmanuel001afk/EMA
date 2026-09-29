@@ -38,6 +38,11 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var sessionVisible = false
     private var screenText = ""
     private var screenScreenshot: Bitmap? = null
+    private var micEnabled = true
+    private var processingCommand = false
+    private var speakingResponse = false
+    private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
+    private val sessionTimeoutRunnable = Runnable { if (sessionVisible && !processingCommand && !speakingResponse) closeActive() }
 
     companion object {
         @Volatile private var activeSession: EmaVoiceInteractionSession? = null
@@ -67,7 +72,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         super.onShow(args, showFlags)
         sessionVisible = true
         activeSession = this
+        micEnabled = prefs.getBoolean("mic_enabled", true)
         initTts()
+        scheduleSessionTimeout()
 
         val root = FrameLayout(context)
         val panel = LinearLayout(context).apply {
@@ -157,10 +164,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         controls.addView(ImageButton(context).apply {
-            contentDescription = "Voice"
+            contentDescription = if (micEnabled) "Microphone on" else "Microphone off"
             setImageResource(android.R.drawable.ic_btn_speak_now)
             background = transparentBackground()
-            setOnClickListener { startListening() }
+            setOnClickListener { toggleMicrophone() }
         }, LinearLayout.LayoutParams(52, 52))
 
         controls.addView(ImageButton(context).apply {
@@ -198,7 +205,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         startPulse()
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            startListening()
+            if (micEnabled) startListening()
         } else {
             setState("Ready", "Microphone permission is required for voice.")
         }
@@ -213,8 +220,31 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         tts = TextToSpeech(context) { code ->
             if (code == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
-                val saved = context.getSharedPreferences("ema", Context.MODE_PRIVATE).getString("voice_name", null)
+                val saved = prefs.getString("voice_name", null)
                 tts?.voices?.firstOrNull { it.name == saved }?.let { tts?.voice = it }
+                tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        handler.post { speakingResponse = true }
+                    }
+                    override fun onDone(utteranceId: String?) {
+                        handler.post {
+                            if (!sessionVisible) return@post
+                            speakingResponse = false
+                            setState(if (micEnabled) "Listening" else "Ready",
+                                if (micEnabled) "Microphone is on." else "Tap the microphone when you want to speak.")
+                            scheduleSessionTimeout()
+                            if (micEnabled && !processingCommand) startListening()
+                        }
+                    }
+                    override fun onError(utteranceId: String?) {
+                        handler.post {
+                            if (!sessionVisible) return@post
+                            speakingResponse = false
+                            scheduleSessionTimeout()
+                            if (micEnabled && !processingCommand) startListening()
+                        }
+                    }
+                })
             }
         }
     }
@@ -227,6 +257,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         recognizer?.cancel()
+        recognizer?.destroy()
+        recognizer = null
+        processingCommand = true
+        scheduleSessionTimeout()
         transcript.text = "“$trimmed”"
         response.visibility = View.GONE
         setState("Thinking", "Working on it…")
@@ -235,19 +269,35 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         EmaCommandRouter(context, speech).execute(trimmed) { result ->
             handler.post {
                 if (!sessionVisible) return@post
+                processingCommand = false
                 response.text = result
                 response.visibility = View.VISIBLE
-                setState("Ready", "What would you like me to do next?")
+                setState("Speaking", "Reading the answer…")
+                speakingResponse = true
                 tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "ema-result")
-                handler.postDelayed({
-                    if (sessionVisible) startListening()
-                }, 850L)
+                scheduleSessionTimeout()
             }
         }
     }
 
+    private fun toggleMicrophone() {
+        micEnabled = !micEnabled
+        prefs.edit().putBoolean("mic_enabled", micEnabled).apply()
+        if (!micEnabled) {
+            recognizer?.cancel()
+            recognizer?.destroy()
+            recognizer = null
+            setState("Microphone off", "Microphone is off. Tap the microphone to turn it on.")
+            scheduleSessionTimeout()
+        } else {
+            setState("Listening", "Microphone is on. I’m listening…")
+            if (!processingCommand && !speakingResponse) startListening()
+            scheduleSessionTimeout()
+        }
+    }
+
     private fun startListening() {
-        if (!sessionVisible) return
+        if (!sessionVisible || !micEnabled || processingCommand || speakingResponse) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
             setState("Ready", "Microphone permission is required for voice.")
@@ -278,6 +328,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                     recognizer = null
                     if (command.isNullOrBlank()) {
                         setState("Listening", "I couldn't hear that. Try again.")
+                        restartListeningIfNeeded()
                     } else {
                         execute(command)
                     }
@@ -286,7 +337,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 override fun onError(error: Int) {
                     recognizer?.destroy()
                     recognizer = null
-                    if (sessionVisible) setState("Listening", "I couldn't hear that. Try again.")
+                    if (sessionVisible) {
+                        setState("Listening", "I couldn't hear that. Try again.")
+                        restartListeningIfNeeded()
+                    }
                 }
 
                 override fun onEndOfSpeech() {
@@ -305,6 +359,19 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         })
+    }
+
+    private fun restartListeningIfNeeded() {
+        if (!sessionVisible || !micEnabled || processingCommand || speakingResponse) return
+        handler.postDelayed({
+            if (sessionVisible && micEnabled && !processingCommand && !speakingResponse && recognizer == null) startListening()
+        }, 250L)
+    }
+
+    private fun scheduleSessionTimeout() {
+        handler.removeCallbacks(sessionTimeoutRunnable)
+        val timeout = prefs.getLong("assistant_timeout_ms", 0L)
+        if (timeout > 0L) handler.postDelayed(sessionTimeoutRunnable, timeout)
     }
 
     private fun setState(title: String, detail: String) {
@@ -370,6 +437,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer = null
         tts?.stop()
         handler.removeCallbacksAndMessages(null)
+        speakingResponse = false
+        processingCommand = false
         if (activeSession === this) activeSession = null
         super.onHide()
     }
@@ -383,6 +452,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         screenScreenshot?.recycle()
         screenScreenshot = null
         handler.removeCallbacksAndMessages(null)
+        speakingResponse = false
+        processingCommand = false
         if (activeSession === this) activeSession = null
         super.onDestroy()
     }
