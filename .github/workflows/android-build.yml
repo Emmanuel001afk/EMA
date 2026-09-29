@@ -35,11 +35,17 @@ jobs:
           gradle-version: '8.9'
           cache-provider: basic
 
+      - name: Compile Kotlin
+        id: compile
+        run: |
+          set -o pipefail
+          gradle :app:compileDebugKotlin             --no-daemon             --console=plain             --stacktrace             --info 2>&1 | tee build-log.txt
+
       - name: Build debug APK
         id: build
         run: |
           set -o pipefail
-          gradle :app:assembleDebug --stacktrace --info 2>&1 | tee build-log.txt
+          gradle :app:assembleDebug             --no-daemon             --console=plain             --stacktrace             --info 2>&1 | tee -a build-log.txt
 
       - name: Upload build diagnostics
         if: always()
@@ -47,7 +53,7 @@ jobs:
         with:
           name: ema-build-diagnostics
           path: build-log.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload debug APK
