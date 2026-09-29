@@ -34,7 +34,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
-        requestNotificationPermission()
+        requestRequiredPermissions()
         router = EmaCommandRouter(this, tts)
 
         val root = LinearLayout(this).apply {
@@ -180,6 +180,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         openAssistantSettings()
     }
 
+    private fun requestRequiredPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+        }
+        requestNotificationPermission()
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -280,7 +288,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_MIC && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            status.text = "Microphone ready. Press Voice again to speak."
+            status.text = if (isAssistantRoleHeld()) "EMA is ready for voice assistant invocation." else "Microphone ready. Set EMA as the system assistant to invoke it from the phone."
+        } else if (requestCode == REQUEST_MIC) {
+            status.text = "Microphone permission is required for EMA to understand spoken commands." 
         }
     }
 
