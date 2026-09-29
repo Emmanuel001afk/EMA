@@ -100,6 +100,30 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
 
         root.addView(TextView(this).apply {
+            text = "Microphone mode"
+            textSize = 16f
+            setPadding(0, 24, 0, 4)
+        })
+        val micModeSpinner = Spinner(this)
+        val micModeLabels = listOf(
+            "Automatic conversation",
+            "Semi-automatic conversation",
+            "Manual microphone"
+        )
+        val micModeValues = listOf("automatic", "semi", "manual")
+        micModeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, micModeLabels)
+        val prefs = getSharedPreferences("ema", MODE_PRIVATE)
+        val savedMicMode = prefs.getString("mic_mode", "automatic") ?: "automatic"
+        micModeSpinner.setSelection(micModeValues.indexOf(savedMicMode).coerceAtLeast(0))
+        micModeSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                prefs.edit().putString("mic_mode", micModeValues[position]).apply()
+            }
+        })
+        root.addView(micModeSpinner)
+
+        root.addView(TextView(this).apply {
             text = "Assistant session timeout"
             textSize = 16f
             setPadding(0, 24, 0, 4)
