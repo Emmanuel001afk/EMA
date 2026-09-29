@@ -216,6 +216,16 @@ class EmaCommandRouter(
 
             lower.startsWith("open ") -> openApp(command.substringAfter("open ").trim(), done)
 
+            lower.startsWith("go to ") && lower.contains(" in settings") -> {
+                val target = command.substringAfter("go to ").replace(Regex("(?i)\\s+in\\s+settings\\s*$"), "").trim()
+                openSettingsAndFind(target, done)
+            }
+
+            lower.startsWith("go to ") && lower.contains(" settings") -> {
+                val target = command.substringAfter("go to ").replace(Regex("(?i)\\s+settings\\s*$"), "").trim()
+                openSettingsAndFind(target, done)
+            }
+
             lower.startsWith("search with google ") || lower.startsWith("search google for ") || lower.startsWith("google search ") -> {
                 val query = when {
                     lower.startsWith("search with google ") -> command.substringAfter("search with google ").trim()
@@ -883,6 +893,21 @@ class EmaCommandRouter(
         val message = if (target == null) "I couldn't find or open $appName on this phone." else "${target.label}"
         val finalMessage = if (target == null) message else "Opening $message."
         speak(finalMessage); done(finalMessage)
+    }
+
+    private fun openSettingsAndFind(target: String, done: (String) -> Unit) {
+        if (target.isBlank()) { openSettings(Settings.ACTION_SETTINGS, "Settings", done); return }
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val tapped = EmaAccessibilityService.tapText(target)
+                val message = if (tapped) "Opening $target in Settings." else "I opened Settings, but I could not locate $target on the current screen."
+                speak(message); done(message)
+            }, 900L)
+        }.onFailure {
+            val message = "I could not open Settings."
+            speak(message); done(message)
+        }
     }
 
     private fun googleSearch(query: String, done: (String) -> Unit) {
