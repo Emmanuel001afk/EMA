@@ -71,6 +71,30 @@ class EmaAccessibilityService : AccessibilityService() {
         fun activate(text: String): Boolean =
             instance?.activateTextInternal(text) == true
 
+        /**
+         * Generic action route: Accessibility semantics first, then visual OCR
+         * coordinates when the visible control is missing from the node tree.
+         */
+        fun activateWithVisualFallback(
+            text: String,
+            callback: (Boolean) -> Unit
+        ) {
+            val service = instance
+            if (service == null) {
+                callback(false)
+                return
+            }
+            if (service.activateTextInternal(text)) {
+                callback(true)
+                return
+            }
+            service.captureAndTapTextVisually(
+                packageName = service.rootInActiveWindow?.packageName?.toString().orEmpty(),
+                target = text,
+                callback = callback
+            )
+        }
+
         fun longPressText(text: String): Boolean =
             instance?.longPressTextInternal(text) == true
 
