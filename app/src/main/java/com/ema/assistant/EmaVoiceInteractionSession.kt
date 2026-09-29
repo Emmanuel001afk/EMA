@@ -156,15 +156,6 @@ class EmaVoiceInteractionSession(context: Context) :
             screenText = extractAssistText(structure, 12000)
         }
 
-        val content = state.assistContent
-        if (content != null) {
-            val description = content.description?.toString().orEmpty()
-            if (description.isNotBlank()) {
-                screenText = (screenText + "\n" + description).trim().take(12000)
-            }
-        }
-    }
-
     /**
      * Receives the actual system-provided screenshot when Android allows it.
      */
