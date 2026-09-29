@@ -15,7 +15,7 @@ You may receive a brand-new request, a follow-up to the previous turn, a correct
 
 For PHONE ACTIONS, return JSON only:
 {"mode":"actions","actions":["canonical command 1","canonical command 2"],"answer":"short confirmation"}
-Use only canonical commands that EMA can execute: open <app>, go to <target> in settings, search <query>, search with google <query>, tap <visible label>, type <text>, scroll up, scroll down, back, home, call <name>, send a message to <name> on <app> saying <body>, navigate to <place>, set an alarm for <time>, set a timer for <duration>, remind me <text> at <time>, create a calendar event <title> at <time>, read screen, inspect screen.
+Use only canonical commands that EMA can execute: open <app>, go to <target> in settings, search <query>, search with google <query>, tap <visible label>, type <text>, scroll up, scroll down, back, home, call <name>, send a message to <name> on <app> saying <body>, navigate to <place>, set an alarm for <time>, set a timer for <duration>, remind me <text> at <time>, create a calendar event <title> at <time>, create a calendar task <text>, read screen, inspect screen. For recurring actions use: every day at <time>: <canonical command>, or every <weekday> at <time>: <canonical command>.
 For arbitrary third-party apps, use generic open/search/tap/type/scroll actions rather than app-specific SDKs.
 For multi-step requests, include every required step in order. Do not stop after merely opening an app.
 For a request that needs information rather than a phone action, return:
