@@ -27,9 +27,13 @@ class EmaCommandRouter(
     private val appEngine = EmaAppActionEngine(context)
     private var lastAppName: String? = null
 
+    private data class PendingTask(val type: String, val target: String, val app: String? = null, val body: String? = null, val sim: Int? = null, val candidates: List<String> = emptyList())
+    companion object { @Volatile private var pendingTask: PendingTask? = null }
+
     fun execute(raw: String, done: (String) -> Unit) {
         val command = raw.trim()
         if (command.isBlank()) return
+        if (handlePendingFollowUp(command, done)) return
         val lower = command.lowercase(Locale.getDefault())
 
         // Execute explicit multi-action requests sequentially. The existing
@@ -622,10 +626,12 @@ class EmaCommandRouter(
 
         if (best.size > 1) {
             val names = best.take(3).joinToString(", ") { it.displayName }
-            val result = "I found more than one possible contact for $recipient: $names. Tell me the full name."
+            pendingTask = PendingTask("message", recipient, app, body, candidates = best.map { it.displayName }.distinct())
+            val result = "I found more than one possible contact for $recipient: $names. Tell me which one."
             speak(result); done(result); return
         }
 
+        pendingTask = null
         val selected = best.first()
         appEngine.sendMessage(app, selected.displayName, selected.phone, selected.email, body) { _, result ->
             speak(result); done(result)
@@ -718,9 +724,39 @@ class EmaCommandRouter(
         return query to app
     }
 
+    private fun handlePendingFollowUp(command: String, done: (String) -> Unit): Boolean {
+        val task = pendingTask ?: return false
+        val lower = command.lowercase(Locale.getDefault()).trim()
+        val exactOriginal = lower.contains("without") &&
+            (lower.contains("prefix") || lower.contains("suffix") || lower.contains("anything before") || lower.contains("anything after"))
+        val ordinal = when {
+            Regex("(?i)\\b(first|1st|one)\\b").containsMatchIn(command) -> 0
+            Regex("(?i)\\b(second|2nd|two)\\b").containsMatchIn(command) -> 1
+            Regex("(?i)\\b(third|3rd|three)\\b").containsMatchIn(command) -> 2
+            else -> -1
+        }
+        val sim = Regex("(?i)\\b(?:with\\s+)?(?:sim|slot)\\s*([12])\\b").find(command)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val selectedName = when {
+            exactOriginal -> task.target
+            ordinal >= 0 -> task.candidates.getOrNull(ordinal)
+            else -> command.replace(Regex("(?i)^(the\\s+)?(one|person)\\s+"), "").trim()
+                .takeIf { it.isNotBlank() && !it.equals("the other", true) }
+        } ?: return false
+        pendingTask = null
+        if (task.type == "call") {
+            callContact(if (sim != null) "$selectedName with SIM $sim" else selectedName, done)
+            return true
+        }
+        if (task.type == "message" && task.app != null && !task.body.isNullOrBlank()) {
+            sendAppMessage(selectedName, task.app, task.body, done)
+            return true
+        }
+        return false
+    }
+
     private fun callContact(rawName: String, done: (String) -> Unit) {
-        val sim = Regex("(?i)\\b(?:sim|slot)\\s*([12])\\s*$").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val name = rawName.replace(Regex("(?i)\\s+(?:sim|slot)\\s*[12]\\s*$"), "").trim()
+        val sim = Regex("(?i)\\b(?:with\\s+)?(?:sim|slot)\\s*([12])\\s*$").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val name = rawName.replace(Regex("(?i)\\s+(?:with\\s+)?(?:sim|slot)\\s*[12]\\s*$"), "").trim()
         if (name.isBlank()) {
             speak("Tell me who to call."); done("Tell me who to call."); return
         }
@@ -795,10 +831,12 @@ class EmaCommandRouter(
 
         if (best.size > 1) {
             val names = best.take(3).joinToString(", ") { it.displayName }
-            val result = "I found more than one possible contact for $name: $names. Tell me the full name."
+            pendingTask = PendingTask("call", name, sim = sim, candidates = best.map { it.displayName }.distinct())
+            val result = "I found more than one possible contact for $name: $names. Tell me which one."
             speak(result); done(result); return
         }
 
+        pendingTask = null
         val selected = best.first()
         placeCall(selected.number, selected.displayName, done, sim)
     }
