@@ -37,16 +37,16 @@ class EmaAppActionEngine(private val context: Context) {
         )
 
         val exact = candidates.firstOrNull {
-            it.activityInfo?.loadLabel(pm)?.toString()?.equals(wanted, ignoreCase = true) == true
+            it.activityInfo?.applicationInfo?.loadLabel(pm)?.toString()?.equals(wanted, ignoreCase = true) == true
         }
         val partial = candidates.firstOrNull {
-            it.activityInfo?.loadLabel(pm)?.toString()?.contains(wanted, ignoreCase = true) == true
+            it.activityInfo?.applicationInfo?.loadLabel(pm)?.toString()?.contains(wanted, ignoreCase = true) == true
         }
         val match = exact ?: partial ?: return null
 
         val activityInfo = match.activityInfo ?: return null
         return AppTarget(
-            label = activityInfo.loadLabel(pm).toString(),
+            label = activityInfo.applicationInfo?.loadLabel(pm)?.toString().orEmpty(),
             packageName = activityInfo.packageName
         )
     }
