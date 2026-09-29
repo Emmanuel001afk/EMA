@@ -115,7 +115,9 @@ jobs:
           # APKs over a few MB should use Supabase's resumable/TUS upload path.
           # This avoids sending the whole APK through one HTTP request (the previous
           # 44 MB EMA release was rejected with HTTP 413).
-          upload_token="$(jq -er '.token' <<<"$prepare")"
+          # Use the decoded token from the signed URL itself. This is the exact JWS
+          # Supabase issued; avoiding a raw/encoded JSON token prevents "Invalid Compact JWS".
+          upload_token="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[1]).query)["token"][0])' "$upload_url")"
           project_storage="https://wfvvmyixqcwosmuldxoq.storage.supabase.co"
           upload_endpoint="$project_storage/storage/v1/upload/resumable"
           tus_headers="$(mktemp)"
