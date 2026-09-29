@@ -155,6 +155,20 @@ class EmaCommandRouter(
                 openMaps(destination, done)
             }
 
+            lower.startsWith("go to ") && Regex("(?i)^go\\s+to\\s+.+\\s+(?:on|in|using)\\s+.+$").matches(command) -> {
+                val match = Regex("(?i)^go\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+)$").find(command)
+                if (match == null) {
+                    done("I could not understand the target app and person.")
+                } else {
+                    val target = match.groupValues[1].trim()
+                    val app = match.groupValues[2].trim()
+                    appEngine.openAndSearch(app, target) { _, result ->
+                        speak(result)
+                        done(result)
+                    }
+                }
+            }
+
             isSaveContactCommand(lower) -> {
                 saveContact(command, done)
             }
@@ -1182,14 +1196,34 @@ class EmaCommandRouter(
             speak(answer); done(answer); return
         }
         execute(actions[index]) { result ->
+            if (isActionFailure(result)) {
+                EmaConversationStore.add(context, "assistant", result)
+                speak(result)
+                done(result)
+                return@execute
+            }
             if (index == actions.lastIndex) {
-                val answer = finalAnswer.ifBlank { result }
+                val answer = result.ifBlank { finalAnswer.ifBlank { "Done." } }
                 EmaConversationStore.add(context, "assistant", answer)
                 speak(answer); done(answer)
             } else {
                 executeAiActions(actions, index + 1, finalAnswer, done)
             }
         }
+    }
+
+    private fun isActionFailure(result: String): Boolean {
+        val text = result.trim().lowercase(Locale.getDefault())
+        if (text.isBlank()) return true
+        return text.startsWith("i couldn't") ||
+            text.startsWith("i could not") ||
+            text.startsWith("i cannot") ||
+            text.contains("could not verify") ||
+            text.contains("couldn't verify") ||
+            text.contains("was not verified") ||
+            text.contains("but could not") ||
+            text.contains("but couldn't") ||
+            text.contains("failed")
     }
 
     private fun handleReminder(command: String, done: (String) -> Unit) {
