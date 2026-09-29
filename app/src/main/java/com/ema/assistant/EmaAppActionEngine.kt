@@ -165,6 +165,86 @@ class EmaAppActionEngine(private val context: Context) {
         }
     }
 
+    fun sendMessage(
+        appName: String,
+        recipientName: String,
+        phone: String?,
+        email: String?,
+        body: String,
+        done: (Boolean, String) -> Unit
+    ) {
+        val target = findApp(appName)
+        if (target == null) {
+            done(false, "I couldn't find $appName on this phone.")
+            return
+        }
+        if (body.isBlank()) {
+            done(false, "The message is empty.")
+            return
+        }
+
+        val label = target.label.lowercase()
+        val packageName = target.packageName
+
+        val intent = when {
+            label.contains("whatsapp") && !phone.isNullOrBlank() -> {
+                val digits = phone.filter { it.isDigit() }
+                if (digits.isBlank()) null else Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://wa.me/$digits?text=${Uri.encode(body)}")
+                ).apply {
+                    setPackage(packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            (label.contains("gmail") || label.contains("email") || label.contains("mail")) && !email.isNullOrBlank() -> {
+                Intent(Intent.ACTION_SENDTO).apply {
+                    data = Uri.parse("mailto:${Uri.encode(email)}")
+                    setPackage(packageName)
+                    putExtra(Intent.EXTRA_TEXT, body)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            !phone.isNullOrBlank() && (
+                label.contains("message") || label.contains("sms") ||
+                    label.contains("messenger") || label.contains("text")
+                ) -> {
+                Intent(Intent.ACTION_SENDTO).apply {
+                    data = Uri.parse("smsto:${Uri.encode(phone)}")
+                    setPackage(packageName)
+                    putExtra("sms_body", body)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            else -> {
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    setPackage(packageName)
+                    putExtra(Intent.EXTRA_TEXT, body)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+        }
+
+        if (intent == null || intent.resolveActivity(pm) == null) {
+            done(false, "I found $recipientName in your contacts, but $appName cannot receive this message through Android.")
+            return
+        }
+
+        runCatching { context.startActivity(intent) }.onSuccess {
+            main.postDelayed({
+                val sent = EmaAccessibilityService.tapSendButton(packageName)
+                done(
+                    sent,
+                    if (sent) "Message sent to $recipientName on ${target.label}."
+                    else "I opened ${target.label} for $recipientName with the message ready, but I could not confirm the Send control."
+                )
+            }, 1400L)
+        }.onFailure {
+            done(false, "I could not open $appName for $recipientName.")
+        }
+    }
+
     /**
      * Open an app, search, wait for its new UI, then try to activate a named
      * result. This remains generic and does not depend on a provider SDK.
