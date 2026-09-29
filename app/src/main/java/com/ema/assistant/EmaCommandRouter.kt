@@ -397,6 +397,7 @@ class EmaCommandRouter(
         val patterns = listOf(
             Regex("(?i)^message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that|to say)\\s+(.+)$"),
             Regex("(?i)^send\\s+(?:a\\s+)?message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that|to say)\\s+(.+)$"),
+            Regex("(?i)^send\\s+(.+?)\\s+(?:a\\s+)?message\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that|to say)\\s+(.+)$"),
             Regex("(?i)^tell\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:that|to say)\\s+(.+)$"),
             Regex("(?i)^message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s*:\\s*(.+)$"),
             Regex("(?i)^send\\s+(?:a\\s+)?message\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that)\\s+(.+)$")
