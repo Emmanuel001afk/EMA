@@ -39,6 +39,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var screenText = ""
     private var screenScreenshot: Bitmap? = null
     private var micEnabled = true
+    private var micMode = "automatic"
     private var processingCommand = false
     private var speakingResponse = false
     private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
@@ -72,6 +73,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         super.onShow(args, showFlags)
         sessionVisible = true
         activeSession = this
+        micMode = prefs.getString("mic_mode", "automatic") ?: "automatic"
         micEnabled = prefs.getBoolean("mic_enabled", true)
         initTts()
         scheduleSessionTimeout()
@@ -164,7 +166,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         controls.addView(ImageButton(context).apply {
-            contentDescription = if (micEnabled) "Microphone on" else "Microphone off"
+            contentDescription = if (micMode == "automatic") "Automatic microphone" else if (micEnabled) "Microphone on" else "Microphone off"
             setImageResource(android.R.drawable.ic_btn_speak_now)
             background = transparentBackground()
             setOnClickListener { toggleMicrophone() }
@@ -205,7 +207,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         startPulse()
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            if (micEnabled) startListening()
+            if (micMode == "automatic" || micEnabled) startListening()
         } else {
             setState("Ready", "Microphone permission is required for voice.")
         }
@@ -287,23 +289,26 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     }
 
     private fun toggleMicrophone() {
+        if (micMode == "automatic") {
+            setState("Automatic", "Microphone resumes automatically after EMA speaks.")
+            return
+        }
         micEnabled = !micEnabled
         prefs.edit().putBoolean("mic_enabled", micEnabled).apply()
         if (!micEnabled) {
             recognizer?.cancel()
             recognizer?.destroy()
             recognizer = null
-            setState("Microphone off", "Microphone is off. Tap the microphone to turn it on.")
-            scheduleSessionTimeout()
-        } else {
-            setState("Listening", "Microphone is on. I’m listening…")
-            if (!processingCommand && !speakingResponse) startListening()
-            scheduleSessionTimeout()
+            setState("Microphone off", if (micMode == "semi") "Conversation paused. Tap the microphone to continue." else "Microphone is off. Tap the microphone to turn it on.")
+        } else if (!processingCommand && !speakingResponse) {
+            setState("Listening", if (micMode == "semi") "Conversation microphone is on." else "Manual microphone is on.")
+            startListening()
         }
+        scheduleSessionTimeout()
     }
 
     private fun startListening() {
-        if (!sessionVisible || !micEnabled || processingCommand || speakingResponse) return
+        if (!sessionVisible || (micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
             setState("Ready", "Microphone permission is required for voice.")
@@ -323,6 +328,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onBeginningOfSpeech() {
+                    handler.removeCallbacks(sessionTimeoutRunnable)
                     setState("Listening", "Hearing you…")
                 }
 
