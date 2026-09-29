@@ -77,9 +77,16 @@ class EmaAppActionEngine(private val context: Context) {
      * Ask the installed application to play media from a natural-language
      * search query using Android's standard media voice-action contracts.
      */
-    fun playMediaInApp(appName: String, query: String): Boolean {
-        val target = findApp(appName) ?: return false
-        if (query.isBlank()) return false
+    fun playMediaInApp(appName: String, query: String, done: (Boolean, String) -> Unit) {
+        val target = findApp(appName)
+        if (target == null) {
+            done(false, "I couldn't find $appName on this phone.")
+            return
+        }
+        if (query.isBlank()) {
+            done(false, "Tell me what to play.")
+            return
+        }
 
         val intents = listOf(
             Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
@@ -97,11 +104,47 @@ class EmaAppActionEngine(private val context: Context) {
 
         for (intent in intents) {
             if (intent.resolveActivity(pm) != null) {
-                runCatching { context.startActivity(intent) }.onSuccess { return true }
+                val started = runCatching { context.startActivity(intent); true }.getOrDefault(false)
+                if (started) {
+                    main.postDelayed({
+                        val ui = EmaAccessibilityService.inspectCurrentUi()
+                        if (ui.isNotBlank()) {
+                            EmaAccessibilityService.toggleMediaPlayback()
+                            done(true, "I opened $appName for $query and requested playback.")
+                        } else {
+                            done(false, "I opened $appName, but could not verify the playback screen.")
+                        }
+                    }, 1400L)
+                    return
+                }
             }
         }
 
-        return false
+        val opened = openApp(target.label)
+        if (opened == null) {
+            done(false, "I couldn't open $appName.")
+            return
+        }
+        EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
+            if (!searched) {
+                done(false, "I opened $appName, but its search field was not accessible.")
+                return@searchInPackage
+            }
+            main.postDelayed({
+                val selected = EmaAccessibilityService.tapFirstResult()
+                if (!selected) {
+                    done(false, "I searched $appName for $query, but could not select a result.")
+                    return@postDelayed
+                }
+                main.postDelayed({
+                    val played = EmaAccessibilityService.toggleMediaPlayback()
+                    val ui = EmaAccessibilityService.inspectCurrentUi()
+                    done(played && ui.isNotBlank(),
+                        if (played && ui.isNotBlank()) "I selected $query in $appName and sent the play command."
+                        else "I selected $query in $appName, but could not verify playback.")
+                }, 900L)
+            }, 1000L)
+        }
     }
 
     fun openAndSearchThenTapFirst(appName: String, query: String, done: (Boolean, String) -> Unit) {
