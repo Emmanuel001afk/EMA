@@ -153,7 +153,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
         panel.addView(controls)
 
-        root.addView(panel, FrameLayout.LayoutParams(
+        val panelParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM
@@ -161,7 +161,14 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             leftMargin = 18
             rightMargin = 18
             bottomMargin = 18
-        })
+        }
+        root.addView(panel, panelParams)
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            panelParams.bottomMargin = 18 + insets.systemWindowInsetBottom
+            panel.layoutParams = panelParams
+            insets
+        }
+        root.requestApplyInsets()
 
         getWindow()?.window?.decorView?.let { decor ->
             (decor as? ViewGroup)?.removeAllViews()
@@ -185,7 +192,11 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private fun initTts() {
         if (tts != null) return
         tts = TextToSpeech(context) { code ->
-            if (code == TextToSpeech.SUCCESS) tts?.language = Locale.getDefault()
+            if (code == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.getDefault()
+                val saved = context.getSharedPreferences("ema", Context.MODE_PRIVATE).getString("voice_name", null)
+                tts?.voices?.firstOrNull { it.name == saved }?.let { tts?.voice = it }
+            }
         }
     }
 
