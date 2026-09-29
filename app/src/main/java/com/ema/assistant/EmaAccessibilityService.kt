@@ -159,7 +159,7 @@ class EmaAccessibilityService : AccessibilityService() {
                 text.isNotBlank() -> text
                 desc.isNotBlank() -> desc
                 else -> ""
-            }.replace(Regex("\s+"), " ")
+            }.replace(Regex("\\s+"), " ")
 
             if (label.isNotBlank()) {
                 val bounds = Rect().also { node.getBoundsInScreen(it) }
