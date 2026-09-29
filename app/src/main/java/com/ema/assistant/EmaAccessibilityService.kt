@@ -58,6 +58,23 @@ class EmaAccessibilityService : AccessibilityService() {
         fun scroll(direction: String): Boolean =
             instance?.scrollInternal(direction) == true
 
+        /** Generic UI inspection for the currently visible application. */
+        fun inspectCurrentUi(maxChars: Int = 16000): String =
+            instance?.inspectCurrentUiInternal(maxChars).orEmpty()
+
+        /** Generic control operation: finds the best accessible visible match. */
+        fun activate(text: String): Boolean =
+            instance?.activateTextInternal(text) == true
+
+        fun longPressText(text: String): Boolean =
+            instance?.longPressTextInternal(text) == true
+
+        fun pressBack(): Boolean =
+            instance?.performGlobalAction(GLOBAL_ACTION_BACK) == true
+
+        fun pressHome(): Boolean =
+            instance?.performGlobalAction(GLOBAL_ACTION_HOME) == true
+
         fun tapCoordinates(x: Float, y: Float): Boolean =
             instance?.tapCoordinatesInternal(x, y) == true
 
@@ -121,6 +138,89 @@ class EmaAccessibilityService : AccessibilityService() {
 
         walk(root)
         return out.toString().trim().take(maxChars)
+    }
+
+    private fun inspectCurrentUiInternal(maxChars: Int): String {
+        val root = rootInActiveWindow ?: return ""
+        val out = StringBuilder()
+
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || out.length >= maxChars) return
+            val text = node.text?.toString()?.trim().orEmpty()
+            val desc = node.contentDescription?.toString()?.trim().orEmpty()
+            val label = when {
+                text.isNotBlank() && desc.isNotBlank() -> "$text ($desc)"
+                text.isNotBlank() -> text
+                desc.isNotBlank() -> desc
+                else -> ""
+            }.replace(Regex("\s+"), " ")
+
+            if (label.isNotBlank()) {
+                val bounds = Rect().also { node.getBoundsInScreen(it) }
+                out.append("  ".repeat(depth.coerceAtMost(8)))
+                    .append(label.take(300))
+                    .append(" | clickable=").append(node.isClickable)
+                    .append(" | editable=").append(node.isEditable)
+                    .append(" | scrollable=").append(node.isScrollable)
+                    .append(" | enabled=").append(node.isEnabled)
+                    .append(" | bounds=").append(bounds)
+                    .append('\n')
+            }
+
+            for (i in 0 until node.childCount) walk(node.getChild(i), depth + 1)
+        }
+
+        walk(root, 0)
+        return out.toString().trim().take(maxChars)
+    }
+
+    private fun activateTextInternal(text: String): Boolean {
+        val node = findBestVisibleNode(text) ?: return false
+        return when {
+            node.isClickable -> node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            node.isFocusable -> node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            else -> node.performAction(AccessibilityNodeInfo.ACTION_SELECT)
+        }
+    }
+
+    private fun longPressTextInternal(text: String): Boolean {
+        val node = findBestVisibleNode(text) ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        if (bounds.isEmpty) return false
+        val x = bounds.centerX().toFloat()
+        val y = bounds.centerY().toFloat()
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 900))
+            .build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    private fun findBestVisibleNode(query: String): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val wanted = query.trim().lowercase()
+        if (wanted.isBlank()) return null
+        var exact: AccessibilityNodeInfo? = null
+        var contains: AccessibilityNodeInfo? = null
+
+        fun walk(node: AccessibilityNodeInfo?) {
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return
+            val text = node.text?.toString().orEmpty().trim().lowercase()
+            val desc = node.contentDescription?.toString().orEmpty().trim().lowercase()
+            if (text == wanted || desc == wanted) {
+                if (exact == null) exact = node
+            } else if (contains == null &&
+                (text.contains(wanted) || desc.contains(wanted))) {
+                contains = node
+            }
+            for (i in 0 until node.childCount) {
+                if (exact == null) walk(node.getChild(i))
+            }
+        }
+
+        walk(root)
+        return exact ?: contains
     }
 
     private fun tapTextInternal(text: String): Boolean {
