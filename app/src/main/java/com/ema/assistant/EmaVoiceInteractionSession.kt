@@ -158,7 +158,7 @@ class EmaVoiceInteractionSession(context: Context) :
 
         val content = state.assistContent
         if (content != null) {
-            val description = content.getDescription()?.toString().orEmpty()
+            val description = content.description?.toString().orEmpty()
             if (description.isNotBlank()) {
                 screenText = (screenText + "\n" + description).trim().take(12000)
             }
