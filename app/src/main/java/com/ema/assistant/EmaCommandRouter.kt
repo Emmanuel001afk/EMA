@@ -66,6 +66,17 @@ class EmaCommandRouter(
                 openMaps(destination, done)
             }
 
+            isMessageCommand(lower) -> {
+                val parsed = parseMessageCommand(command)
+                if (parsed == null) {
+                    val result = "Tell me who to message, which app to use, and what to say."
+                    speak(result); done(result)
+                } else {
+                    val (recipient, app, body) = parsed
+                    sendAppMessage(recipient, app, body, done)
+                }
+            }
+
             lower.startsWith("text ") || lower.startsWith("send a text to ") || lower.startsWith("send a message to ") -> {
                 openMessageComposer(command, done)
             }
@@ -363,6 +374,99 @@ class EmaCommandRouter(
         }
     }
 
+    private data class MessageCommand(
+        val recipient: String,
+        val app: String,
+        val body: String
+    )
+
+    private fun isMessageCommand(lower: String): Boolean {
+        return lower.startsWith("message ") ||
+            lower.startsWith("send a message ") ||
+            (lower.startsWith("send ") && (
+                lower.contains(" on ") || lower.contains(" in ")
+            ) && (
+                lower.contains(" saying ") || lower.contains(" that ") || lower.contains(" to ")
+            )) ||
+            (lower.startsWith("tell ") && (
+                lower.contains(" on ") || lower.contains(" in ")
+            ))
+    }
+
+    private fun parseMessageCommand(command: String): MessageCommand? {
+        val patterns = listOf(
+            Regex("(?i)^message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that|to say)\\s+(.+)$"),
+            Regex("(?i)^send\\s+(?:a\\s+)?message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that|to say)\\s+(.+)$"),
+            Regex("(?i)^tell\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:that|to say)\\s+(.+)$"),
+            Regex("(?i)^message\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s*:\\s*(.+)$"),
+            Regex("(?i)^send\\s+(?:a\\s+)?message\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+?)\\s+(?:saying|that)\\s+(.+)$")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(command) ?: continue
+            val recipient = match.groupValues[1].trim()
+            val app = match.groupValues[2].trim()
+            val body = match.groupValues[3].trim()
+            if (recipient.isNotBlank() && app.isNotBlank() && body.isNotBlank()) {
+                return MessageCommand(recipient, app, body)
+            }
+        }
+        return null
+    }
+
+    private fun sendAppMessage(
+        recipient: String,
+        app: String,
+        body: String,
+        done: (String) -> Unit
+    ) {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermission(Manifest.permission.READ_CONTACTS)
+            val result = "EMA needs Contacts access to find $recipient. Grant it, then repeat the message."
+            speak(result); done(result); return
+        }
+
+        val normalized = recipient.trim()
+        var exactName: String? = null
+        var phone: String? = null
+        var email: String? = null
+
+        context.contentResolver.query(
+            ContactsContract.Data.CONTENT_URI,
+            arrayOf(
+                ContactsContract.Data.DISPLAY_NAME,
+                ContactsContract.Data.MIMETYPE,
+                ContactsContract.Data.DATA1
+            ),
+            "${ContactsContract.Data.DISPLAY_NAME} = ?",
+            arrayOf(normalized),
+            null
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(ContactsContract.Data.DISPLAY_NAME)
+            val mimeIndex = cursor.getColumnIndex(ContactsContract.Data.MIMETYPE)
+            val dataIndex = cursor.getColumnIndex(ContactsContract.Data.DATA1)
+            while (cursor.moveToNext()) {
+                exactName = cursor.getString(nameIndex).orEmpty()
+                val mime = cursor.getString(mimeIndex).orEmpty()
+                val value = cursor.getString(dataIndex).orEmpty()
+                when (mime) {
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE ->
+                        if (phone.isNullOrBlank()) phone = value
+                    ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE ->
+                        if (email.isNullOrBlank()) email = value
+                }
+            }
+        }
+
+        if (exactName.isNullOrBlank()) {
+            val result = "I couldn't find an exact contact named $recipient."
+            speak(result); done(result); return
+        }
+
+        appEngine.sendMessage(app, exactName!!, phone, email, body) { _, result ->
+            speak(result); done(result)
+        }
+    }
+
     private fun isAppSearchCommand(lower: String): Boolean {
         // App-directed search is a phone action, not a web-search fallback.
         if (isCallIntent(lower)) return false
@@ -484,7 +588,7 @@ class EmaCommandRouter(
 
             while (cursor.moveToNext()) {
                 val contactName = cursor.getString(nameIndex).orEmpty()
-                if (contactName.equals(name, true) || contactName.contains(name, true)) {
+                if (contactName.equals(name, true)) {
                     foundName = contactName
                     foundNumber = cursor.getString(numberIndex)
                     break
