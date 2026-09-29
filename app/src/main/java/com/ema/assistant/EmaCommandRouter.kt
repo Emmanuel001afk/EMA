@@ -336,7 +336,7 @@ class EmaCommandRouter(
             val clip = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
             if (clip.matches(Regex("[+0-9()\\-\\s]{7,}"))) {
                 number = clip
-                name = command.substringAfter(Regex("(?i) as ")).trim()
+                name = Regex("(?i)\\s+as\\s+(.+)$").find(command)?.groupValues?.getOrNull(1)?.trim()
             }
         }
 
