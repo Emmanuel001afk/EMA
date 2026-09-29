@@ -50,9 +50,9 @@ class EmaCommandRouter(
         when {
             lower == "scroll down" || lower == "scroll up" || lower == "scroll to top" -> {
                 val direction = if (lower.contains("up") || lower.contains("top")) "up" else "down"
-                val ok = EmaAccessibilityService.scroll(direction)
-                val message = if (ok) "Scrolled " + direction + "." else "I could not scroll the current screen."
-                speak(message); done(message)
+                EmaGenericUiController.scroll(direction) { _, message ->
+                    speak(message); done(message)
+                }
             }
 
             lower == "tap the first result" || lower == "select the first result" || lower == "open the first result" -> {
@@ -190,16 +190,16 @@ class EmaCommandRouter(
 
             lower.startsWith("tap ") || lower.startsWith("press ") -> {
                 val target = command.substringAfter(' ').trim()
-                val ok = EmaAccessibilityService.tapText(target)
-                val message = if (ok) "Tapped $target." else "I could not find a tappable \"$target\" on the current screen."
-                speak(message); done(message)
+                EmaGenericUiController.tap(target) { _, message ->
+                    speak(message); done(message)
+                }
             }
 
             lower.startsWith("type ") -> {
                 val value = command.substringAfter("type ").trim()
-                val ok = EmaAccessibilityService.setFocusedText(value)
-                val message = if (ok) "Typed the requested text." else "I could not find an editable field on the current screen."
-                speak(message); done(message)
+                EmaGenericUiController.type(value) { _, message ->
+                    speak(message); done(message)
+                }
             }
 
             lower.startsWith("call ") || lower.startsWith("dial ") || lower.startsWith("phone ") ||
@@ -975,20 +975,26 @@ class EmaCommandRouter(
 
     private fun openApp(appName: String, done: (String) -> Unit) {
         val target = appEngine.openApp(appName)
-        if (target != null) lastAppName = target.label
-        val message = if (target == null) "I couldn't find or open $appName on this phone." else "${target.label}"
-        val finalMessage = if (target == null) message else "Opening $message."
-        speak(finalMessage); done(finalMessage)
+        if (target == null) {
+            val message = "I couldn't find or open " + appName + " on this phone."
+            speak(message); done(message); return
+        }
+        lastAppName = target.label
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val ui = EmaAccessibilityService.inspectCurrentUi()
+            val finalMessage = if (ui.isNotBlank()) "Opened " + target.label + " and inspected the accessible UI." else "Opened " + target.label + "."
+            speak(finalMessage); done(finalMessage)
+        }, 600L)
     }
-
     private fun openSettingsAndFind(target: String, done: (String) -> Unit) {
         if (target.isBlank()) { openSettings(Settings.ACTION_SETTINGS, "Settings", done); return }
         runCatching {
             context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val tapped = EmaAccessibilityService.tapText(target)
-                val message = if (tapped) "Opening $target in Settings." else "I opened Settings, but I could not locate $target on the current screen."
-                speak(message); done(message)
+                EmaGenericUiController.tap(target) { ok, detail ->
+                    val message = if (ok) "Opened " + target + " in Settings. " + detail else "I opened Settings, but I could not locate " + target + "."
+                    speak(message); done(message)
+                }
             }, 900L)
         }.onFailure {
             val message = "I could not open Settings."
