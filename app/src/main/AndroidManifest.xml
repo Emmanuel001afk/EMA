@@ -32,6 +32,7 @@
         </service>
         <receiver android:name=".EmaScheduledActionReceiver" android:exported="false"/>
         <receiver android:name=".EmaReminderReceiver" android:exported="false"/>
+        <receiver android:name=".EmaRoutineReceiver" android:exported="false"/>
         <service android:name=".EmaNotificationListenerService" android:label="EMA notification access" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="false">
             <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
         </service>
