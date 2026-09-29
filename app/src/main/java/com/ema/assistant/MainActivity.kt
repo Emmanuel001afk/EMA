@@ -6,6 +6,7 @@ import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.speech.RecognizerIntent
 import android.speech.RecognitionListener
 import android.speech.SpeechRecognizer
@@ -28,6 +29,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
+        requestNotificationPermission()
         router = EmaCommandRouter(this, tts)
 
         val root = LinearLayout(this).apply {
@@ -71,6 +73,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             text = "Set EMA as digital assistant"
             setOnClickListener { requestAssistantRole() }
         })
+        root.addView(Button(this).apply {
+            text = "Enable EMA screen control"
+            setOnClickListener { openAccessibilitySettings() }
+        })
+        root.addView(TextView(this).apply {
+            text = "System assistant: ${if (isAssistantRoleHeld()) "enabled" else "not enabled"}"
+            textSize = 14f
+        })
 
         status = TextView(this).apply {
             text = "EMA is ready."
@@ -91,6 +101,21 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         status.text = "Working…"
         router.execute(command) { result ->
             runOnUiThread { status.text = result }
+        }
+    }
+
+    private fun isAssistantRoleHeld(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
+    } else false
+
+    private fun openAccessibilitySettings() {
+        startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
         }
     }
 
@@ -174,5 +199,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     companion object {
         private const val REQUEST_MIC = 10
+        private const val REQUEST_NOTIFICATIONS = 11
     }
 }
