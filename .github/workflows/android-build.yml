@@ -35,12 +35,6 @@ jobs:
           gradle-version: '8.9'
           cache-provider: basic
 
-      - name: Compile Kotlin
-        id: compile
-        run: |
-          set -o pipefail
-          gradle :app:compileDebugKotlin             --no-daemon             --console=plain             --stacktrace             --info 2>&1 | tee build-log.txt
-
       - name: Set monotonic Android version
         id: version
         run: |
@@ -93,7 +87,6 @@ jobs:
           name: ema-debug-apk
           path: ${{ env.DEBUG_APK }}
           if-no-files-found: error
-          if-no-files-found: error
           retention-days: 14
 
       - name: Publish latest release to AEM Store
@@ -119,5 +112,5 @@ jobs:
           upload_url="$(jq -er '.upload_url' <<<"$prepare")"
           object_path="$(jq -er '.path // .Key' <<<"$prepare")"
           curl -fsS -X PUT "$upload_url" -H "Content-Type: application/vnd.android.package-archive" -H "Content-Length: $size_bytes" -H "x-upsert: true" --upload-file "$APK"
-          finalize="$(jq -n --arg action finalize --arg repo "Emmanuel001afk/EMA" --argjson run_id "${{ github.run_id }}" --arg filename "app-release.apk" --arg application_name "$app_name" --arg version_name "$version_name" --argjson version_code "$version_code" --arg channel stable --arg package_identity "$package" --arg title "EMA Digital Assistant APK" --arg source_release_id "$source_release_id" --arg signing_certificate_sha256 "$signing_cert" --arg object_path "$object_path" --arg path "$object_path" --argjson size_bytes "$size_bytes" --arg sha256 "$sha256" '{action:$action,repo:$repo,run_id:$run_id,filename:$filename,application_name:$app_name,version_name:$version_name,version_code:$version_code,channel:$channel,package_identity:$package,title:$title,source_release_id:$source_release_id,signing_certificate_sha256:$signing_certificate_sha256,object_path:$object_path,path:$object_path,size_bytes:$size_bytes,sha256:$sha256}')"
+          finalize="$(jq -n --arg action finalize --arg repo "Emmanuel001afk/EMA" --argjson run_id "${{ github.run_id }}" --arg filename "app-release.apk" --arg application_name "$app_name" --arg version_name "$version_name" --argjson version_code "$version_code" --arg channel stable --arg package_identity "$package" --arg title "EMA Digital Assistant APK" --arg source_release_id "$source_release_id" --arg signing_certificate_sha256 "$signing_cert" --arg object_path "$object_path" --arg path "$object_path" --argjson size_bytes "$size_bytes" --arg sha256 "$sha256" '{action:$action,repo:$repo,run_id:$run_id,filename:$filename,application_name:$application_name,version_name:$version_name,version_code:$version_code,channel:$channel,package_identity:$package_identity,title:$title,source_release_id:$source_release_id,signing_certificate_sha256:$signing_certificate_sha256,object_path:$object_path,path:$object_path,size_bytes:$size_bytes,sha256:$sha256}')"
           curl -fsS -X POST "https://wfvvmyixqcwosmuldxoq.supabase.co/functions/v1/aem-publish-github-artifact" -H "Content-Type: application/json" -H "x-github-token: ${{ github.token }}" --data "$finalize"
