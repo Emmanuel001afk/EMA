@@ -10,6 +10,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.ViewGroup
+import android.os.Handler
+import android.os.Looper
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -24,9 +26,12 @@ import java.util.Locale
 class EmaVoiceInteractionSession(context: Context) : android.service.voice.VoiceInteractionSession(context) {
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var sessionVisible = false
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        sessionVisible = true
 
         tts = TextToSpeech(context) { code ->
             if (code == TextToSpeech.SUCCESS) tts?.language = Locale.getDefault()
@@ -133,6 +138,8 @@ class EmaVoiceInteractionSession(context: Context) : android.service.voice.Voice
     }
 
     override fun onHide() {
+        sessionVisible = false
+        main.removeCallbacksAndMessages(null)
         recognizer?.destroy()
         recognizer = null
         tts?.shutdown()
@@ -141,6 +148,8 @@ class EmaVoiceInteractionSession(context: Context) : android.service.voice.Voice
     }
 
     override fun onDestroy() {
+        sessionVisible = false
+        main.removeCallbacksAndMessages(null)
         recognizer?.destroy()
         tts?.shutdown()
         super.onDestroy()
