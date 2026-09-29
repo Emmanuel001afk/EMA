@@ -2,6 +2,8 @@ package com.ema.assistant
 
 import android.Manifest
 import android.app.Activity
+import android.media.AudioManager
+import android.provider.Settings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -72,6 +74,31 @@ class EmaCommandRouter(
 
             lower == "home" || lower == "go home" ->
                 globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME, "Going home.", done)
+
+            lower == "volume up" || lower == "increase volume" -> adjustVolume(AudioManager.ADJUST_RAISE, "Volume increased.", done)
+            lower == "volume down" || lower == "decrease volume" -> adjustVolume(AudioManager.ADJUST_LOWER, "Volume decreased.", done)
+            lower == "mute" || lower == "mute volume" -> adjustVolume(AudioManager.ADJUST_MUTE, "Volume muted.", done)
+            lower == "unmute" || lower == "unmute volume" -> adjustVolume(AudioManager.ADJUST_UNMUTE, "Volume unmuted.", done)
+
+            lower.startsWith("set a timer for ") || lower.startsWith("timer for ") -> {
+                val value = if (lower.startsWith("set a timer for ")) command.substringAfter("set a timer for ").trim()
+                else command.substringAfter("timer for ").trim()
+                openTimer(value, done)
+            }
+
+            lower == "open wifi settings" || lower == "open wi-fi settings" -> openSettings(Settings.ACTION_WIFI_SETTINGS, "Wi-Fi settings", done)
+            lower == "open bluetooth settings" -> openSettings(Settings.ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings", done)
+            lower == "open display settings" -> openSettings(Settings.ACTION_DISPLAY_SETTINGS, "display settings", done)
+            lower == "open sound settings" -> openSettings(Settings.ACTION_SOUND_SETTINGS, "sound settings", done)
+            lower == "open notification settings" -> openSettings(Settings.ACTION_NOTIFICATION_SETTINGS, "notification settings", done)
+            lower == "open accessibility settings" -> openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS, "Accessibility settings", done)
+            lower == "open assistant settings" -> openSettings(Settings.ACTION_VOICE_INPUT_SETTINGS, "assistant settings", done)
+
+            lower == "recent apps" || lower == "show recent apps" ->
+                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS, "Showing recent apps.", done)
+
+            lower == "lock phone" || lower == "lock the phone" ->
+                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locking the phone.", done)
 
             lower == "play" || lower == "pause" || lower == "play or pause" -> {
                 val ok = EmaAccessibilityService.toggleMediaPlayback()
@@ -177,6 +204,49 @@ class EmaCommandRouter(
             val result = combined.ifBlank { "I could not read text from the current screen." }.take(6000)
             speak(result); done(result)
         }
+    }
+
+    private fun adjustVolume(direction: Int, message: String, done: (String) -> Unit) {
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (audio == null) {
+            val result = "I could not access the phone volume controls."
+            speak(result); done(result); return
+        }
+        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+        speak(message); done(message)
+    }
+
+    private fun openTimer(value: String, done: (String) -> Unit) {
+        val match = Regex("(\\d+)\\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)", RegexOption.IGNORE_CASE).find(value)
+        if (match == null) {
+            val result = "Tell me the timer duration, for example: set a timer for 10 minutes."
+            speak(result); done(result); return
+        }
+        val amount = match.groupValues[1].toInt()
+        val unit = match.groupValues[2].lowercase(Locale.getDefault())
+        val seconds = when {
+            unit.startsWith("hour") || unit.startsWith("hr") -> amount * 3600
+            unit.startsWith("minute") || unit.startsWith("min") -> amount * 60
+            else -> amount
+        }
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA timer")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }.onSuccess {
+            val result = "Opening a timer for $value."
+            speak(result); done(result)
+        }.onFailure {
+            val result = "I could not open the phone timer."
+            speak(result); done(result)
+        }
+    }
+
+    private fun openSettings(action: String, label: String, done: (String) -> Unit) {
+        runCatching { context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            .onSuccess { val result = "Opening $label."; speak(result); done(result) }
+            .onFailure { val result = "I could not open $label on this phone."; speak(result); done(result) }
     }
 
     private fun openAlarm(value: String, done: (String) -> Unit) {
