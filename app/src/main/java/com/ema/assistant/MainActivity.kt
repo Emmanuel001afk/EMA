@@ -100,6 +100,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
 
         root.addView(TextView(this).apply {
+            text = "Assistant session timeout"
+            textSize = 16f
+            setPadding(0, 24, 0, 4)
+        })
+        val timeoutSpinner = Spinner(this)
+        val timeoutLabels = listOf("Manual — stay open until I close EMA", "15 seconds", "30 seconds", "1 minute", "2 minutes", "5 minutes")
+        val timeoutValues = listOf(0L, 15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
+        timeoutSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, timeoutLabels)
+        val savedTimeout = getSharedPreferences("ema", MODE_PRIVATE).getLong("assistant_timeout_ms", 0L)
+        timeoutSpinner.setSelection(timeoutValues.indexOf(savedTimeout).coerceAtLeast(0))
+        timeoutSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                getSharedPreferences("ema", MODE_PRIVATE).edit().putLong("assistant_timeout_ms", timeoutValues[position]).apply()
+            }
+        })
+        root.addView(timeoutSpinner)
+
+        root.addView(TextView(this).apply {
             text = "Voice"
             textSize = 16f
             setPadding(0, 24, 0, 4)
