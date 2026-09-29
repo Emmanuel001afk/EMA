@@ -198,13 +198,29 @@ class EmaCommandRouter(
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
 
             else -> {
-                val needsScreen = listOf("this screen", "my screen", "on screen", "this page", "current page", "what am i looking at", "read this")
-                    .any(lower::contains)
+                val explicitAi = lower.startsWith("ema ai ") || lower.startsWith("emma ai ") ||
+                    lower.startsWith("ask ema ai ") || lower.startsWith("ask emma ai ")
+                val needsScreenUnderstanding = listOf(
+                    "what is on this screen", "what's on this screen", "what does this screen mean",
+                    "what am i looking at", "explain this screen", "understand this screen",
+                    "what is on this page", "explain this page"
+                ).any(lower::contains)
 
-                val prompt = if (needsScreen) {
-                    val screen = EmaAccessibilityService.currentScreenText()
-                    if (screen.isBlank()) command else "Current screen context:\n$screen\n\nUser request: $command"
-                } else command
+                if (!explicitAi && !needsScreenUnderstanding) {
+                    val result = "I can do that on the phone, but I need a more specific command."
+                    speak(result); done(result); return
+                }
+
+                val promptCommand = command
+                    .replaceFirst(Regex("(?i)^ask\\s+emma\\s+ai\\s*"), "")
+                    .replaceFirst(Regex("(?i)^ask\\s+ema\\s+ai\\s*"), "")
+                    .replaceFirst(Regex("(?i)^emma\\s+ai\\s*"), "")
+                    .replaceFirst(Regex("(?i)^ema\\s+ai\\s*"), "")
+                    .trim()
+
+                val screen = EmaAccessibilityService.currentScreenText()
+                val prompt = if (screen.isBlank()) promptCommand
+                else "Current screen context:\n$screen\n\nUser request: $promptCommand"
 
                 CentralHubClient(context).ask(prompt) { answer ->
                     speak(answer); done(answer)
@@ -336,19 +352,31 @@ class EmaCommandRouter(
         }
     }
 
-    private fun isAppSearchCommand(lower: String): Boolean =
-        (lower.startsWith("open ") || lower.startsWith("go into ") || lower.startsWith("go to ")) &&
-            (lower.contains(" search ") || lower.contains(" search for "))
+    private fun isAppSearchCommand(lower: String): Boolean {
+        val hasSearch = lower.contains(" search ") || lower.contains(" search for ") || lower.contains(" find ")
+        if (!hasSearch) return false
+
+        // Platform-first commands: "YouTube search for life", "WhatsApp search student should go home".
+        val platformFirst = lower.substringBefore(" search ").trim()
+            .substringBefore(" search for ").trim()
+            .substringBefore(" find ").trim()
+        if (platformFirst.isNotBlank() && !platformFirst.startsWith("open ") &&
+            !platformFirst.startsWith("go into ") && !platformFirst.startsWith("go to ") &&
+            platformFirst !in setOf("google", "the web", "web")) return true
+
+        return lower.startsWith("open ") || lower.startsWith("go into ") || lower.startsWith("go to ")
+    }
 
     private fun parseAppSearch(command: String): Pair<String, String>? {
         val lower = command.lowercase(Locale.getDefault())
-        val markers = listOf(" and search for ", " and search ", " search for ", " search ")
+        val markers = listOf(" and search for ", " and search ", " search for ", " search ", " find ")
         val marker = markers.firstOrNull { lower.contains(it) } ?: return null
         val index = lower.indexOf(marker)
         val appPart = command.substring(0, index)
             .replaceFirst(Regex("(?i)^go into\\s+"), "")
             .replaceFirst(Regex("(?i)^go to\\s+"), "")
             .replaceFirst(Regex("(?i)^open\\s+"), "")
+            .replaceFirst(Regex("(?i)^find\\s+"), "")
             .trim()
         val query = command.substring(index + marker.length).trim()
         if (appPart.isBlank() || query.isBlank()) return null
