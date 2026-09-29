@@ -269,15 +269,22 @@ class EmaAppActionEngine(private val context: Context) {
                     return@searchInPackage
                 }
                 main.postDelayed({
-                    val typed = EmaAccessibilityService.setFocusedText(body)
-                    if (!typed) {
-                        done(false, "I found " + recipientName + " in " + target.label + ", but its message field was not accessible.")
+                    val selected = EmaAccessibilityService.tapText(recipientName) || EmaAccessibilityService.tapFirstResult()
+                    if (!selected) {
+                        done(false, "I found the search controls in " + target.label + ", but could not select " + recipientName + ".")
                         return@postDelayed
                     }
                     main.postDelayed({
-                        val sent = EmaAccessibilityService.tapSendButton(target.packageName)
-                        done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message for " + recipientName + ", but could not verify Send.")
-                    }, 500L)
+                        val typed = EmaAccessibilityService.setFocusedText(body)
+                        if (!typed) {
+                            done(false, "I selected " + recipientName + " in " + target.label + ", but its message field was not accessible.")
+                            return@postDelayed
+                        }
+                        main.postDelayed({
+                            val sent = EmaAccessibilityService.tapSendButton(target.packageName)
+                            done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message for " + recipientName + ", but could not verify Send.")
+                        }, 500L)
+                    }, 600L)
                 }, 700L)
             }
         }, 900L)
