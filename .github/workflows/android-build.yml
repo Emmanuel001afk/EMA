@@ -112,15 +112,15 @@ jobs:
           upload_token="$(jq -er '.token' <<<"$prepare")"
           object_path="$(jq -er '.path // .Key' <<<"$prepare")"
 
-          # APKs over a few MB use Supabase's signed resumable/TUS endpoint.
-          # The signed route is the Storage route intended for createSignedUploadUrl
-          # tokens; use the token returned by the SDK/function directly.
+          # Supabase signed TUS uploads use the normal resumable endpoint with
+          # the createSignedUploadUrl token in x-signature. The token returned
+          # by prepare is already the exact JWS expected by Storage.
           project_storage="https://wfvvmyixqcwosmuldxoq.storage.supabase.co"
-          upload_endpoint="$project_storage/storage/v1/upload/resumable/sign/$object_path"
+          upload_endpoint="$project_storage/storage/v1/upload/resumable"
           tus_headers="$(mktemp)"
           tus_body="$(mktemp)"
           metadata="bucketName $(printf '%s' 'aem-artifacts' | base64 -w0),objectName $(printf '%s' "$object_path" | base64 -w0),contentType $(printf '%s' 'application/vnd.android.package-archive' | base64 -w0)"
-          upload_http="$(curl -sS -D "$tus_headers" -o "$tus_body" -w '%{http_code}' -X POST "$upload_endpoint?token=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$upload_token")"             -H "Tus-Resumable: 1.0.0"             -H "Upload-Length: $size_bytes"             -H "Upload-Metadata: $metadata"             -H "x-upsert: true")"
+          upload_http="$(curl -sS -D "$tus_headers" -o "$tus_body" -w '%{http_code}' -X POST "$upload_endpoint?token=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$upload_token")"             -H "Tus-Resumable: 1.0.0"             -H "Upload-Length: $size_bytes"             -H "Upload-Metadata: $metadata"             -H "x-signature: $upload_token"             -H "x-upsert: true")"
           if [[ "$upload_http" != "201" ]]; then
             echo "AEM resumable upload initialization failed with HTTP $upload_http" >&2
             cat "$tus_body" >&2 || true
@@ -134,7 +134,7 @@ jobs:
             remaining=$((size_bytes - offset))
             current_chunk=$chunk_size
             if (( remaining < current_chunk )); then current_chunk=$remaining; fi
-            curl --fail-with-body -sS -X PATCH "$resumable_url"               -H "Tus-Resumable: 1.0.0"               -H "Content-Type: application/offset+octet-stream"               -H "Upload-Offset: $offset"               --data-binary "@<(tail -c +$((offset + 1)) "$APK" | head -c "$current_chunk")"
+            curl --fail-with-body -sS -X PATCH "$resumable_url"               -H "x-signature: $upload_token"               -H "Tus-Resumable: 1.0.0"               -H "Content-Type: application/offset+octet-stream"               -H "Upload-Offset: $offset"               --data-binary "@<(tail -c +$((offset + 1)) "$APK" | head -c "$current_chunk")"
             offset=$((offset + current_chunk))
             echo "Uploaded $offset / $size_bytes bytes"
           done
