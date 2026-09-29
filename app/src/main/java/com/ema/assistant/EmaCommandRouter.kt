@@ -377,7 +377,7 @@ class EmaCommandRouter(
                     val c = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR, offset) }
                     if (c.get(java.util.Calendar.DAY_OF_WEEK) in 2..6) { found = true; break }
                 }
-                EmaRoutineScheduler.scheduleDaily(context, action, hour, minute) && found
+                EmaRoutineScheduler.scheduleDaily(context, action, hour, minute, weekdaysOnly = true) && found
             } else {
                 EmaRoutineScheduler.scheduleDaily(context, action, hour, minute)
             }
