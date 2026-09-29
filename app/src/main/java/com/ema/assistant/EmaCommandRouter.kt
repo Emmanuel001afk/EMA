@@ -577,32 +577,66 @@ class EmaCommandRouter(
             ContactsContract.CommonDataKinds.Phone.NUMBER
         )
 
-        var foundName: String? = null
-        var foundNumber: String? = null
+        data class ContactCandidate(
+            val displayName: String,
+            val number: String,
+            val rank: Int
+        )
+
+        val candidates = mutableListOf<ContactCandidate>()
 
         context.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            projection, null, null, null
+            projection, null, null,
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " COLLATE NOCASE ASC"
         )?.use { cursor ->
             val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            val requested = name.trim().lowercase()
+            val requestedWords = requested.split(Regex("\\s+")).filter { it.isNotBlank() }
 
             while (cursor.moveToNext()) {
-                val contactName = cursor.getString(nameIndex).orEmpty()
-                if (contactName.equals(name, true)) {
-                    foundName = contactName
-                    foundNumber = cursor.getString(numberIndex)
-                    break
+                val contactName = cursor.getString(nameIndex).orEmpty().trim()
+                val number = cursor.getString(numberIndex).orEmpty().trim()
+                if (contactName.isBlank() || number.isBlank()) continue
+
+                val candidate = contactName.lowercase()
+                val candidateWords = candidate.split(Regex("\\s+")).filter { it.isNotBlank() }
+
+                val rank = when {
+                    candidate == requested -> 0
+                    candidateWords.any { it == requested } -> 1
+                    requestedWords.size > 1 && requestedWords.all { word -> candidateWords.any { it == word } } -> 2
+                    candidate.startsWith("$requested ") || candidate.endsWith(" $requested") -> 3
+                    candidate.contains(" $requested ") -> 3
+                    candidate.startsWith(requested) || candidate.endsWith(requested) -> 4
+                    candidate.contains(requested) -> 5
+                    else -> Int.MAX_VALUE
+                }
+
+                if (rank != Int.MAX_VALUE) {
+                    candidates.add(ContactCandidate(contactName, number, rank))
                 }
             }
         }
 
-        if (foundNumber.isNullOrBlank()) {
+        if (candidates.isEmpty()) {
             val result = "I couldn't find $name in your contacts."
             speak(result); done(result); return
         }
 
-        placeCall(foundNumber!!, foundName ?: name, done, sim)
+        val bestRank = candidates.minOf { it.rank }
+        val best = candidates.filter { it.rank == bestRank }
+            .distinctBy { it.displayName.lowercase() to it.number }
+
+        if (best.size > 1) {
+            val names = best.take(3).joinToString(", ") { it.displayName }
+            val result = "I found more than one possible contact for $name: $names. Tell me the full name."
+            speak(result); done(result); return
+        }
+
+        val selected = best.first()
+        placeCall(selected.number, selected.displayName, done, sim)
     }
 
     private fun placeCall(number: String, displayName: String, done: (String) -> Unit, sim: Int? = null) {
