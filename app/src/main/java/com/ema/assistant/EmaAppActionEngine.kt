@@ -107,14 +107,8 @@ class EmaAppActionEngine(private val context: Context) {
                 val started = runCatching { context.startActivity(intent); true }.getOrDefault(false)
                 if (started) {
                     main.postDelayed({
-                        val ui = EmaAccessibilityService.inspectCurrentUi()
-                        if (ui.isNotBlank()) {
-                            EmaAccessibilityService.toggleMediaPlayback()
-                            done(true, "I opened $appName for $query and requested playback.")
-                        } else {
-                            done(false, "I opened $appName, but could not verify the playback screen.")
-                        }
-                    }, 1400L)
+                        ensureMediaPlaying(target.packageName, appName, query, done)
+                    }, 900L)
                     return
                 }
             }
@@ -281,14 +275,28 @@ class EmaAppActionEngine(private val context: Context) {
 
         runCatching { context.startActivity(intent) }.onSuccess {
             main.postDelayed({
-                EmaAccessibilityService.tapSendButtonWithVisualFallback(packageName) { sent ->
-                    if (sent) {
-                        done(true, "Message sent to " + recipientName + " on " + target.label + ".")
-                    } else {
-                        composeThroughAccessibleUi(target, recipientName, body, done)
-                    }
+                val screen = EmaAccessibilityService.currentScreenText(8000).lowercase()
+                val words = recipientName.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
+                val recipientVerified = words.all { screen.contains(it) }
+                if (!recipientVerified) {
+                    composeThroughAccessibleUi(target, recipientName, body, done)
+                    return@postDelayed
                 }
-            }, 1400L)
+                EmaAccessibilityService.tapSendButtonWithVisualFallback(packageName) { pressed ->
+                    if (!pressed) {
+                        composeThroughAccessibleUi(target, recipientName, body, done)
+                        return@tapSendButtonWithVisualFallback
+                    }
+                    main.postDelayed({
+                        val remaining = EmaAccessibilityService.focusedEditableText().trim()
+                        done(
+                            remaining.isBlank(),
+                            if (remaining.isBlank()) "Message sent to " + recipientName + " on " + target.label + "."
+                            else "I opened the correct chat for " + recipientName + ", but the message was not verified as sent."
+                        )
+                    }, 700L)
+                }
+            }, 800L)
         }.onFailure {
             composeThroughAccessibleUi(target, recipientName, body, done)
         }
@@ -315,7 +323,7 @@ class EmaAppActionEngine(private val context: Context) {
                     return@searchInPackage
                 }
                 main.postDelayed({
-                    val selected = EmaAccessibilityService.tapText(recipientName) || EmaAccessibilityService.tapFirstResult()
+                    val selected = EmaAccessibilityService.tapTextExact(recipientName)
                     if (!selected) {
                         done(false, "I found the search controls in " + target.label + ", but could not select " + recipientName + ".")
                         return@postDelayed
@@ -364,6 +372,30 @@ class EmaAppActionEngine(private val context: Context) {
             } else {
                 done(false, "I entered the message in $appLabel, but I could not find or activate its Send control.")
             }
+        }
+    }
+
+    private fun ensureMediaPlaying(
+        packageName: String,
+        appName: String,
+        query: String,
+        done: (Boolean, String) -> Unit
+    ) {
+        val ui = EmaAccessibilityService.inspectCurrentUi(12000).lowercase()
+        if (ui.contains("pause") || ui.contains("playing") || ui.contains("now playing")) {
+            done(true, "Playback is active for $query in $appName.")
+            return
+        }
+        EmaAccessibilityService.activateWithVisualFallback("Play") { activated ->
+            if (!activated) {
+                done(false, "I opened $appName for $query, but could not find its Play control.")
+                return@activateWithVisualFallback
+            }
+            main.postDelayed({
+                val after = EmaAccessibilityService.inspectCurrentUi(12000).lowercase()
+                val playing = after.contains("pause") || after.contains("playing") || after.contains("now playing")
+                done(playing, if (playing) "Playing $query in $appName." else "I activated Play in $appName, but could not verify playback.")
+            }, 600L)
         }
     }
 
