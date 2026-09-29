@@ -41,11 +41,41 @@ jobs:
           set -o pipefail
           gradle :app:compileDebugKotlin             --no-daemon             --console=plain             --stacktrace             --info 2>&1 | tee build-log.txt
 
-      - name: Build debug APK
-        id: build
+      - name: Set monotonic Android version
+        id: version
+        run: |
+          set -euo pipefail
+          version_code="$(date +%s)"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "version_name=0.9.$version_code" >> "$GITHUB_OUTPUT"
+
+      - name: Compile Kotlin
+        id: compile
+        env:
+          EMA_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
         run: |
           set -o pipefail
-          gradle :app:assembleDebug             --no-daemon             --console=plain             --stacktrace             --info 2>&1 | tee -a build-log.txt
+          gradle :app:compileDebugKotlin --no-daemon --console=plain --stacktrace --info 2>&1 | tee build-log.txt
+
+      - name: Build debug and release APKs
+        id: build
+        env:
+          EMA_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug :app:assembleRelease --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a build-log.txt
+
+      - name: Set APK paths
+        run: |
+          echo "RELEASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> "$GITHUB_ENV"
+          echo "DEBUG_APK=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Verify APK outputs
+        run: |
+          test -s "$RELEASE_APK"
+          test -s "$DEBUG_APK"
 
       - name: Upload build diagnostics
         if: always()
@@ -61,6 +91,33 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ema-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: ${{ env.DEBUG_APK }}
+          if-no-files-found: error
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish latest release to AEM Store
+        if: success()
+        env:
+          APK: ${{ env.RELEASE_APK }}
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "${ANDROID_HOME:-/opt/android-sdk}" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          signing_cert=""
+          AAPT="$(find "${ANDROID_HOME:-/opt/android-sdk}" -type f -name aapt | sort -V | tail -n 1)"
+          badging="$("$AAPT" dump badging "$APK" | head -n 1)"
+          package="$(sed -n "s/.*package: name='\\([^']*\\)'.*/\\1/p" <<<"$badging")"
+          version_code="$(sed -n "s/.*versionCode='\\([^']*\\)'.*/\\1/p" <<<"$badging")"
+          version_name="$(sed -n "s/.*versionName='\\([^']*\\)'.*/\\1/p" <<<"$badging")"
+          app_name="$(sed -n "s/.*application-label='\\([^']*\\)'.*/\\1/p" <<<"$badging")"
+          size_bytes="$(stat -c '%s' "$APK")"
+          sha256="$(sha256sum "$APK" | awk '{print $1}')"
+          source_release_id="github-actions-${{ github.run_id }}"
+          meta="$(jq -n --arg action prepare --arg repo "Emmanuel001afk/EMA" --argjson run_id "${{ github.run_id }}" --arg filename "app-release.apk" --arg application_name "$app_name" --arg version_name "$version_name" --argjson version_code "$version_code" --arg channel stable --arg package_identity "$package" --arg title "EMA Digital Assistant APK" --arg source_release_id "$source_release_id" --arg signing_certificate_sha256 "$signing_cert" '{action:$action,repo:$repo,run_id:$run_id,filename:$filename,application_name:$application_name,version_name:$version_name,version_code:$version_code,channel:$channel,package_identity:$package_identity,title:$title,source_release_id:$source_release_id,signing_certificate_sha256:$signing_certificate_sha256}')"
+          prepare="$(curl -fsS -X POST "https://wfvvmyixqcwosmuldxoq.supabase.co/functions/v1/aem-publish-github-artifact" -H "Content-Type: application/json" -H "x-github-token: ${{ github.token }}" --data "$meta")"
+          upload_url="$(jq -er '.upload_url' <<<"$prepare")"
+          object_path="$(jq -er '.path // .Key' <<<"$prepare")"
+          curl -fsS -X PUT "$upload_url" -H "Content-Type: application/vnd.android.package-archive" -H "Content-Length: $size_bytes" -H "x-upsert: true" --upload-file "$APK"
+          finalize="$(jq -n --arg action finalize --arg repo "Emmanuel001afk/EMA" --argjson run_id "${{ github.run_id }}" --arg filename "app-release.apk" --arg application_name "$app_name" --arg version_name "$version_name" --argjson version_code "$version_code" --arg channel stable --arg package_identity "$package" --arg title "EMA Digital Assistant APK" --arg source_release_id "$source_release_id" --arg signing_certificate_sha256 "$signing_cert" --arg object_path "$object_path" --arg path "$object_path" --argjson size_bytes "$size_bytes" --arg sha256 "$sha256" '{action:$action,repo:$repo,run_id:$run_id,filename:$filename,application_name:$app_name,version_name:$version_name,version_code:$version_code,channel:$channel,package_identity:$package,title:$title,source_release_id:$source_release_id,signing_certificate_sha256:$signing_certificate_sha256,object_path:$object_path,path:$object_path,size_bytes:$size_bytes,sha256:$sha256}')"
+          curl -fsS -X POST "https://wfvvmyixqcwosmuldxoq.supabase.co/functions/v1/aem-publish-github-artifact" -H "Content-Type: application/json" -H "x-github-token: ${{ github.token }}" --data "$finalize"
