@@ -57,6 +57,8 @@ class EmaAccessibilityService : AccessibilityService() {
         fun setFocusedText(text: String): Boolean =
             instance?.setFocusedTextInternal(text) == true
 
+        fun focusedEditableText(): String = instance?.focusedEditableTextInternal().orEmpty()
+
         fun scroll(direction: String): Boolean =
             instance?.scrollInternal(direction) == true
 
@@ -347,6 +349,12 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         return field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun focusedEditableTextInternal(): String {
+        val root = rootInActiveWindow ?: return ""
+        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root) ?: return ""
+        return if (field.isEditable) field.text?.toString().orEmpty() else ""
     }
 
     private fun performPendingSearch() {
