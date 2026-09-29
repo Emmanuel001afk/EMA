@@ -3,6 +3,7 @@ package com.ema.assistant
 import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.MediaStore
 import android.os.Handler
 import android.os.Looper
@@ -50,7 +51,20 @@ class EmaAppActionEngine(private val context: Context) {
     }
 
     fun openApp(name: String): AppTarget? {
-        val target = findApp(name) ?: return null
+        val wanted = name.trim()
+        if (wanted.equals("default browser", true) ||
+            wanted.equals("browser", true) ||
+            wanted.equals("default web browser", true)
+        ) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val resolved = intent.resolveActivity(pm) ?: return null
+            val label = resolved.loadLabel(pm).toString()
+            context.startActivity(intent)
+            return AppTarget(label = label, packageName = resolved.activityInfo.packageName)
+        }
+
+        val target = findApp(wanted) ?: return null
         val launch = pm.getLaunchIntentForPackage(target.packageName) ?: return null
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(launch)
@@ -105,7 +119,16 @@ class EmaAppActionEngine(private val context: Context) {
      * an editable/search node becomes available.
      */
     fun openAndSearch(appName: String, query: String, done: (Boolean, String) -> Unit) {
-        val target = openApp(appName)
+        val wanted = appName.trim()
+        if (wanted.equals("default browser", true) ||
+            wanted.equals("browser", true) ||
+            wanted.equals("default web browser", true)
+        ) {
+            searchWithDefaultBrowser(query, done)
+            return
+        }
+
+        val target = openApp(wanted)
         if (target == null) {
             done(false, "I couldn't find or open $appName on this phone.")
             return
@@ -118,8 +141,27 @@ class EmaAppActionEngine(private val context: Context) {
             done(
                 success,
                 if (success) "I searched ${target.label} for $query."
-                else "I opened ${target.label}, but its search field was not accessible."
+                else "I opened ${target.label}, but its search controls were not accessible."
             )
+        }
+    }
+
+    private fun searchWithDefaultBrowser(query: String, done: (Boolean, String) -> Unit) {
+        if (query.isBlank()) {
+            done(false, "Tell me what to search for.")
+            return
+        }
+        val intent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        runCatching {
+            intent.resolveActivity(pm) ?: throw IllegalStateException("No browser")
+            context.startActivity(intent)
+            done(true, "Searching the default browser for " + query + ".")
+        }.onFailure {
+            done(false, "I could not open the default browser.")
         }
     }
 
