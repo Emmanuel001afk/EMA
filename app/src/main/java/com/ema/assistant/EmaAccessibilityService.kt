@@ -292,16 +292,18 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (node == null || !node.isVisibleToUser || !node.isEnabled) return null
-            val label = (
-                node.text?.toString().orEmpty() + " " +
-                    node.contentDescription?.toString().orEmpty()
-            ).trim().lowercase()
+            val text = node.text?.toString().orEmpty().trim().lowercase()
+            val desc = node.contentDescription?.toString().orEmpty().trim().lowercase()
+            val resource = node.viewIdResourceName?.lowercase().orEmpty()
+            val label = "$text $desc $resource"
 
-            val isSend = label == "send" ||
-                label == "send message" ||
-                label.contains("send message") ||
-                label == "send email" ||
-                label.contains("send email")
+            val isSend = text == "send" ||
+                desc == "send" ||
+                desc.contains("send message") ||
+                desc.contains("send") ||
+                resource.contains(":id/send") ||
+                resource.endsWith("/send") ||
+                resource.endsWith("/send_button")
 
             if (isSend && node.isClickable) return node
             for (i in 0 until node.childCount) {
@@ -311,7 +313,22 @@ class EmaAccessibilityService : AccessibilityService() {
             return null
         }
 
-        return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        val button = find(root) ?: return false
+        if (button.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val bounds = Rect().also { button.getBoundsInScreen(it) }
+            if (!bounds.isEmpty) {
+                val x = bounds.centerX().toFloat()
+                val y = bounds.centerY().toFloat()
+                val path = android.graphics.Path().apply { moveTo(x, y) }
+                val gesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+                    .build()
+                return dispatchGesture(gesture, null, null)
+            }
+        }
+        return false
     }
 
     private fun setFocusedTextInternal(text: String): Boolean {
