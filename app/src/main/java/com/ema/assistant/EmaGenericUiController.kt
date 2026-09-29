@@ -10,16 +10,17 @@ object EmaGenericUiController {
 
     fun tap(target: String, callback: (Boolean, String) -> Unit) {
         val before = inspect()
-        val ok = EmaAccessibilityService.activate(target)
-        if (!ok) {
-            callback(false, "I could not find an accessible control named $target.")
-            return
+        EmaAccessibilityService.activateWithVisualFallback(target) { ok ->
+            if (!ok) {
+                callback(false, "I could not find or activate $target through the accessible or visual screen controls.")
+                return@activateWithVisualFallback
+            }
+            main.postDelayed({
+                val after = inspect()
+                val changed = after.isNotBlank() && after != before
+                callback(true, if (changed) "Activated $target and verified the screen changed." else "Activated $target; the control was activated, but Android exposed no clear screen change to verify.")
+            }, 450L)
         }
-        main.postDelayed({
-            val after = inspect()
-            val changed = after.isNotBlank() && after != before
-            callback(true, if (changed) "Activated $target and verified the screen changed." else "Activated $target; Android exposed no clear screen change to verify.")
-        }, 450L)
     }
 
     fun type(text: String, callback: (Boolean, String) -> Unit) {
