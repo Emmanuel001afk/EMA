@@ -134,7 +134,17 @@ class EmaCommandRouter(
                 speak(message); done(message)
             }
 
-            lower.startsWith("call ") -> callContact(command.substringAfter("call ").trim(), done)
+            lower.startsWith("call ") || lower.startsWith("dial ") || lower.startsWith("phone ") ||
+                lower.startsWith("ring ") || lower.startsWith("call up ") -> {
+                val name = when {
+                    lower.startsWith("call ") -> command.substringAfter("call ").trim()
+                    lower.startsWith("dial ") -> command.substringAfter("dial ").trim()
+                    lower.startsWith("phone ") -> command.substringAfter("phone ").trim()
+                    lower.startsWith("ring ") -> command.substringAfter("ring ").trim()
+                    else -> command.substringAfter("call up ").trim()
+                }
+                callContact(name, done)
+            }
 
             isAppSearchCommand(lower) -> {
                 val parsed = parseAppSearch(command)
@@ -354,6 +364,8 @@ class EmaCommandRouter(
     }
 
     private fun isAppSearchCommand(lower: String): Boolean {
+        // App-directed search is a phone action, not a web-search fallback.
+        if (isCallIntent(lower)) return false
         if (!lower.contains("search") && !lower.contains("find")) return false
 
         // Both natural word orders are supported:
@@ -364,10 +376,14 @@ class EmaCommandRouter(
         ).matches(lower)
 
         val appLast = Regex(
-            "(?i)^(?:search(?:\\s+for)?|find)\\s+.+\\s+(?:on|in|using)\\s+.+$"
+            "(?i)^(?:search(?:\\s+for)?|find)\\s+.+?\\s+(?:on|in|using)\\s+.+$"
         ).matches(lower)
 
-        return appFirst || appLast
+        val namedApp = Regex(
+            "(?i)^(?:search|find)\\s+[^ ]+\\s+(?:for|about)\\s+.+$"
+        ).matches(lower)
+
+        return appFirst || appLast || namedApp
     }
 
     private fun parseAppSearch(command: String): Pair<String, String>? {
@@ -398,8 +414,22 @@ class EmaCommandRouter(
             if (app.isNotBlank() && query.isNotBlank()) return app to query
         }
 
+        val namedApp = Regex(
+            "(?i)^(?:search|find)\\s+(.+?)\\s+(?:for|about)\\s+(.+)$"
+        ).find(command)
+        if (namedApp != null) {
+            val app = namedApp.groupValues[1].trim()
+            val query = namedApp.groupValues[2].trim()
+            if (app.isNotBlank() && query.isNotBlank()) return app to query
+        }
+
         return null
     }
+
+    private fun isCallIntent(lower: String): Boolean =
+        lower.startsWith("call ") || lower.startsWith("dial ") ||
+            lower.startsWith("phone ") || lower.startsWith("ring ") ||
+            lower.startsWith("call up ")
 
     private fun isMediaPlayCommand(lower: String): Boolean =
         lower.startsWith("play ") || lower.startsWith("listen to ")
