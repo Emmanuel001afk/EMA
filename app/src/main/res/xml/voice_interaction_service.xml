@@ -3,5 +3,4 @@
     android:sessionService="com.ema.assistant.EmaVoiceInteractionSessionService"
     android:recognitionService="com.ema.assistant.EmaRecognitionService"
     android:supportsAssist="true"
-    android:supportsLaunchVoiceAssistFromKeyguard="true"
     android:supportsLocalInteraction="true" />
