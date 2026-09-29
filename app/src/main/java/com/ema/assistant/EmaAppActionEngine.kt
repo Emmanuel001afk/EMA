@@ -245,6 +245,7 @@ class EmaAppActionEngine(private val context: Context) {
         }.onFailure {
             composeThroughAccessibleUi(target, recipientName, body, done)
         }
+    }
 
     private fun composeThroughAccessibleUi(target: AppTarget, recipientName: String, body: String, done: (Boolean, String) -> Unit) {
         val opened = openApp(target.label)
