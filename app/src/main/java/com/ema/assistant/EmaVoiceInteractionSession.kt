@@ -1,6 +1,7 @@
 package com.ema.assistant
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
@@ -157,7 +158,7 @@ class EmaVoiceInteractionSession(context: Context) :
 
         val content = state.assistContent
         if (content != null) {
-            val description = content.description?.toString().orEmpty()
+            val description = content.getDescription()?.toString().orEmpty()
             if (description.isNotBlank()) {
                 screenText = (screenText + "\n" + description).trim().take(12000)
             }
