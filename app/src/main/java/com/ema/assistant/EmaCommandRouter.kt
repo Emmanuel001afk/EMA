@@ -155,6 +155,13 @@ class EmaCommandRouter(
                 openMaps(destination, done)
             }
 
+            lower.startsWith("go to ") -> {
+                val targetPhrase = command.substringAfter("go to ").trim()
+                if (!handleAppSectionNavigation(targetPhrase, done)) {
+                    openTarget(targetPhrase, done)
+                }
+            }
+
             lower.startsWith("go to ") && Regex("(?i)^go\\s+to\\s+.+\\s+(?:on|in|using)\\s+.+$").matches(command) -> {
                 val match = Regex("(?i)^go\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+)$").find(command)
                 if (match == null) {
@@ -484,6 +491,35 @@ class EmaCommandRouter(
         }
         speak(result); done(result)
         return true
+    }
+
+    private fun handleAppSectionNavigation(targetPhrase: String, done: (String) -> Unit): Boolean {
+        val words = targetPhrase.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.size < 2) return false
+
+        // Find the longest installed launcher-app name at the beginning of the
+        // phrase. The remaining words are the requested destination/control
+        // inside that app, not another app name.
+        for (count in words.size - 1 downTo 1) {
+            val appName = words.take(count).joinToString(" ")
+            val target = appEngine.findApp(appName) ?: continue
+            val section = words.drop(count).joinToString(" ").trim()
+            if (section.isBlank()) return false
+            appEngine.openApp(target.label)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                EmaGenericUiController.tap(section) { ok, message ->
+                    if (ok) {
+                        val result = "Opened " + section + " in " + target.label + "."
+                        speak(result); done(result)
+                    } else {
+                        val result = "I opened " + target.label + ", but could not find " + section + " on its current screen."
+                        speak(result); done(result)
+                    }
+                }
+            }, 450L)
+            return true
+        }
+        return false
     }
 
     private fun isSaveContactCommand(lower: String): Boolean =
