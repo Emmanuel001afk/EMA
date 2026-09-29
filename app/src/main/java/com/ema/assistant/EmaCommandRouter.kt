@@ -97,6 +97,17 @@ class EmaCommandRouter(
                 globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "Showing notifications.", done)
             }
 
+            lower == "analyze this image" || lower == "analyze the screen visually" || lower == "what am i looking at visually" -> {
+                EmaAccessibilityService.describeScreenImage { labels ->
+                    val ocr = EmaAccessibilityService.currentScreenText(8000)
+                    val prompt = "Describe what is visible on the current Android screen. Image labels: " + labels + "\\nVisible text: " + ocr
+                    CentralHubClient(context).ask(prompt) { answer ->
+                        val result = answer.ifBlank { if (labels.isBlank()) "I could not identify visual content on this screen." else "I can identify: " + labels }
+                        speak(result); done(result)
+                    }
+                }
+            }
+
             lower == "what time is it" || lower == "tell me the time" || lower == "current time" -> {
                 val time = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date())
                 val message = "It is " + time + "."
