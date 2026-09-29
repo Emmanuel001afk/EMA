@@ -5,6 +5,11 @@ import android.app.Activity
 import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import android.os.Environment
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import android.os.Bundle
 import android.os.Build
 import android.speech.RecognizerIntent
@@ -70,13 +75,55 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(actions)
 
         root.addView(Button(this).apply {
+            text = "Open EMA access & permissions"
+            setOnClickListener { openAccessSettings() }
+        })
+        root.addView(Button(this).apply {
             text = "Set EMA as digital assistant"
             setOnClickListener { requestAssistantRole() }
+        })
+        root.addView(Button(this).apply {
+            text = "Open assistant settings"
+            setOnClickListener { openAssistantSettings() }
         })
         root.addView(Button(this).apply {
             text = "Enable EMA screen control"
             setOnClickListener { openAccessibilitySettings() }
         })
+        root.addView(Button(this).apply {
+            text = "Enable notification access"
+            setOnClickListener { openNotificationListenerSettings() }
+        })
+        root.addView(Button(this).apply {
+            text = "Enable broad file access"
+            setOnClickListener { openAllFilesAccess() }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "Voice"
+            textSize = 16f
+            setPadding(0, 24, 0, 4)
+        })
+        val voiceSpinner = Spinner(this)
+        root.addView(voiceSpinner)
+        tts.setOnUtteranceProgressListener(null)
+        if (tts.engines.isNotEmpty()) {
+            val voices = tts.voices.orEmpty()
+                .filter { it.locale.language == Locale.getDefault().language }
+                .sortedBy { it.name }
+                .take(30)
+            val labels = if (voices.isEmpty()) listOf("Default voice") else voices.map { it.name }
+            voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+            voiceSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    voices.getOrNull(position)?.let {
+                        tts.voice = it
+                        getSharedPreferences("ema", MODE_PRIVATE).edit().putString("voice_name", it.name).apply()
+                    }
+                }
+            })
+        }
         root.addView(TextView(this).apply {
             text = "System assistant: ${if (isAssistantRoleHeld()) "enabled" else "not enabled"}"
             textSize = 14f
@@ -109,7 +156,28 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     } else false
 
     private fun openAccessibilitySettings() {
-        startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    }
+
+    private fun openAssistantSettings() {
+        runCatching { startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) }
+            .onFailure { startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
+    }
+
+    private fun openNotificationListenerSettings() {
+        runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+    }
+
+    private fun openAllFilesAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val uri = Uri.parse("package:$packageName")
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, uri)) }
+                .onFailure { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+        }
+    }
+
+    private fun openAccessSettings() {
+        openAssistantSettings()
     }
 
     private fun requestNotificationPermission() {
@@ -121,10 +189,39 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun requestAssistantRole() {
         val rm = getSystemService(RoleManager::class.java)
-        if (rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT) && !rm.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
-            startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), 20)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT) &&
+            !rm.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
+            runCatching {
+                startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), REQUEST_ASSISTANT)
+            }.onFailure {
+                status.text = "Android did not open the assistant-role prompt. Opening the system assistant settings."
+                openAssistantSettings()
+            }
+        } else if (isAssistantRoleHeld()) {
+            status.text = "EMA is already the system assistant."
         } else {
-            status.text = "EMA is already the assistant, or this device does not expose the assistant role."
+            status.text = "This phone is not exposing the assistant role to EMA. Opening system assistant settings."
+            openAssistantSettings()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::status.isInitialized) {
+            status.text = if (isAssistantRoleHeld()) "EMA is the system assistant." else "EMA is ready. System assistant is not enabled yet."
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_ASSISTANT) {
+            if (resultCode == Activity.RESULT_OK && isAssistantRoleHeld()) {
+                status.text = "EMA is now the system assistant."
+            } else {
+                status.text = "The assistant role was not granted. Use the system assistant settings to select EMA."
+                openAssistantSettings()
+            }
         }
     }
 
@@ -188,7 +285,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onInit(code: Int) {
-        if (code == TextToSpeech.SUCCESS) tts.language = Locale.getDefault()
+        if (code == TextToSpeech.SUCCESS) {
+            tts.language = Locale.getDefault()
+            val saved = getSharedPreferences("ema", MODE_PRIVATE).getString("voice_name", null)
+            tts.voices?.firstOrNull { it.name == saved }?.let { tts.voice = it }
+        }
     }
 
     override fun onDestroy() {
@@ -200,5 +301,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     companion object {
         private const val REQUEST_MIC = 10
         private const val REQUEST_NOTIFICATIONS = 11
+        private const val REQUEST_ASSISTANT = 20
     }
 }
