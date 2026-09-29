@@ -131,12 +131,8 @@ class EmaAppActionEngine(private val context: Context) {
                     return@postDelayed
                 }
                 main.postDelayed({
-                    val played = EmaAccessibilityService.toggleMediaPlayback()
-                    val ui = EmaAccessibilityService.inspectCurrentUi()
-                    done(played && ui.isNotBlank(),
-                        if (played && ui.isNotBlank()) "I selected $query in $appName and sent the play command."
-                        else "I selected $query in $appName, but could not verify playback.")
-                }, 900L)
+                    ensureMediaPlaying(target.packageName, appName, query, done)
+                }, 500L)
             }, 1000L)
         }
     }
@@ -182,8 +178,14 @@ class EmaAppActionEngine(private val context: Context) {
                 return@searchInPackage
             }
             main.postDelayed({
-                val ui = EmaAccessibilityService.inspectCurrentUi()
-                done(ui.isNotBlank(), if (ui.isNotBlank()) "I searched " + target.label + " for " + query + " and re-inspected the results." else "I searched " + target.label + ", but Android exposed no result UI to verify.")
+                val ui = EmaAccessibilityService.inspectCurrentUi(12000)
+                val queryWords = query.lowercase().split(Regex("\\s+")).filter { it.length > 1 }
+                val foundQuery = queryWords.isEmpty() || queryWords.any { ui.lowercase().contains(it) }
+                done(
+                    foundQuery,
+                    if (foundQuery) "I searched " + target.label + " for " + query + "."
+                    else "I opened " + target.label + " and submitted the search, but could not verify results for " + query + "."
+                )
             }, 650L)
         }
     }
