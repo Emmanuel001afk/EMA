@@ -307,8 +307,7 @@ class EmaAppActionEngine(private val context: Context) {
                             done(false, "I opened " + target.label + ", but its recipient/composer controls were not accessible.")
                         } else {
                             main.postDelayed({
-                                val sent = EmaAccessibilityService.tapSendButton(target.packageName)
-                                done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message in " + target.label + ", but could not verify Send.")
+                                attemptSendAndVerify(target.packageName, target.label, recipientName, body, 0, done)
                             }, 500L)
                         }
                     }
@@ -335,6 +334,35 @@ class EmaAppActionEngine(private val context: Context) {
             }
         }, 900L)
     }
+    private fun attemptSendAndVerify(
+        packageName: String,
+        appLabel: String,
+        recipientName: String,
+        body: String,
+        attempt: Int,
+        done: (Boolean, String) -> Unit
+    ) {
+        if (EmaAccessibilityService.tapSendButton(packageName)) {
+            main.postDelayed({
+                val ui = EmaAccessibilityService.currentScreenText(12000).lowercase()
+                val bodyStillVisible = body.trim().let { it.isNotBlank() && ui.contains(it.lowercase()) }
+                if (!bodyStillVisible) {
+                    done(true, "Message sent to $recipientName on $appLabel.")
+                } else if (attempt < 2) {
+                    attemptSendAndVerify(packageName, appLabel, recipientName, body, attempt + 1, done)
+                } else {
+                    done(false, "I pressed Send in $appLabel, but could not verify that the message left the composer.")
+                }
+            }, 900L)
+        } else if (attempt < 2) {
+            main.postDelayed({
+                attemptSendAndVerify(packageName, appLabel, recipientName, body, attempt + 1, done)
+            }, 600L)
+        } else {
+            done(false, "I entered the message in $appLabel, but I could not find or activate its Send control.")
+        }
+    }
+
     /**
      * Open an app, search, wait for its new UI, then try to activate a named
      * result. This remains generic and does not depend on a provider SDK.
