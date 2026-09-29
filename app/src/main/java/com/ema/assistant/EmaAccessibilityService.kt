@@ -89,6 +89,31 @@ class EmaAccessibilityService : AccessibilityService() {
         fun tapSendButton(packageName: String): Boolean =
             instance?.tapSendButtonInternal(packageName) == true
 
+        /**
+         * Try the semantic Accessibility route first. If the target app does
+         * not expose its Send control, fall back to OCR over the current
+         * screenshot and tap the visual location of the Send label.
+         */
+        fun tapSendButtonWithVisualFallback(
+            packageName: String,
+            callback: (Boolean) -> Unit
+        ) {
+            val service = instance
+            if (service == null) {
+                callback(false)
+                return
+            }
+            if (service.tapSendButtonInternal(packageName)) {
+                callback(true)
+                return
+            }
+            service.captureAndTapTextVisually(
+                packageName = packageName,
+                target = "send",
+                callback = callback
+            )
+        }
+
         fun toggleMediaPlayback(): Boolean =
             instance?.toggleMediaPlaybackInternal() == true
 
@@ -452,6 +477,76 @@ class EmaAccessibilityService : AccessibilityService() {
             .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 50))
             .build()
         return dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * Visual action fallback for controls that are visible in the screenshot
+     * but omitted from the Accessibility node tree. ML Kit OCR supplies the
+     * text bounds, then EMA dispatches a normal accessibility gesture to that
+     * visual location.
+     */
+    private fun captureAndTapTextVisually(
+        packageName: String,
+        target: String,
+        callback: (Boolean) -> Unit
+    ) {
+        val root = rootInActiveWindow
+        if (root?.packageName?.toString() != packageName || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback(false)
+            return
+        }
+
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val bitmap = runCatching {
+                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                }.getOrNull()
+                screenshot.hardwareBuffer.close()
+                if (bitmap == null) {
+                    callback(false)
+                    return
+                }
+
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                    .addOnSuccessListener { result ->
+                        val wanted = target.trim().lowercase()
+                        val match = result.textBlocks
+                            .flatMap { it.lines }
+                            .flatMap { it.elements }
+                            .firstOrNull {
+                                val text = it.text.trim().lowercase()
+                                text == wanted || text.contains(wanted)
+                            }
+
+                        if (match?.boundingBox == null) {
+                            callback(false)
+                        } else {
+                            val box = match.boundingBox!!
+                            val path = android.graphics.Path().apply {
+                                moveTo(box.centerX().toFloat(), box.centerY().toFloat())
+                            }
+                            val gesture = GestureDescription.Builder()
+                                .addStroke(
+                                    GestureDescription.StrokeDescription(path, 0, 90)
+                                )
+                                .build()
+                            callback(dispatchGesture(gesture, null, null))
+                        }
+                        recognizer.close()
+                        bitmap.recycle()
+                    }
+                    .addOnFailureListener {
+                        recognizer.close()
+                        bitmap.recycle()
+                        callback(false)
+                    }
+            }
+
+            override fun onFailure(errorCode: Int) {
+                callback(false)
+            }
+        })
     }
 
     private fun captureAndLabel(callback: (String) -> Unit) {
