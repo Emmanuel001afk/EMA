@@ -63,6 +63,9 @@ class EmaAccessibilityService : AccessibilityService() {
         fun tapFirstResult(): Boolean =
             instance?.tapFirstResultInternal() == true
 
+        fun tapSendButton(packageName: String): Boolean =
+            instance?.tapSendButtonInternal(packageName) == true
+
         fun toggleMediaPlayback(): Boolean =
             instance?.toggleMediaPlaybackInternal() == true
 
@@ -174,6 +177,34 @@ class EmaAccessibilityService : AccessibilityService() {
         collect(root)
         val candidate = candidates.firstOrNull() ?: return false
         return candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    private fun tapSendButtonInternal(packageName: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != packageName) return false
+
+        fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return null
+            val label = (
+                node.text?.toString().orEmpty() + " " +
+                    node.contentDescription?.toString().orEmpty()
+            ).trim().lowercase()
+
+            val isSend = label == "send" ||
+                label == "send message" ||
+                label.contains("send message") ||
+                label == "send email" ||
+                label.contains("send email")
+
+            if (isSend && node.isClickable) return node
+            for (i in 0 until node.childCount) {
+                val found = find(node.getChild(i))
+                if (found != null) return found
+            }
+            return null
+        }
+
+        return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
     private fun setFocusedTextInternal(text: String): Boolean {
