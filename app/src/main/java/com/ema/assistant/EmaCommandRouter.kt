@@ -71,6 +71,11 @@ class EmaCommandRouter(
                 handleReminder(command, done)
             }
 
+            lower.startsWith("create a calendar task ") || lower.startsWith("calendar task ") ||
+                lower.startsWith("set a calendar task ") -> {
+                handleCalendarTask(command, done)
+            }
+
             lower.startsWith("create a calendar event ") || lower.startsWith("add calendar event ") ||
                 lower.startsWith("calendar event ") || lower.startsWith("create an event ") -> {
                 handleCalendarEvent(command, done)
@@ -1114,6 +1119,60 @@ class EmaCommandRouter(
         val formatted = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(trigger))
         val result = if (ok) "Reminder set for $formatted: $text." else "Android could not schedule that reminder."
         speak(result); done(result)
+    }
+
+    private fun handleCalendarTask(command: String, done: (String) -> Unit) {
+        val taskText = command
+            .replaceFirst(Regex("(?i)^create a calendar task\\s*"), "")
+            .replaceFirst(Regex("(?i)^calendar task\\s*"), "")
+            .replaceFirst(Regex("(?i)^set a calendar task\\s*"), "")
+            .trim()
+        if (taskText.isBlank()) {
+            val result = "Tell me what the calendar task should be."
+            speak(result); done(result); return
+        }
+        val calendar = appEngine.findApp("Calendar")
+        if (calendar == null) {
+            val result = "I could not find a Calendar app on this phone."
+            speak(result); done(result); return
+        }
+        appEngine.openApp(calendar.label)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            EmaGenericUiController.tap("Task") { found, _ ->
+                if (!found) {
+                    EmaGenericUiController.tap("Tasks") { foundTasks, _ ->
+                        if (!foundTasks) {
+                            val result = "I opened Calendar, but Android did not expose its Task control."
+                            speak(result); done(result)
+                        } else {
+                            createTaskThroughCurrentUi(taskText, done)
+                        }
+                    }
+                } else {
+                    createTaskThroughCurrentUi(taskText, done)
+                }
+            }
+        }, 900L)
+    }
+
+    private fun createTaskThroughCurrentUi(text: String, done: (String) -> Unit) {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val opened = EmaAccessibilityService.activate("Add task") || EmaAccessibilityService.activate("Create task") || EmaAccessibilityService.activate("New task")
+            if (!opened) {
+                EmaGenericUiController.type(text) { typed, _ ->
+                    val result = if (typed) "I entered the calendar task." else "I could not access the calendar task editor."
+                    speak(result); done(result)
+                }
+                return@postDelayed
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                EmaGenericUiController.type(text) { typed, _ ->
+                    val saved = EmaAccessibilityService.activate("Save")
+                    val result = if (typed && saved) "Calendar task created." else if (typed) "I entered the calendar task, but could not verify Save." else "I could not enter the calendar task."
+                    speak(result); done(result)
+                }
+            }, 500L)
+        }, 500L)
     }
 
     private fun handleCalendarEvent(command: String, done: (String) -> Unit) {
