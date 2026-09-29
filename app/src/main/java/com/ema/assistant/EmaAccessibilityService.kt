@@ -1,6 +1,7 @@
 package com.ema.assistant
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.os.Bundle
 import android.graphics.Bitmap
 import android.graphics.Rect
