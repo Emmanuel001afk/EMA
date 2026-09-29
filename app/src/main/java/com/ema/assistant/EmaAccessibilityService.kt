@@ -11,6 +11,8 @@ import android.os.Looper
 import android.os.Handler
 import android.view.Display
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.label.ImageLabeling
+import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import android.view.accessibility.AccessibilityEvent
@@ -86,6 +88,10 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun toggleMediaPlayback(): Boolean =
             instance?.toggleMediaPlaybackInternal() == true
+
+        fun describeScreenImage(callback: (String) -> Unit) {
+            instance?.captureAndLabel(callback) ?: callback("")
+        }
 
         fun readScreenWithOcr(callback: (String) -> Unit) {
             instance?.captureAndRecognize(callback) ?: callback("")
@@ -420,6 +426,33 @@ class EmaAccessibilityService : AccessibilityService() {
             .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 50))
             .build()
         return dispatchGesture(gesture, null, null)
+    }
+
+    private fun captureAndLabel(callback: (String) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback("")
+            return
+        }
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val bitmap = runCatching {
+                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                }.getOrNull()
+                screenshot.hardwareBuffer.close()
+                if (bitmap == null) { callback(""); return }
+                val labeler = ImageLabeling.getClient(ImageLabelerOptions.Builder().setConfidenceThreshold(0.55f).build())
+                labeler.process(InputImage.fromBitmap(bitmap, 0))
+                    .addOnSuccessListener { labels ->
+                        callback(labels.take(12).joinToString(", ") { it.text })
+                        labeler.close(); bitmap.recycle()
+                    }
+                    .addOnFailureListener {
+                        callback("")
+                        labeler.close(); bitmap.recycle()
+                    }
+            }
+            override fun onFailure(errorCode: Int) { callback("") }
+        })
     }
 
     private fun captureAndRecognize(callback: (String) -> Unit) {
