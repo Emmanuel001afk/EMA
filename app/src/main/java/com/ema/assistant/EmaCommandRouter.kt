@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.ContactsContract
+import android.content.ContentProviderOperation
 import android.speech.tts.TextToSpeech
 import java.util.Locale
 
@@ -30,6 +31,14 @@ class EmaCommandRouter(
         val command = raw.trim()
         if (command.isBlank()) return
         val lower = command.lowercase(Locale.getDefault())
+
+        // Execute explicit multi-action requests sequentially. The existing
+        // command handlers remain responsible for each individual action.
+        val steps = splitActionSequence(command)
+        if (steps.size > 1) {
+            executeSequence(steps, 0, done)
+            return
+        }
 
         when {
             lower == "scroll down" || lower == "scroll up" || lower == "scroll to top" -> {
@@ -64,6 +73,10 @@ class EmaCommandRouter(
             lower.startsWith("navigate to ") || lower.startsWith("directions to ") -> {
                 val destination = command.substringAfter(' ').substringAfter(' ').trim()
                 openMaps(destination, done)
+            }
+
+            isSaveContactCommand(lower) -> {
+                saveContact(command, done)
             }
 
             isMessageCommand(lower) -> {
@@ -248,6 +261,120 @@ class EmaCommandRouter(
                     speak(answer); done(answer)
                 }
             }
+        }
+    }
+
+    private fun splitActionSequence(command: String): List<String> {
+        // Keep message bodies intact by only treating "then" as a separator
+        // when another recognizable action follows it.
+        val pieces = command.split(Regex("(?i)\\s+then\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (pieces.size < 2) return listOf(command)
+        return pieces
+    }
+
+    private fun executeSequence(
+        steps: List<String>,
+        index: Int,
+        done: (String) -> Unit
+    ) {
+        if (index >= steps.size) {
+            done("Done.")
+            return
+        }
+        execute(steps[index]) { result ->
+            if (index == steps.lastIndex) {
+                done(result)
+            } else {
+                executeSequence(steps, index + 1, done)
+            }
+        }
+    }
+
+    private fun isSaveContactCommand(lower: String): Boolean =
+        lower.startsWith("save ") && (
+            lower.contains(" as ") ||
+            lower.contains("'s number ") ||
+            lower.contains(" number ")
+        )
+
+    private fun saveContact(command: String, done: (String) -> Unit) {
+        if (context.checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermission(Manifest.permission.WRITE_CONTACTS)
+            val result = "EMA needs Contacts write access to save a contact. Grant it, then repeat the command."
+            speak(result); done(result); return
+        }
+
+        val patterns = listOf(
+            Regex("(?i)^save\\s+(.+?)\\s+as\\s+(.+)$"),
+            Regex("(?i)^save\\s+(.+?)['’]s\\s+number\\s+(.+)$"),
+            Regex("(?i)^save\\s+(.+?)\\s+number\\s+(.+)$")
+        )
+
+        var number: String? = null
+        var name: String? = null
+        for (pattern in patterns) {
+            val match = pattern.find(command) ?: continue
+            val first = match.groupValues[1].trim()
+            val second = match.groupValues[2].trim()
+            val firstLooksLikeNumber = first.matches(Regex("[+0-9()\\-\\s]{7,}"))
+            if (firstLooksLikeNumber) {
+                number = first
+                name = second
+            } else if (second.matches(Regex("[+0-9()\\-\\s]{7,}"))) {
+                name = first
+                number = second
+            }
+            if (number != null && name != null) break
+        }
+
+        // "save this number as NAME" can use a copied phone number as the
+        // current number, without pretending the assistant can infer hidden data.
+        if (number == null && command.matches(Regex("(?i)^save\\s+this\\s+number\\s+as\\s+.+$"))) {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+            val clip = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+            if (clip.matches(Regex("[+0-9()\\-\\s]{7,}"))) {
+                number = clip
+                name = command.substringAfter(Regex("(?i) as ")).trim()
+            }
+        }
+
+        if (number.isNullOrBlank() || name.isNullOrBlank()) {
+            val result = "Tell me the number and the name, for example: save 08012345678 as Daniel."
+            speak(result); done(result); return
+        }
+
+        val cleanNumber = number!!.trim()
+        val cleanName = name!!.trim()
+
+        runCatching {
+            val operations = arrayListOf<ContentProviderOperation>()
+            operations += ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                .build()
+
+            operations += ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, cleanName)
+                .build()
+
+            operations += ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, cleanNumber)
+                .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
+                .build()
+
+            context.contentResolver.applyBatch(ContactsContract.AUTHORITY, operations)
+        }.onSuccess {
+            val result = "Saved $cleanName with number $cleanNumber."
+            speak(result); done(result)
+        }.onFailure {
+            val result = "I could not save $cleanName to Contacts."
+            speak(result); done(result)
         }
     }
 
