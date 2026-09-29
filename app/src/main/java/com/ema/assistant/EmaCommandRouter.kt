@@ -155,24 +155,42 @@ class EmaCommandRouter(
                 openMaps(destination, done)
             }
 
+            // Structured navigation must be resolved before the generic "go to"
+            // fallback. This preserves the user's semantic roles:
+            // destination/section -> app/settings context -> visible target.
+            lower.startsWith("go to ") && Regex("(?i)^go\\s+to\\s+.+\\s+(?:on|in|using)\\s+.+$").matches(command) -> {
+                val match = Regex("(?i)^go\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+)$").find(command)
+                if (match == null) {
+                    val result = "I could not understand the destination and app."
+                    speak(result); done(result)
+                } else {
+                    val target = match.groupValues[1].trim()
+                    val app = match.groupValues[2].trim()
+                    navigateInsideApp(app, target, done)
+                }
+            }
+
+            lower.startsWith("go to ") && (
+                lower.endsWith(" in settings") ||
+                lower.endsWith(" settings") ||
+                lower == "go to settings"
+            ) -> {
+                val phrase = command.substringAfter("go to ").trim()
+                val target = phrase
+                    .replace(Regex("(?i)\\s+in\\s+settings\\s*$"), "")
+                    .replace(Regex("(?i)\\s+settings\\s*$"), "")
+                    .trim()
+                if (target.equals("settings", ignoreCase = true) || target.isBlank()) {
+                    openSettings(Settings.ACTION_SETTINGS, "Settings", done)
+                } else {
+                    navigateInsideSettings(target, done)
+                }
+            }
+
             lower.startsWith("go to ") -> {
                 val targetPhrase = command.substringAfter("go to ").trim()
                 if (!handleAppSectionNavigation(targetPhrase, done)) {
                     openTarget(targetPhrase, done)
-                }
-            }
-
-            lower.startsWith("go to ") && Regex("(?i)^go\\s+to\\s+.+\\s+(?:on|in|using)\\s+.+$").matches(command) -> {
-                val match = Regex("(?i)^go\\s+to\\s+(.+?)\\s+(?:on|in|using)\\s+(.+)$").find(command)
-                if (match == null) {
-                    done("I could not understand the target app and person.")
-                } else {
-                    val target = match.groupValues[1].trim()
-                    val app = match.groupValues[2].trim()
-                    appEngine.openAndSearch(app, target) { _, result ->
-                        speak(result)
-                        done(result)
-                    }
                 }
             }
 
@@ -497,29 +515,103 @@ class EmaCommandRouter(
         val words = targetPhrase.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.size < 2) return false
 
-        // Find the longest installed launcher-app name at the beginning of the
-        // phrase. The remaining words are the requested destination/control
-        // inside that app, not another app name.
+        // Resolve the longest installed app name at the beginning. Everything
+        // after that is the destination inside the app, not another app.
         for (count in words.size - 1 downTo 1) {
             val appName = words.take(count).joinToString(" ")
             val target = appEngine.findApp(appName) ?: continue
             val section = words.drop(count).joinToString(" ").trim()
             if (section.isBlank()) return false
-            appEngine.openApp(target.label)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                EmaGenericUiController.tap(section) { ok, message ->
-                    if (ok) {
-                        val result = "Opened " + section + " in " + target.label + "."
-                        speak(result); done(result)
-                    } else {
-                        val result = "I opened " + target.label + ", but could not find " + section + " on its current screen."
-                        speak(result); done(result)
-                    }
-                }
-            }, 450L)
+            navigateInsideApp(target.label, section, done)
             return true
         }
         return false
+    }
+
+    /**
+     * Generic navigation: open the requested app, inspect the resulting UI,
+     * locate the requested destination, and retry by scrolling when the
+     * destination is not initially visible. No app-specific button names are
+     * assumed here.
+     */
+    private fun navigateInsideApp(appName: String, destination: String, done: (String) -> Unit) {
+        val target = appEngine.findApp(appName)
+        if (target == null) {
+            val result = "I could not find " + appName + " on this phone."
+            speak(result); done(result); return
+        }
+
+        appEngine.openApp(target.label)
+        lastAppName = target.label
+        navigateVisibleDestination(destination, target.label, 0, done)
+    }
+
+    /**
+     * Settings uses the same generic screen-navigation engine as third-party
+     * apps. "Go to Settings" stops at Settings; a destination after Settings
+     * continues through the visible Settings hierarchy.
+     */
+    private fun navigateInsideSettings(destination: String, done: (String) -> Unit) {
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            navigateVisibleDestination(destination, "Settings", 0, done)
+        }.onFailure {
+            val result = "I could not open Settings."
+            speak(result); done(result)
+        }
+    }
+
+    private fun navigateVisibleDestination(
+        destination: String,
+        contextLabel: String,
+        attempt: Int,
+        done: (String) -> Unit
+    ) {
+        if (destination.isBlank()) {
+            val result = "I opened " + contextLabel + "."
+            speak(result); done(result); return
+        }
+
+        val delay = if (attempt == 0) 700L else 350L
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            // First try the generic controller so accessibility and its visual
+            // fallback are both available.
+            EmaGenericUiController.tap(destination) { ok, _ ->
+                if (ok) {
+                    val result = "Opened " + destination + " in " + contextLabel + "."
+                    speak(result); done(result)
+                    return@tap
+                }
+
+                if (attempt >= 5) {
+                    val result = "I opened " + contextLabel + ", but could not locate " + destination + " in the current navigation path."
+                    speak(result); done(result)
+                    return@tap
+                }
+
+                // Re-inspect before changing the screen. If the destination is
+                // present in accessible text, give it another exact/visual
+                // opportunity; otherwise scroll the currently scrollable view.
+                val screen = EmaAccessibilityService.currentScreenText(12000)
+                val destinationWords = destination.lowercase(Locale.getDefault())
+                    .split(Regex("\\s+"))
+                    .filter { it.length > 1 }
+
+                val textMatch = destinationWords.isNotEmpty() &&
+                    destinationWords.any { word -> screen.lowercase(Locale.getDefault()).contains(word) }
+
+                if (textMatch) {
+                    EmaAccessibilityService.tapTextExact(destination)
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        navigateVisibleDestination(destination, contextLabel, attempt + 1, done)
+                    }, 250L)
+                } else {
+                    EmaGenericUiController.scroll("down") { _, _ ->
+                        navigateVisibleDestination(destination, contextLabel, attempt + 1, done)
+                    }
+                }
+            }
+        }, delay)
     }
 
     private fun isSaveContactCommand(lower: String): Boolean =
