@@ -1,10 +1,11 @@
 package com.ema.assistant
 
 import android.service.voice.VoiceInteractionService
+import android.service.voice.VoiceInteractionSession
 
 class EmaVoiceInteractionService : VoiceInteractionService() {
     override fun onLaunchVoiceAssistFromKeyguard() {
-        showSession(null, SHOW_WITH_ASSIST)
+        showSession(null, VoiceInteractionSession.SHOW_WITH_ASSIST)
     }
 
     override fun onReady() {
