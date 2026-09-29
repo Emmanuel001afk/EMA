@@ -73,6 +73,13 @@ class EmaVoiceInteractionSession(context: Context) : android.service.voice.Voice
                 status.post {
                     status.text = result
                     tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "ema-result")
+                    if (sessionVisible) {
+                        main.postDelayed({
+                            if (sessionVisible && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                startListening(input, status, ::execute)
+                            }
+                        }, 700L)
+                    }
                 }
             }
         }
