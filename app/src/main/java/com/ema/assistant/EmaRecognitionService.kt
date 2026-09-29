@@ -14,13 +14,22 @@ class EmaRecognitionService : RecognitionService() {
 
     override fun onStartListening(intent: Intent?, callback: Callback?) {
         activeCallback = callback ?: return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+        // Do not require an on-device speech model. A phone may legitimately
+        // have speech recognition available through its configured provider
+        // without exposing an on-device model. Requiring on-device recognition
+        // made EMA report a client error on otherwise usable phones.
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             callback.error(SpeechRecognizer.ERROR_CLIENT)
             cleanup()
             return
         }
         recognizer?.destroy()
-        recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+        recognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(this)
+        }
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) { activeCallback?.readyForSpeech(params) }
             override fun onBeginningOfSpeech() { activeCallback?.beginningOfSpeech() }
