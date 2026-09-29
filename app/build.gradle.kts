@@ -17,6 +17,17 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { buildConfig = true }
+    buildTypes {
+        release {
+            // Shrink only the release APK. Debug remains unchanged for development/diagnostics.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
 }
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
