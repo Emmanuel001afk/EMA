@@ -34,6 +34,7 @@ class EmaCommandRouter(
         val command = raw.trim()
         if (command.isBlank()) return
         if (handlePendingFollowUp(command, done)) return
+        if (handleScheduledAction(command, done)) return
         val lower = command.lowercase(Locale.getDefault())
 
         // Execute explicit multi-action requests sequentially. The existing
@@ -304,6 +305,61 @@ class EmaCommandRouter(
                 executeSequence(steps, index + 1, done)
             }
         }
+    }
+
+    private fun handleScheduledAction(command: String, done: (String) -> Unit): Boolean {
+        // Scheduling is deliberately an additional layer over the existing
+        // command language. The scheduled item is the same command EMA would
+        // execute immediately, so it does not create a second action system.
+        val match = Regex(
+            """(?i)^(.*?)(?:\\s+)(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s*$"""
+        ).find(command) ?: return false
+
+        val baseCommand = match.groupValues[1].trim()
+        val timeText = match.groupValues[2].trim()
+
+        val lowerBase = baseCommand.lowercase(Locale.getDefault())
+        val isSchedulableAction =
+            isMessageCommand(lowerBase) ||
+                lowerBase.startsWith("call ") ||
+                lowerBase.startsWith("dial ")
+
+        if (!isSchedulableAction) return false
+
+        val normalizedTime = when (timeText.lowercase(Locale.getDefault())) {
+            "one" -> "1"
+            "two" -> "2"
+            "three" -> "3"
+            "four" -> "4"
+            "five" -> "5"
+            "six" -> "6"
+            "seven" -> "7"
+            "eight" -> "8"
+            "nine" -> "9"
+            "ten" -> "10"
+            "eleven" -> "11"
+            "twelve" -> "12"
+            else -> timeText
+        }
+
+        val trigger = EmaScheduler.parseTimeToFutureMillis(normalizedTime)
+        if (trigger == null) {
+            val result = "I understood the scheduled action, but I could not understand the time."
+            speak(result); done(result)
+            return true
+        }
+
+        val scheduled = EmaScheduler.schedule(context, baseCommand, trigger)
+        val formatted = java.text.SimpleDateFormat("h:mm a", Locale.getDefault())
+            .format(java.util.Date(trigger))
+
+        val result = if (scheduled) {
+            "Scheduled that action for $formatted."
+        } else {
+            "I understood the action and time, but Android could not schedule it."
+        }
+        speak(result); done(result)
+        return true
     }
 
     private fun isSaveContactCommand(lower: String): Boolean =
