@@ -140,11 +140,14 @@ class EmaAppActionEngine(private val context: Context) {
             packageName = target.packageName,
             query = query
         ) { success ->
-            done(
-                success,
-                if (success) "I searched ${target.label} for $query."
-                else "I opened ${target.label}, but its search controls were not accessible."
-            )
+            if (!success) {
+                done(false, "I opened " + target.label + ", but its search controls were not accessible.")
+                return@searchInPackage
+            }
+            main.postDelayed({
+                val ui = EmaAccessibilityService.inspectCurrentUi()
+                done(ui.isNotBlank(), if (ui.isNotBlank()) "I searched " + target.label + " for " + query + " and re-inspected the results." else "I searched " + target.label + ", but Android exposed no result UI to verify.")
+            }, 650L)
         }
     }
 
