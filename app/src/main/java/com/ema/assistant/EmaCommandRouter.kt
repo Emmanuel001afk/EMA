@@ -33,8 +33,6 @@ class EmaCommandRouter(
     fun execute(raw: String, done: (String) -> Unit) {
         val command = raw.trim()
         if (command.isBlank()) return
-        if (handlePendingFollowUp(command, done)) return
-        pendingTask = null
         if (isCloseAssistantCommand(command.lowercase(Locale.getDefault()))) {
             val message = "Closing EMA."
             speak(message)
@@ -42,6 +40,8 @@ class EmaCommandRouter(
             done(message)
             return
         }
+        if (handlePendingFollowUp(command, done)) return
+        pendingTask = null
         if (handleScheduledAction(command, done)) return
         EmaConversationStore.add(context, "user", command)
         if (handleRecurringRoutine(command, done)) return
