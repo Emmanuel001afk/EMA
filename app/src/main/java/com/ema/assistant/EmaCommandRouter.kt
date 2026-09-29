@@ -90,15 +90,21 @@ class EmaCommandRouter(
             lower == "open bluetooth settings" -> openSettings(Settings.ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings", done)
             lower == "open display settings" -> openSettings(Settings.ACTION_DISPLAY_SETTINGS, "display settings", done)
             lower == "open sound settings" -> openSettings(Settings.ACTION_SOUND_SETTINGS, "sound settings", done)
-            lower == "open notification settings" -> openSettings(Settings.ACTION_NOTIFICATION_SETTINGS, "notification settings", done)
+            lower == "open notification settings" -> openAppNotificationSettings(done)
             lower == "open accessibility settings" -> openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS, "Accessibility settings", done)
             lower == "open assistant settings" -> openSettings(Settings.ACTION_VOICE_INPUT_SETTINGS, "assistant settings", done)
 
             lower == "recent apps" || lower == "show recent apps" ->
                 globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS, "Showing recent apps.", done)
 
-            lower == "lock phone" || lower == "lock the phone" ->
-                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locking the phone.", done)
+            lower == "lock phone" || lower == "lock the phone" -> {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Locking the phone.", done)
+                } else {
+                    val result = "Phone locking is not supported on this Android version."
+                    speak(result); done(result)
+                }
+            }
 
             lower == "play" || lower == "pause" || lower == "play or pause" -> {
                 val ok = EmaAccessibilityService.toggleMediaPlayback()
@@ -241,6 +247,16 @@ class EmaCommandRouter(
             val result = "I could not open the phone timer."
             speak(result); done(result)
         }
+    }
+
+    private fun openAppNotificationSettings(done: (String) -> Unit) {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }
+            .onSuccess { val result = "Opening notification settings."; speak(result); done(result) }
+            .onFailure { val result = "I could not open notification settings."; speak(result); done(result) }
     }
 
     private fun openSettings(action: String, label: String, done: (String) -> Unit) {
