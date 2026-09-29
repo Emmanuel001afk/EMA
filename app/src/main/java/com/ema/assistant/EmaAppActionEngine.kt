@@ -344,8 +344,8 @@ class EmaAppActionEngine(private val context: Context) {
     ) {
         if (EmaAccessibilityService.tapSendButton(packageName)) {
             main.postDelayed({
-                val ui = EmaAccessibilityService.currentScreenText(12000).lowercase()
-                val bodyStillVisible = body.trim().let { it.isNotBlank() && ui.contains(it.lowercase()) }
+                val composer = EmaAccessibilityService.focusedEditableText().trim()
+                val bodyStillVisible = composer.isNotBlank()
                 if (!bodyStillVisible) {
                     done(true, "Message sent to $recipientName on $appLabel.")
                 } else if (attempt < 2) {
