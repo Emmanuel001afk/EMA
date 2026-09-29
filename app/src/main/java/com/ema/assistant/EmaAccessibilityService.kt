@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.view.KeyEvent
 import android.os.Build
 import android.os.Looper
+import android.os.Handler
 import android.view.Display
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
