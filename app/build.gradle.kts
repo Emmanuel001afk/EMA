@@ -1,3 +1,4 @@
+// AEM smoke-build marker: triggers a fresh APK without changing app behavior.
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 android {
