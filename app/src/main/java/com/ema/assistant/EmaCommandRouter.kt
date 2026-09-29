@@ -653,43 +653,26 @@ class EmaCommandRouter(
             speak(message); done(message); return
         }
 
+        // This is a system alarm request, not a UI-navigation task. Do not
+        // guess or click a Clock button after opening it.
         val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
-            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
             putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
             putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
             putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        runCatching { context.startActivity(intent) }.onSuccess {
-            // Some Clock implementations honor EXTRA_SKIP_UI and some do not.
-            // Deliberately leave the confirmation UI available, then use the
-            // same generic visual/accessibility action layer to press Set/Save.
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val packageName = EmaAccessibilityService.currentScreenText()
-                val setLabels = listOf("Set alarm", "Set", "Save", "Done", "Create")
-                fun tryNext(index: Int) {
-                    if (index >= setLabels.size) {
-                        val message = "I opened the Clock alarm editor for $value, but could not verify the final Set/Save control."
-                        speak(message); done(message)
-                        return
-                    }
-                    EmaGenericUiController.tap(setLabels[index]) { ok, _ ->
-                        if (ok) {
-                            val message = "Alarm set for $value."
-                            speak(message); done(message)
-                        } else {
-                            tryNext(index + 1)
-                        }
-                    }
-                }
-                // Keep the variable intentionally tied to the current screen
-                // inspection so the accessibility service is given time to bind.
-                packageName.length
-                tryNext(0)
-            }, 900L)
+        runCatching {
+            val resolver = context.packageManager.resolveActivity(intent, 0)
+                ?: throw IllegalStateException("No alarm application can handle ACTION_SET_ALARM")
+            context.startActivity(intent)
+            val message = "Alarm request sent to " + resolver.activityInfo.applicationInfo.loadLabel(context.packageManager) +
+                " for " + value + "."
+            speak(message); done(message)
         }.onFailure {
-            val message = "I could not open the Clock alarm editor on this phone."
+            val message = "I could not send the alarm request to the phone's alarm system."
             speak(message); done(message)
         }
     }
