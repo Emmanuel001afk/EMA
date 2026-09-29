@@ -3,6 +3,10 @@ package com.ema.assistant
 import android.service.voice.VoiceInteractionService
 
 class EmaVoiceInteractionService : VoiceInteractionService() {
+    override fun onLaunchVoiceAssistFromKeyguard() {
+        showSession(null, SHOW_WITH_ASSIST)
+    }
+
     override fun onReady() {
         super.onReady()
         // Keep contextual assist data enabled so EMA can receive the current
