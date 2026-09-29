@@ -115,9 +115,9 @@ jobs:
           # Use Supabase's non-resumable signed-upload endpoint with the token
           # returned by createSignedUploadUrl(). This is the same endpoint used
           # by supabase-js uploadToSignedUrl(), with the token URL-encoded.
-          upload_endpoint="https://wfvvmyixqcwosmuldxoq.storage.supabase.co/storage/v1/object/upload/sign/aem-artifacts/$object_path"
-          curl --fail-with-body -sS -G -X PUT "$upload_endpoint" \\
-            --data-urlencode "token=$upload_token" \\
+          token_qs="$(jq -nr --arg v "$upload_token" '$v|@uri')"
+          upload_endpoint="https://wfvvmyixqcwosmuldxoq.storage.supabase.co/storage/v1/object/upload/sign/aem-artifacts/$object_path?token=$token_qs"
+          curl --fail-with-body -sS -X PUT "$upload_endpoint" \\
             -H "Content-Type: application/vnd.android.package-archive" \\
             -H "x-upsert: true" \\
             --data-binary "@$APK"
