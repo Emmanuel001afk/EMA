@@ -290,14 +290,9 @@ class EmaCommandRouter(
                     done("Try: play a song on Spotify.")
                 } else {
                     val (query, app) = parsed
-                    if (appEngine.playMediaInApp(app, query)) {
-                        val result = "Playing $query in $app."
-                        speak(result); done(result)
-                    } else {
-                        appEngine.openAndSearch(app, query) { _, result ->
-                            val message = if (result.startsWith("I searched")) "$result I could not invoke playback automatically." else result
-                            speak(message); done(message)
-                        }
+                    appEngine.playMediaInApp(app, query) { ok, result ->
+                        speak(result)
+                        done(result)
                     }
                 }
             }
