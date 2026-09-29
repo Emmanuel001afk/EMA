@@ -55,6 +55,9 @@ class EmaAccessibilityService : AccessibilityService() {
         fun tapText(text: String): Boolean =
             instance?.tapTextInternal(text) == true
 
+        fun tapTextExact(text: String): Boolean =
+            instance?.tapTextExactInternal(text) == true
+
         fun setFocusedText(text: String): Boolean =
             instance?.setFocusedTextInternal(text) == true
 
@@ -279,6 +282,24 @@ class EmaAccessibilityService : AccessibilityService() {
 
         walk(root)
         return exact ?: contains
+    }
+
+    private fun tapTextExactInternal(text: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val wanted = text.trim().lowercase()
+        if (wanted.isBlank()) return false
+        fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return null
+            val nodeText = node.text?.toString().orEmpty().trim().lowercase()
+            val nodeDesc = node.contentDescription?.toString().orEmpty().trim().lowercase()
+            if ((nodeText == wanted || nodeDesc == wanted) && node.isClickable) return node
+            for (i in 0 until node.childCount) {
+                val found = find(node.getChild(i))
+                if (found != null) return found
+            }
+            return null
+        }
+        return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
     private fun tapTextInternal(text: String): Boolean {
