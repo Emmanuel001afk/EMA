@@ -10,8 +10,4 @@ class EmaVoiceInteractionService : VoiceInteractionService() {
         setDisabledShowContext(0)
     }
 
-    override fun onLaunchVoiceAssistFromKeyguard() {
-        super.onLaunchVoiceAssistFromKeyguard()
-        showSession(null, android.service.voice.VoiceInteractionSession.SHOW_WITH_ASSIST or android.service.voice.VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
-    }
 }
