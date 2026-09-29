@@ -39,6 +39,24 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var screenText = ""
     private var screenScreenshot: Bitmap? = null
 
+    companion object {
+        @Volatile private var activeSession: EmaVoiceInteractionSession? = null
+
+        fun closeActive() {
+            activeSession?.let { session ->
+                session.handler.post {
+                    session.sessionVisible = false
+                    session.recognizer?.cancel()
+                    session.recognizer?.destroy()
+                    session.recognizer = null
+                    session.tts?.stop()
+                    session.handler.removeCallbacksAndMessages(null)
+                    session.finish()
+                }
+            }
+        }
+    }
+
     private lateinit var status: TextView
     private lateinit var transcript: TextView
     private lateinit var response: TextView
@@ -48,6 +66,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         sessionVisible = true
+        activeSession = this
         initTts()
 
         val root = FrameLayout(context)
@@ -351,6 +370,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer = null
         tts?.stop()
         handler.removeCallbacksAndMessages(null)
+        if (activeSession === this) activeSession = null
         super.onHide()
     }
 
@@ -363,6 +383,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         screenScreenshot?.recycle()
         screenScreenshot = null
         handler.removeCallbacksAndMessages(null)
+        if (activeSession === this) activeSession = null
         super.onDestroy()
     }
 }
