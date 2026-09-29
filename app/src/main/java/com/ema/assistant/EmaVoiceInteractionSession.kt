@@ -163,7 +163,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             bottomMargin = 18
         })
 
-        window?.window?.decorView?.let { decor ->
+        window?.decorView?.let { decor ->
             (decor as? ViewGroup)?.removeAllViews()
             (decor as? ViewGroup)?.setBackgroundColor(Color.TRANSPARENT)
             (decor as? ViewGroup)?.addView(root)
