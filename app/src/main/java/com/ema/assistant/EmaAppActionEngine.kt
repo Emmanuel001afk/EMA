@@ -281,11 +281,12 @@ class EmaAppActionEngine(private val context: Context) {
 
         runCatching { context.startActivity(intent) }.onSuccess {
             main.postDelayed({
-                val sent = EmaAccessibilityService.tapSendButton(packageName)
-                if (sent) {
-                    done(true, "Message sent to " + recipientName + " on " + target.label + ".")
-                } else {
-                    composeThroughAccessibleUi(target, recipientName, body, done)
+                EmaAccessibilityService.tapSendButtonWithVisualFallback(packageName) { sent ->
+                    if (sent) {
+                        done(true, "Message sent to " + recipientName + " on " + target.label + ".")
+                    } else {
+                        composeThroughAccessibleUi(target, recipientName, body, done)
+                    }
                 }
             }, 1400L)
         }.onFailure {
@@ -326,8 +327,9 @@ class EmaAppActionEngine(private val context: Context) {
                             return@postDelayed
                         }
                         main.postDelayed({
-                            val sent = EmaAccessibilityService.tapSendButton(target.packageName)
-                            done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message for " + recipientName + ", but could not verify Send.")
+                            EmaAccessibilityService.tapSendButtonWithVisualFallback(target.packageName) { sent ->
+                                done(sent, if (sent) "Message sent to " + recipientName + " on " + target.label + "." else "I entered the message for " + recipientName + ", but could not verify Send.")
+                            }
                         }, 500L)
                     }, 600L)
                 }, 700L)
@@ -342,24 +344,26 @@ class EmaAppActionEngine(private val context: Context) {
         attempt: Int,
         done: (Boolean, String) -> Unit
     ) {
-        if (EmaAccessibilityService.tapSendButton(packageName)) {
-            main.postDelayed({
-                val composer = EmaAccessibilityService.focusedEditableText().trim()
-                val bodyStillVisible = composer.isNotBlank()
-                if (!bodyStillVisible) {
-                    done(true, "Message sent to $recipientName on $appLabel.")
-                } else if (attempt < 2) {
+        EmaAccessibilityService.tapSendButtonWithVisualFallback(packageName) { pressed ->
+            if (pressed) {
+                main.postDelayed({
+                    val composer = EmaAccessibilityService.focusedEditableText().trim()
+                    val bodyStillVisible = composer.isNotBlank()
+                    if (!bodyStillVisible) {
+                        done(true, "Message sent to $recipientName on $appLabel.")
+                    } else if (attempt < 2) {
+                        attemptSendAndVerify(packageName, appLabel, recipientName, body, attempt + 1, done)
+                    } else {
+                        done(false, "I pressed Send in $appLabel, but could not verify that the message left the composer.")
+                    }
+                }, 900L)
+            } else if (attempt < 2) {
+                main.postDelayed({
                     attemptSendAndVerify(packageName, appLabel, recipientName, body, attempt + 1, done)
-                } else {
-                    done(false, "I pressed Send in $appLabel, but could not verify that the message left the composer.")
-                }
-            }, 900L)
-        } else if (attempt < 2) {
-            main.postDelayed({
-                attemptSendAndVerify(packageName, appLabel, recipientName, body, attempt + 1, done)
-            }, 600L)
-        } else {
-            done(false, "I entered the message in $appLabel, but I could not find or activate its Send control.")
+                }, 600L)
+            } else {
+                done(false, "I entered the message in $appLabel, but I could not find or activate its Send control.")
+            }
         }
     }
 
