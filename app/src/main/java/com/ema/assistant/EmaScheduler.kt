@@ -60,7 +60,7 @@ object EmaScheduler {
     fun parseTimeToFutureMillis(value: String, nowMillis: Long = System.currentTimeMillis()): Long? {
         val cleaned = value.trim().lowercase(Locale.getDefault())
             .replace(".", "")
-            .replace(Regex("\s+"), " ")
+            .replace(Regex("\\s+"), " ")
 
         val match = Regex(
             """^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$"""
