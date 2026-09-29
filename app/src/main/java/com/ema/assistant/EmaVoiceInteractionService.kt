@@ -12,6 +12,6 @@ class EmaVoiceInteractionService : VoiceInteractionService() {
 
     override fun onLaunchVoiceAssistFromKeyguard() {
         super.onLaunchVoiceAssistFromKeyguard()
-        showSession(null, SHOW_WITH_ASSIST or SHOW_WITH_SCREENSHOT)
+        showSession(null, android.service.voice.VoiceInteractionSession.SHOW_WITH_ASSIST or android.service.voice.VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
     }
 }
