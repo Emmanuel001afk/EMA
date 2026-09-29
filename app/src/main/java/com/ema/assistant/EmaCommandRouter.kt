@@ -400,7 +400,7 @@ class EmaCommandRouter(
         // command language. The scheduled item is the same command EMA would
         // execute immediately, so it does not create a second action system.
         val match = Regex(
-            """(?i)^(.*?)(?:\\s+)(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s*$"""
+            """(?i)^(.*?)(?:\s+)(?:by|at)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*$"""
         ).find(command) ?: return false
 
         val baseCommand = match.groupValues[1].trim()
