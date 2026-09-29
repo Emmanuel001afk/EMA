@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.media.AudioManager
 import android.view.KeyEvent
 import android.os.Build
+import android.os.Looper
 import android.view.Display
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -16,6 +17,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import java.util.concurrent.atomic.AtomicReference
 
 class EmaAccessibilityService : AccessibilityService() {
+    private val mainHandler = Handler(Looper.getMainLooper())
     companion object {
         @Volatile private var instance: EmaAccessibilityService? = null
         private val pendingSearch = AtomicReference<PendingSearch?>(null)
@@ -23,7 +25,8 @@ class EmaAccessibilityService : AccessibilityService() {
         private data class PendingSearch(
             val packageName: String?,
             val query: String,
-            val callback: (Boolean) -> Unit
+            val callback: (Boolean) -> Unit,
+            val attempts: Int = 0
         )
 
         fun requestTextSearch(query: String) {
@@ -203,7 +206,18 @@ class EmaAccessibilityService : AccessibilityService() {
             ?: findEditable(root)
             ?: findSearchNode(root)
 
-        if (field == null || !field.isEditable) return
+        if (field == null || !field.isEditable) {
+            // Many apps (including mail/messaging apps) hide the search field
+            // behind a Search icon/button. Open that control first, then let the
+            // resulting accessibility event retry the same generic search.
+            val opened = clickSearchControl(root)
+            if (opened && pending.attempts < 6) {
+                val retry = pending.copy(attempts = pending.attempts + 1)
+                pendingSearch.set(retry)
+                mainHandler.postDelayed({ performPendingSearch() }, 350L)
+            }
+            return
+        }
 
         val args = Bundle().apply {
             putCharSequence(
@@ -213,11 +227,6 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         if (field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-            /*
-             * Some apps submit immediately after ACTION_SET_TEXT. Others expose
-             * a Search button. We only click the field itself here; the next
-             * accessibility event gives EMA another chance to observe the UI.
-             */
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
             }
