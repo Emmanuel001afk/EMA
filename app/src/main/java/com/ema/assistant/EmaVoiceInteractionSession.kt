@@ -230,10 +230,15 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                         handler.post {
                             if (!sessionVisible) return@post
                             speakingResponse = false
-                            setState(if (micEnabled) "Listening" else "Ready",
-                                if (micEnabled) "Microphone is on." else "Tap the microphone when you want to speak.")
+                            val autoResume = micMode == "automatic" || (micMode == "semi" && micEnabled)
+                            setState(if (autoResume) "Listening" else "Ready",
+                                when (micMode) {
+                                    "automatic" -> "Listening for the next part of the conversation…"
+                                    "semi" -> if (micEnabled) "Conversation microphone is on." else "Tap the microphone to continue."
+                                    else -> if (micEnabled) "Manual microphone is on." else "Tap the microphone to speak."
+                                })
                             scheduleSessionTimeout()
-                            if (micEnabled && !processingCommand) startListening()
+                            if (autoResume && !processingCommand) startListening()
                         }
                     }
                     override fun onError(utteranceId: String?) {
@@ -241,7 +246,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                             if (!sessionVisible) return@post
                             speakingResponse = false
                             scheduleSessionTimeout()
-                            if (micEnabled && !processingCommand) startListening()
+                            val autoResume = micMode == "automatic" || (micMode == "semi" && micEnabled)
+                            if (autoResume && !processingCommand) startListening()
                         }
                     }
                 })
@@ -344,7 +350,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onEndOfSpeech() {
-                    if (sessionVisible) setState("Thinking", "Processing…")
+                    if (sessionVisible) {
+                        setState("Thinking", "Processing…")
+                        scheduleSessionTimeout()
+                    }
                 }
 
                 override fun onRmsChanged(rmsdB: Float) {}
@@ -364,7 +373,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private fun restartListeningIfNeeded() {
         if (!sessionVisible || !micEnabled || processingCommand || speakingResponse) return
         handler.postDelayed({
-            if (sessionVisible && micEnabled && !processingCommand && !speakingResponse && recognizer == null) startListening()
+            if (sessionVisible && (micMode == "automatic" || micEnabled) && !processingCommand && !speakingResponse && recognizer == null) startListening()
         }, 250L)
     }
 
