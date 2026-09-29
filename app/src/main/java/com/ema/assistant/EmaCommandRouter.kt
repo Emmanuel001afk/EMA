@@ -611,16 +611,18 @@ class EmaCommandRouter(
     }
 
     private fun openMaps(destination: String, done: (String) -> Unit) {
-        val uri = Uri.parse("geo:0,0?q=" + Uri.encode(destination))
+        val uri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=" + Uri.encode(destination))
         runCatching {
             context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            val message = "Opening directions to " + destination + "."
+            val message = "Opening navigation to " + destination + "."
             speak(message); done(message)
         }.onFailure {
-            openTarget("https://www.google.com/maps/search/?api=1&query=" + Uri.encode(destination), done)
+            val fallback = Uri.parse("geo:0,0?q=" + Uri.encode(destination))
+            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, fallback).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            val message = "Opening maps for " + destination + "."
+            speak(message); done(message)
         }
     }
-
     private fun openMessageComposer(command: String, done: (String) -> Unit) {
         val lower = command.lowercase(Locale.getDefault())
         val marker = when {
