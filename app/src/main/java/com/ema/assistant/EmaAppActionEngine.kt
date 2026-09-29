@@ -60,9 +60,10 @@ class EmaAppActionEngine(private val context: Context) {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val resolved = intent.resolveActivity(pm) ?: return null
-            val label = resolved.loadLabel(pm).toString()
+            val appInfo = runCatching { pm.getApplicationInfo(resolved.packageName, 0) }.getOrNull() ?: return null
+            val label = pm.getApplicationLabel(appInfo).toString()
             context.startActivity(intent)
-            return AppTarget(label = label, packageName = resolved.activityInfo.packageName)
+            return AppTarget(label = label, packageName = resolved.packageName)
         }
 
         val target = findApp(wanted) ?: return null
