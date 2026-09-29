@@ -155,6 +155,7 @@ class EmaVoiceInteractionSession(context: Context) :
         if (structure != null) {
             screenText = extractAssistText(structure, 12000)
         }
+    }
 
     /**
      * Receives the actual system-provided screenshot when Android allows it.
