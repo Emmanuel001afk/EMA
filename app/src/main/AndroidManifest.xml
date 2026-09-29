@@ -19,9 +19,7 @@
         android:allowBackup="true"
         android:supportsRtl="true">
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -33,20 +31,17 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".EmaVoiceInteractionService"
+        <service android:name=".EmaVoiceInteractionService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.service.voice.VoiceInteractionService"/>
             </intent-filter>
-            <meta-data
-                android:name="android.voice_interaction"
+            <meta-data android:name="android.voice_interaction"
                 android:resource="@xml/voice_interaction_service"/>
         </service>
 
-        <service
-            android:name=".EmaVoiceInteractionSessionService"
+        <service android:name=".EmaVoiceInteractionSessionService"
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true">
             <intent-filter>
@@ -54,21 +49,18 @@
             </intent-filter>
         </service>
 
-        <service
-            android:name=".EmaRecognitionService"
+        <service android:name=".EmaRecognitionService"
             android:permission="android.permission.BIND_RECOGNITION_SERVICE"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.speech.RecognitionService"/>
                 <category android:name="android.intent.category.DEFAULT"/>
             </intent-filter>
-            <meta-data
-                android:name="android.speech"
-                android:resource="@xml/recognition_service"/>
+            <meta-data android:name="android.speech"
+                android:resource="@xml/ema_recognition"/>
         </service>
 
-        <service
-            android:name=".EmaNotificationListenerService"
+        <service android:name=".EmaNotificationListenerService"
             android:label="EMA notification access"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:exported="false">
@@ -77,15 +69,13 @@
             </intent-filter>
         </service>
 
-        <service
-            android:name=".EmaAccessibilityService"
+        <service android:name=".EmaAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService"/>
             </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
+            <meta-data android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service"/>
         </service>
     </application>
