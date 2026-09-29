@@ -11,7 +11,7 @@ import kotlin.concurrent.thread
 
 class CentralHubClient(private val context: Context) {
     companion object {
-        private const val HUB_URL = "https://mayobuild-studio.lovable.app/api/ai-tunnel"
+        private const val HUB_URL = "https://qnogfzwmdjggqtdrkzpv.supabase.co/functions/v1/ai-tunnel"
         private const val APP_ID = "ema"
         private const val PREFS = "ema_tunnel"
         private const val TOKEN_KEY = "token"
