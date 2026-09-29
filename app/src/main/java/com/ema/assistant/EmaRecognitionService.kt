@@ -15,7 +15,7 @@ class EmaRecognitionService : RecognitionService() {
     override fun onStartListening(intent: Intent?, callback: Callback?) {
         activeCallback = callback ?: return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-            callback.error(SpeechRecognizer.ERROR_SERVICE_NOT_AVAILABLE)
+            callback.error(SpeechRecognizer.ERROR_CLIENT)
             cleanup()
             return
         }
@@ -30,7 +30,7 @@ class EmaRecognitionService : RecognitionService() {
             override fun onError(error: Int) { activeCallback?.error(error); cleanup() }
             override fun onResults(results: Bundle?) { activeCallback?.results(results ?: Bundle()); cleanup() }
             override fun onPartialResults(partialResults: Bundle?) { activeCallback?.partialResults(partialResults ?: Bundle()) }
-            override fun onEvent(eventType: Int, params: Bundle?) { activeCallback?.event(eventType, params ?: Bundle()) }
+            override fun onEvent(eventType: Int, params: Bundle?) { }
         })
         recognizer?.startListening((intent ?: Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
