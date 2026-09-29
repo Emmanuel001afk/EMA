@@ -268,7 +268,7 @@ class EmaAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun clickSearchControl(root: AccessibilityNodeInfo) {
+    private fun clickSearchControl(root: AccessibilityNodeInfo): Boolean {
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (node == null) return null
             val label = (
@@ -291,7 +291,7 @@ class EmaAccessibilityService : AccessibilityService() {
             return null
         }
 
-        find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
     private fun scrollInternal(direction: String): Boolean {
