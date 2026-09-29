@@ -35,6 +35,13 @@ class EmaCommandRouter(
         if (command.isBlank()) return
         if (handlePendingFollowUp(command, done)) return
         pendingTask = null
+        if (isCloseAssistantCommand(command.lowercase(Locale.getDefault()))) {
+            val message = "Closing EMA."
+            speak(message)
+            EmaVoiceInteractionSession.closeActive()
+            done(message)
+            return
+        }
         if (handleScheduledAction(command, done)) return
         EmaConversationStore.add(context, "user", command)
         if (handleRecurringRoutine(command, done)) return
@@ -117,6 +124,30 @@ class EmaCommandRouter(
             lower.startsWith("set an alarm for ") || lower.startsWith("set alarm for ") -> {
                 val value = command.substringAfter("alarm for ").trim()
                 openAlarm(value, done)
+            }
+
+            lower == "increase brightness" || lower == "brightness up" -> adjustBrightness(0.1f, done)
+            lower == "decrease brightness" || lower == "brightness down" -> adjustBrightness(-0.1f, done)
+            lower.startsWith("set brightness to ") -> setBrightnessPercent(command.substringAfter("set brightness to ").trim(), done)
+            lower == "turn on dnd" || lower == "turn dnd on" || lower == "enable dnd" || lower == "do not disturb on" -> setDnd(true, done)
+            lower == "turn off dnd" || lower == "turn dnd off" || lower == "disable dnd" || lower == "do not disturb off" -> setDnd(false, done)
+            lower == "open quick settings" || lower == "open control center" || lower == "open notification center" -> {
+                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, "Opening quick settings.", done)
+            }
+            lower == "power menu" || lower == "show power menu" -> {
+                globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG, "Showing the power menu.", done)
+            }
+            lower == "restart phone" || lower == "reboot phone" -> {
+                val message = "Android does not expose a normal-app reboot command. I can open the power menu so you can restart the phone."
+                speak(message)
+                EmaAccessibilityService.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+                done(message)
+            }
+            lower == "switch off phone" || lower == "turn off phone" || lower == "power off phone" -> {
+                val message = "Android does not expose direct phone shutdown to a normal app. I can open the power menu for you."
+                speak(message)
+                EmaAccessibilityService.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+                done(message)
             }
 
             lower.startsWith("navigate to ") || lower.startsWith("directions to ") -> {
@@ -567,6 +598,7 @@ class EmaCommandRouter(
         val intent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
             putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
             putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA timer")
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching { context.startActivity(intent) }.onSuccess {
@@ -612,6 +644,8 @@ class EmaCommandRouter(
         }
         intent.putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
         intent.putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+        intent.putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+        intent.putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
         runCatching { context.startActivity(intent) }.onSuccess {
             val message = "Opening the alarm screen for " + value + "."
             speak(message); done(message)
@@ -1217,6 +1251,51 @@ class EmaCommandRouter(
             val result = "I could not open the calendar event editor."
             speak(result); done(result)
         }
+    }
+
+    private fun isCloseAssistantCommand(lower: String): Boolean =
+        lower == "close" || lower == "close ema" || lower == "dismiss ema" ||
+            lower == "close assistant" || lower == "dismiss assistant" ||
+            lower == "i'm done" || lower == "im done" || lower == "i am done"
+
+    private fun adjustBrightness(deltaFraction: Float, done: (String) -> Unit) {
+        if (!Settings.System.canWrite(context)) {
+            runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            val message = "EMA needs permission to change system brightness. I opened the setting for that permission."
+            speak(message); done(message); return
+        }
+        val current = runCatching { Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS) }.getOrDefault(128)
+        val next = (current + (255f * deltaFraction)).toInt().coerceIn(1, 255)
+        runCatching { Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, next) }
+            .onSuccess { val percent = (next * 100 / 255f).toInt(); val message = "Brightness set to about $percent percent."; speak(message); done(message) }
+            .onFailure { val message = "I could not change the system brightness."; speak(message); done(message) }
+    }
+
+    private fun setBrightnessPercent(value: String, done: (String) -> Unit) {
+        val percent = Regex("(\\\\d{1,3})").find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (percent == null || percent !in 1..100) { val message = "Tell me a brightness percentage from 1 to 100."; speak(message); done(message); return }
+        if (!Settings.System.canWrite(context)) {
+            runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            val message = "EMA needs permission to change system brightness. I opened the setting for that permission."
+            speak(message); done(message); return
+        }
+        val value255 = (percent * 255 / 100f).toInt().coerceIn(1, 255)
+        runCatching { Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, value255) }
+            .onSuccess { val message = "Brightness set to $percent percent."; speak(message); done(message) }
+            .onFailure { val message = "I could not change the system brightness."; speak(message); done(message) }
+    }
+
+    private fun setDnd(enabled: Boolean, done: (String) -> Unit) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        if (manager == null) { val message = "I could not access Do Not Disturb controls."; speak(message); done(message); return }
+        if (!manager.isNotificationPolicyAccessGranted) {
+            runCatching { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            val message = "EMA needs Do Not Disturb access. I opened the setting so you can grant it."
+            speak(message); done(message); return
+        }
+        runCatching { manager.setInterruptionFilter(if (enabled) android.app.NotificationManager.INTERRUPTION_FILTER_NONE else android.app.NotificationManager.INTERRUPTION_FILTER_ALL) }
+            .onSuccess { val message = if (enabled) "Do Not Disturb is on." else "Do Not Disturb is off."; speak(message); done(message) }
+            .onFailure { val message = "Android did not allow EMA to change Do Not Disturb right now."; speak(message); done(message) }
     }
 
     private fun speak(text: String) {
