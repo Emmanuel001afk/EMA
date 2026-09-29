@@ -298,9 +298,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CORE_PERMISSIONS || requestCode == REQUEST_MIC) {
-            status.text = if (isAssistantRoleHeld()) "EMA is ready for voice assistant invocation." else "Permissions ready. Set EMA as the system assistant to invoke it from anywhere."
-        } else if (requestCode == REQUEST_MIC || requestCode == REQUEST_CORE_PERMISSIONS) {
-            status.text = "EMA still needs the requested permissions to perform the selected phone actions."
+            val allCoreGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED
+            status.text = when {
+                !allCoreGranted -> "EMA still needs microphone and Contacts permissions for voice and contact actions."
+                isAssistantRoleHeld() -> "EMA is ready for voice assistant invocation."
+                else -> "Permissions ready. Set EMA as the system assistant to invoke it from anywhere."
+            }
         }
     }
 
