@@ -1123,17 +1123,44 @@ class EmaCommandRouter(
             if (app.isNotBlank() && query.isNotBlank()) return query to app
         }
 
-        val markers = listOf(" on ", " in ", " using ")
-        val marker = markers.firstOrNull { lower.lastIndexOf(it) > 5 } ?: return null
-        val index = lower.lastIndexOf(marker)
-        val prefix = command.substring(0, index).trim()
-        val app = command.substring(index + marker.length).trim()
-        val query = prefix
+        val markers = listOf(" on ", " in ", " using ", " with ", " from ")
+        val marker = markers.firstOrNull { lower.lastIndexOf(it) > 5 }
+        if (marker != null) {
+            val index = lower.lastIndexOf(marker)
+            val prefix = command.substring(0, index).trim()
+            val app = command.substring(index + marker.length).trim()
+            val query = prefix
+                .replaceFirst(Regex("(?i)^play\\s+"), "")
+                .replaceFirst(Regex("(?i)^listen to\\s+"), "")
+                .trim()
+            if (query.isNotBlank() && app.isNotBlank()) return query to app
+        }
+
+        // Speech can omit the connector word: "play X Spotify".
+        // Resolve the longest installed app label at the end of the command.
+        val installedLabels = runCatching {
+            context.packageManager.queryIntentActivities(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
+            ).mapNotNull { it.activityInfo?.applicationInfo?.loadLabel(context.packageManager)?.toString() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase(Locale.getDefault()) }
+                .sortedByDescending { it.length }
+        }.getOrDefault(emptyList())
+
+        val spoken = command
             .replaceFirst(Regex("(?i)^play\\s+"), "")
             .replaceFirst(Regex("(?i)^listen to\\s+"), "")
             .trim()
-        if (query.isBlank() || app.isBlank()) return null
-        return query to app
+
+        installedLabels.firstOrNull { label ->
+            spoken.equals(label, ignoreCase = true) ||
+                spoken.endsWith(" " + label, ignoreCase = true)
+        }?.let { app ->
+            val query = spoken.dropLast(app.length).trim()
+            if (query.isNotBlank()) return query to app
+        }
+
+        return null
     }
 
     private fun handlePendingFollowUp(command: String, done: (String) -> Unit): Boolean {
