@@ -51,6 +51,32 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     companion object {
         @Volatile private var activeSession: EmaVoiceInteractionSession? = null
 
+        fun currentScreenScreenshotCopy(): Bitmap? =
+            activeSession?.screenScreenshot?.copy(Bitmap.Config.ARGB_8888, false)
+
+        fun withAssistantUiHidden(action: () -> Unit) {
+            val session = activeSession ?: run {
+                action()
+                return
+            }
+            session.handler.post {
+                val decor = session.getWindow()?.window?.decorView
+                val wasVisible = decor?.visibility == View.VISIBLE
+                decor?.visibility = View.INVISIBLE
+                session.handler.postDelayed({
+                    try {
+                        action()
+                    } finally {
+                        session.handler.postDelayed({
+                            if (wasVisible && session.sessionVisible) {
+                                decor?.visibility = View.VISIBLE
+                            }
+                        }, 80L)
+                    }
+                }, 80L)
+            }
+        }
+
         fun closeActive() {
             activeSession?.let { session ->
                 session.handler.post {
@@ -441,6 +467,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onHandleScreenshot(screenshot: Bitmap?) {
         screenScreenshot?.recycle()
         screenScreenshot = screenshot?.copy(Bitmap.Config.ARGB_8888, false)
+        if (screenScreenshot != null) {
+            EmaAccessibilityService.updateAssistantScreenshot(screenScreenshot)
+        }
     }
 
     private fun extractAssistText(
