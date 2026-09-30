@@ -2,7 +2,6 @@ package com.ema.assistant
 
 import android.content.Context
 import android.os.Build
-import android.provider.Settings
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -12,7 +11,7 @@ import kotlin.concurrent.thread
 class CentralHubClient(private val context: Context) {
     companion object {
         private const val HUB_URL = "https://qnogfzwmdjggqtdrkzpv.supabase.co/functions/v1/ai-tunnel"
-        private const val APP_ID = "ema"
+        private const val APP_ID = "com.ema.assistant"
         private const val PREFS = "ema_tunnel"
         private const val TOKEN_KEY = "token"
         private const val DEVICE_KEY = "device_id"
@@ -24,11 +23,8 @@ class CentralHubClient(private val context: Context) {
         thread(name = "EMA-CentralHub-AI") {
             try {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                val stableDeviceId = prefs.getString(DEVICE_KEY, null)
-                    ?: (Settings.Secure.getString(
-                        context.contentResolver,
-                        Settings.Secure.ANDROID_ID
-                    ) ?: UUID.randomUUID().toString()).also {
+                val stableDeviceId = prefs.getString(DEVICE_KEY, null)?.takeIf { it.isNotBlank() }
+                    ?: UUID.randomUUID().toString().also {
                         prefs.edit().putString(DEVICE_KEY, it).apply()
                     }
 
@@ -67,7 +63,7 @@ class CentralHubClient(private val context: Context) {
                     return@thread
                 }
 
-                val answer = json.optString("answer").trim()
+                val answer = extractAnswer(json)
                 callback(answer.ifBlank { "Central Hub AI returned an empty answer." })
             } catch (e: Exception) {
                 callback(
@@ -76,6 +72,32 @@ class CentralHubClient(private val context: Context) {
                 )
             }
         }
+    }
+
+    private fun extractAnswer(json: JSONObject): String {
+        val direct = listOf("answer", "response", "message", "content")
+            .asSequence()
+            .map { json.optString(it).trim() }
+            .firstOrNull { it.isNotBlank() }
+        if (!direct.isNullOrBlank()) return direct
+
+        val result = json.optJSONObject("result")
+        val nested = result?.let {
+            listOf("answer", "response", "message", "content")
+                .asSequence()
+                .map { key -> it.optString(key).trim() }
+                .firstOrNull { value -> value.isNotBlank() }
+        }
+        if (!nested.isNullOrBlank()) return nested
+
+        val choices = json.optJSONArray("choices")
+        if (choices != null && choices.length() > 0) {
+            val message = choices.optJSONObject(0)?.optJSONObject("message")
+            val content = message?.optString("content")?.trim().orEmpty()
+            if (content.isNotBlank()) return content
+        }
+
+        return ""
     }
 
     private fun register(deviceId: String, prefs: android.content.SharedPreferences): String? {
