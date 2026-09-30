@@ -42,8 +42,11 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var micMode = "automatic"
     private var processingCommand = false
     private var speakingResponse = false
+    private var commandGeneration = 0L
+    private var commandWatchdog: Runnable? = null
     private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
     private val sessionTimeoutRunnable = Runnable { if (sessionVisible && !processingCommand && !speakingResponse) closeActive() }
+    private val commandTimeoutMs = 30_000L
 
     companion object {
         @Volatile private var activeSession: EmaVoiceInteractionSession? = null
@@ -268,6 +271,21 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer?.destroy()
         recognizer = null
         processingCommand = true
+        val generation = ++commandGeneration
+        commandWatchdog?.let(handler::removeCallbacks)
+        val watchdog = Runnable {
+            if (!sessionVisible || !processingCommand || generation != commandGeneration) return@Runnable
+            processingCommand = false
+            commandWatchdog = null
+            response.text = "I couldn't complete that task."
+            response.visibility = View.VISIBLE
+            setState("Ready", "The task timed out. You can try again or press Back to close EMA.")
+            speakingResponse = false
+            tts?.stop()
+            scheduleSessionTimeout()
+        }
+        commandWatchdog = watchdog
+        handler.postDelayed(watchdog, commandTimeoutMs)
         scheduleSessionTimeout()
         transcript.text = "“$trimmed”"
         response.visibility = View.GONE
@@ -276,8 +294,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         val speech = tts ?: TextToSpeech(context) {}
         EmaCommandRouter(context, speech).execute(trimmed) { result ->
             handler.post {
-                if (!sessionVisible) return@post
+                if (!sessionVisible || generation != commandGeneration || !processingCommand) return@post
                 processingCommand = false
+                commandWatchdog?.let(handler::removeCallbacks)
+                commandWatchdog = null
                 response.text = result
                 response.visibility = View.VISIBLE
                 setState("Speaking", "Reading the answer…")
@@ -446,12 +466,30 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         return out.toString().trim().take(maxChars)
     }
 
+    override fun onBackPressed() {
+        commandGeneration++
+        processingCommand = false
+        commandWatchdog?.let(handler::removeCallbacks)
+        commandWatchdog = null
+        recognizer?.cancel()
+        recognizer?.destroy()
+        recognizer = null
+        tts?.stop()
+        speakingResponse = false
+        handler.removeCallbacksAndMessages(null)
+        sessionVisible = false
+        if (activeSession === this) activeSession = null
+        finish()
+    }
+
     override fun onHide() {
         sessionVisible = false
         recognizer?.destroy()
         recognizer = null
         tts?.stop()
         handler.removeCallbacksAndMessages(null)
+        commandWatchdog = null
+        commandGeneration++
         speakingResponse = false
         processingCommand = false
         if (activeSession === this) activeSession = null
