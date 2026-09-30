@@ -50,7 +50,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         // delivering microphone callbacks while the assistant is visible.
         if (sessionVisible && !processingCommand && !speakingResponse && recognizer == null) closeActive()
     }
-    private val commandTimeoutMs = 30_000L
+    private val commandTimeoutMs = 90_000L
 
     companion object {
         @Volatile private var activeSession: EmaVoiceInteractionSession? = null
