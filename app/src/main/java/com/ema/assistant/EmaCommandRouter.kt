@@ -435,9 +435,17 @@ class EmaCommandRouter(
                     CentralHubClient(context).ask(prompt) { rawAnswer ->
                         runCatching {
                             when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
-                                is EmaAiCommandInterpreter.Result.Actions -> {
+                                                is EmaAiCommandInterpreter.Result.Actions -> {
                                     if (parsed.actions.isEmpty()) {
-                                        val answer = parsed.answer.ifBlank { "I could not turn that request into a phone action." }
+                                        val answer = parsed.answer.ifBlank { "I could not determine an action to perform." }
+                                        EmaConversationStore.add(context, "assistant", answer)
+                                        speak(answer); done(answer)
+                                    } else if (!hasExplicitDeviceActionIntent(command)) {
+                                        // The AI must not turn an informational/general request into a
+                                        // device action. In this case its answer is EMA's normal response.
+                                        val answer = parsed.answer.ifBlank {
+                                            "I can explain that, but I won't change or control anything unless you ask me to."
+                                        }
                                         EmaConversationStore.add(context, "assistant", answer)
                                         speak(answer); done(answer)
                                     } else {
@@ -451,14 +459,14 @@ class EmaCommandRouter(
                             }
                         }.onFailure {
                             android.util.Log.e("EMA", "AI response handling failed", it)
-                            val message = "The AI layer could not process that request. EMA's native assistant is still available."
+                            val message = "I could not process that request right now. EMA's device controls are still available."
                             runCatching { speak(message) }
                             runCatching { done(message) }
                         }
                     }
                 }.onFailure {
                     android.util.Log.e("EMA", "AI request failed", it)
-                    val message = "The AI layer is unavailable right now. EMA's native assistant is still available."
+                    val message = "I could not process that request right now. EMA's device controls are still available."
                     speak(message); done(message)
                 }
             }
@@ -1415,6 +1423,36 @@ class EmaCommandRouter(
             val message = "I couldn't open $target."
             speak(message); done(message)
         }
+    }
+
+    /**
+     * AI-generated actions are executable only when the user's original utterance
+     * clearly asks EMA to perform a device/app operation. This prevents a normal
+     * question or explanation request from being converted into phone control.
+     */
+    private fun hasExplicitDeviceActionIntent(command: String): Boolean {
+        val normalized = command.trim().lowercase(Locale.getDefault())
+            .replace(Regex("^(please|can you|could you|would you|i want you to|i need you to)\\s+"), "")
+            .trim()
+
+        if (normalized.isBlank()) return false
+
+        val actionPatterns = listOf(
+            Regex("""^(open|launch|start|close|exit|go to|navigate to|enter)"""),
+            Regex("""^(tap|click|press|select|choose|type|write|enter)"""),
+            Regex("""^(search|find|look for|google)"""),
+            Regex("""^(call|phone|dial|send|message|text)"""),
+            Regex("""^(play|pause|stop|skip|resume)"""),
+            Regex("""^(set|create|add|schedule|remind|remember)"""),
+            Regex("""^(turn|enable|disable|increase|decrease|raise|lower|change|set)"""),
+            Regex("""^(scroll|swipe|back|home|read screen|inspect screen|show notifications)"""),
+            Regex("""^(take|capture|screenshot|record)""")
+        )
+        if (actionPatterns.any { it.containsMatchIn(normalized) }) return true
+
+        // Natural requests that explicitly delegate an operation to EMA.
+        return Regex("""^(help me|i need you to|i want you to)s+(open|launch|search|find|call|message|send|play|set|create|schedule|navigate|go to|tap|type|scroll|turn|enable|disable)""")
+            .containsMatchIn(command.trim().lowercase(Locale.getDefault()))
     }
 
     private fun executeAiActions(actions: List<String>, index: Int, finalAnswer: String, done: (String) -> Unit) {
