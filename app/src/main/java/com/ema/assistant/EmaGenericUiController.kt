@@ -18,8 +18,14 @@ object EmaGenericUiController {
             main.postDelayed({
                 val after = inspect()
                 val changed = after.isNotBlank() && after != before
-                callback(true, if (changed) "Activated $target and verified the screen changed." else "Activated $target; the control was activated, but Android exposed no clear screen change to verify.")
-            }, 450L)
+                if (changed) {
+                    callback(true, "Activated $target and verified the foreground UI changed.")
+                } else {
+                    // A successful Accessibility click is not proof that the requested
+                    // operation completed. Never report success without observable evidence.
+                    callback(false, "Activated $target, but EMA could not verify the resulting state.")
+                }
+            }, 650L)
         }
     }
 
