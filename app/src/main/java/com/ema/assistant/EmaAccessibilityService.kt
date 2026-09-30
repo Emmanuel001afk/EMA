@@ -110,8 +110,8 @@ class EmaAccessibilityService : AccessibilityService() {
         fun tapCoordinates(x: Float, y: Float): Boolean =
             instance?.tapCoordinatesInternal(x, y) == true
 
-        fun tapFirstResult(): Boolean =
-            instance?.tapFirstResultInternal() == true
+        fun tapFirstResult(query: String = ""): Boolean =
+            instance?.tapFirstResultInternal(query) == true
 
         fun tapSendButton(packageName: String): Boolean =
             instance?.tapSendButtonInternal(packageName) == true
@@ -338,25 +338,43 @@ class EmaAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun tapFirstResultInternal(): Boolean {
+    private fun tapFirstResultInternal(query: String = ""): Boolean {
         val root = rootInActiveWindow ?: return false
-        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        data class Candidate(val node: AccessibilityNodeInfo, val label: String, val score: Int)
+        val candidates = mutableListOf<Candidate>()
+        val ignored = setOf("back", "home", "search", "menu", "more options", "settings")
 
         fun collect(node: AccessibilityNodeInfo?) {
-            if (node == null || !node.isVisibleToUser) return
-            if (node.isClickable && node.isEnabled) {
-                val label = (node.text?.toString().orEmpty() + " " + node.contentDescription?.toString().orEmpty()).trim()
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return
+            if (node.isClickable) {
+                val label = (
+                    node.text?.toString().orEmpty() + " " +
+                        node.contentDescription?.toString().orEmpty()
+                ).trim().replace(Regex("\\s+"), " ")
+                val normalized = label.lowercase()
                 val bounds = Rect().also { node.getBoundsInScreen(it) }
-                if (label.isNotBlank() && bounds.width() > 40 && bounds.height() > 30 &&
-                    label.lowercase() !in setOf("back", "home", "search", "menu", "more options")) {
-                    candidates.add(node)
+                if (label.isNotBlank() && bounds.width() > 40 && bounds.height() > 30 && normalized !in ignored) {
+                    val words = query.lowercase().split(Regex("\\s+")).filter { it.length > 1 }
+                    val score = when {
+                        query.isNotBlank() && normalized == query.lowercase() -> 100
+                        query.isNotBlank() && words.isNotEmpty() && words.all { normalized.contains(it) } -> 80
+                        query.isNotBlank() && words.any { normalized.contains(it) } -> 50
+                        bounds.top > 0 -> 10
+                        else -> 0
+                    }
+                    candidates.add(Candidate(node, label, score))
                 }
             }
             for (i in 0 until node.childCount) collect(node.getChild(i))
         }
+
         collect(root)
-        val candidate = candidates.firstOrNull() ?: return false
-        return candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val candidate = candidates
+            .sortedWith(compareByDescending<Candidate> { it.score }.thenBy { 
+                Rect().also { r -> it.node.getBoundsInScreen(r) }.top
+            })
+            .firstOrNull() ?: return false
+        return candidate.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
 
     private fun tapSendButtonInternal(packageName: String): Boolean {
