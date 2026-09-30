@@ -12,6 +12,8 @@ import android.net.Uri
 import android.provider.ContactsContract
 import android.content.ContentProviderOperation
 import android.speech.tts.TextToSpeech
+import android.os.Handler
+import android.os.Looper
 import java.util.Locale
 
 /**
@@ -366,6 +368,17 @@ class EmaCommandRouter(
                 }
             }
 
+            isCombinedAppMessageCommand(lower) -> {
+                val parsed = parseCombinedAppMessageCommand(command)
+                if (parsed == null) {
+                    val result = "Tell me who to message, which app to use, and what to say."
+                    speak(result); done(result)
+                } else {
+                    val (app, recipient, body) = parsed
+                    sendAppMessage(recipient, app, body, done)
+                }
+            }
+
             isMediaPlayCommand(lower) -> {
                 val parsed = parseMediaPlay(command)
                 if (parsed == null) {
@@ -424,50 +437,45 @@ class EmaCommandRouter(
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
 
             else -> {
+                // Native EMA routing has already had first refusal. Only now do
+                // we use the second layer for language reasoning/information.
                 val prompt = runCatching {
                     EmaAiCommandInterpreter.buildPrompt(context, command)
                 }.getOrElse {
-                    val message = "I could not prepare that request. EMA is still available."
-                    speak(message); done(message); return@executeInternal
+                    val message = "I could not prepare an answer for that. Please try saying it another way."
+                    deliverAiAnswer(message, done)
+                    return@executeInternal
                 }
 
-                runCatching {
-                    CentralHubClient(context).ask(prompt) { rawAnswer ->
-                        runCatching {
-                            when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
-                                                is EmaAiCommandInterpreter.Result.Actions -> {
-                                    if (parsed.actions.isEmpty()) {
-                                        val answer = parsed.answer.ifBlank { "I could not determine an action to perform." }
-                                        EmaConversationStore.add(context, "assistant", answer)
-                                        speak(answer); done(answer)
-                                    } else if (!hasExplicitDeviceActionIntent(command)) {
-                                        // The AI must not turn an informational/general request into a
-                                        // device action. In this case its answer is EMA's normal response.
-                                        val answer = parsed.answer.ifBlank {
-                                            "I can explain that, but I won't change or control anything unless you ask me to."
-                                        }
-                                        EmaConversationStore.add(context, "assistant", answer)
-                                        speak(answer); done(answer)
-                                    } else {
-                                        executeAiActions(parsed.actions, 0, parsed.answer, done)
-                                    }
-                                }
-                                is EmaAiCommandInterpreter.Result.Answer -> {
-                                    EmaConversationStore.add(context, "assistant", parsed.text)
-                                    speak(parsed.text); done(parsed.text)
+                CentralHubClient(context).ask(prompt) { rawAnswer ->
+                    try {
+                        when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
+                            is EmaAiCommandInterpreter.Result.Actions -> {
+                                if (parsed.actions.isEmpty()) {
+                                    deliverAiAnswer(
+                                        parsed.answer.ifBlank { "I could not determine what you wanted EMA to do." },
+                                        done
+                                    )
+                                } else if (!hasExplicitDeviceActionIntent(command)) {
+                                    deliverAiAnswer(
+                                        parsed.answer.ifBlank { "I can answer that, but I need you to tell me if you want me to perform an action." },
+                                        done
+                                    )
+                                } else {
+                                    executeAiActions(parsed.actions, 0, parsed.answer, done)
                                 }
                             }
-                        }.onFailure {
-                            android.util.Log.e("EMA", "AI response handling failed", it)
-                            val message = "I could not process that request right now. EMA's device controls are still available."
-                            runCatching { speak(message) }
-                            runCatching { done(message) }
+                            is EmaAiCommandInterpreter.Result.Answer -> {
+                                deliverAiAnswer(parsed.text, done)
+                            }
                         }
+                    } catch (t: Throwable) {
+                        android.util.Log.e("EMA", "AI response handling failed", t)
+                        deliverAiAnswer(
+                            rawAnswer.ifBlank { "I could not answer that right now. Please try again." },
+                            done
+                        )
                     }
-                }.onFailure {
-                    android.util.Log.e("EMA", "AI request failed", it)
-                    val message = "I could not process that request right now. EMA's device controls are still available."
-                    speak(message); done(message)
                 }
             }
         }
@@ -1128,6 +1136,30 @@ class EmaCommandRouter(
         return null
     }
 
+    private fun isCombinedAppMessageCommand(lower: String): Boolean {
+        if (!lower.startsWith("open ")) return false
+        return lower.contains(" message ") &&
+            (lower.contains(" that ") || lower.contains(" saying ")) &&
+            (lower.contains(" and send") || lower.contains(" send"))
+    }
+
+    private fun parseCombinedAppMessageCommand(command: String): Triple<String, String, String>? {
+        val patterns = listOf(
+            Regex("(?i)^open\\s+(.+?)\\s*(?:,|and)?\\s+message\\s+(.+?)\\s+(?:that|saying)\\s+(.+?)(?:\\s+and\\s+send)?$"),
+            Regex("(?i)^open\\s+(.+?)\\s+and\\s+message\\s+(.+?)\\s+(?:that|saying)\\s+(.+?)(?:\\s+and\\s+send)?$")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(command) ?: continue
+            val app = match.groupValues[1].trim()
+            val recipient = match.groupValues[2].trim()
+            val body = match.groupValues[3].trim()
+            if (app.isNotBlank() && recipient.isNotBlank() && body.isNotBlank()) {
+                return Triple(app, recipient, body)
+            }
+        }
+        return null
+    }
+
     private fun isCallIntent(lower: String): Boolean =
         lower.startsWith("call ") || lower.startsWith("dial ") ||
             lower.startsWith("phone ") || lower.startsWith("ring ") ||
@@ -1480,6 +1512,18 @@ class EmaCommandRouter(
             } else {
                 executeAiActions(actions, index + 1, finalAnswer, done)
             }
+        }
+    }
+
+    private fun deliverAiAnswer(raw: String, done: (String) -> Unit) {
+        val answer = raw.trim().ifBlank { "I could not answer that right now. Please try again." }
+        Handler(Looper.getMainLooper()).post {
+            runCatching { EmaConversationStore.add(context, "assistant", answer) }
+                .onFailure { android.util.Log.e("EMA", "Could not store assistant response", it) }
+            runCatching { speak(answer) }
+                .onFailure { android.util.Log.e("EMA", "Could not speak assistant response", it) }
+            runCatching { done(answer) }
+                .onFailure { android.util.Log.e("EMA", "Could not deliver assistant response", it) }
         }
     }
 
