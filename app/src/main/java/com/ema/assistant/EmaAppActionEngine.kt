@@ -427,15 +427,44 @@ class EmaAppActionEngine(private val context: Context) {
             return
         }
         EmaAccessibilityService.activateWithVisualFallback("Play") { activated ->
-            if (!activated) {
-                done(false, "I opened $appName for $query, but could not find its Play control.")
-                return@activateWithVisualFallback
+            if (activated) {
+                main.postDelayed({
+                    val after = EmaAccessibilityService.inspectCurrentUi(12000)
+                    if (EmaExecutionVerifier.mediaPlaying(after)) {
+                        done(true, "Playing $query in $appName.")
+                    } else {
+                        // Some media apps expose no usable Play node. Once the
+                        // requested result is selected, use Android's standard
+                        // media transport control as a generic final fallback.
+                        EmaAccessibilityService.toggleMediaPlayback()
+                        main.postDelayed({
+                            val verified = EmaExecutionVerifier.mediaPlaying(
+                                EmaAccessibilityService.inspectCurrentUi(12000)
+                            )
+                            done(
+                                verified,
+                                if (verified) "Playing $query in $appName."
+                                else "I activated Play in $appName, but could not verify playback."
+                            )
+                        }, 700L)
+                    }
+                }, 600L)
+            } else {
+                // The requested result may already be selected even when the
+                // provider exposes no Play control. Let Android's media
+                // transport route attempt playback before declaring failure.
+                EmaAccessibilityService.toggleMediaPlayback()
+                main.postDelayed({
+                    val verified = EmaExecutionVerifier.mediaPlaying(
+                        EmaAccessibilityService.inspectCurrentUi(12000)
+                    )
+                    done(
+                        verified,
+                        if (verified) "Playing $query in $appName."
+                        else "I opened $appName for $query, but could not verify playback."
+                    )
+                }, 700L)
             }
-            main.postDelayed({
-                val after = EmaAccessibilityService.inspectCurrentUi(12000)
-                val playing = EmaExecutionVerifier.mediaPlaying(after)
-                done(playing, if (playing) "Playing $query in $appName." else "I activated Play in $appName, but could not verify playback.")
-            }, 600L)
         }
     }
 
