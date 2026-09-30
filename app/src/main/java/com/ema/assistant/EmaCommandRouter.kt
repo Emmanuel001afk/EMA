@@ -122,8 +122,16 @@ class EmaCommandRouter(
                 speak(message); done(message)
             }
 
-            lower.startsWith("set an alarm for ") || lower.startsWith("set alarm for ") -> {
-                val value = command.substringAfter("alarm for ").trim()
+            lower.startsWith("set an alarm for ") || lower.startsWith("set alarm for ") ||
+                Regex("(?i)^(?:set\s+(?:an\s+)?alarm\s+(?:in|inside|within)\s+clock\s+for\s+).+$").matches(command) ||
+                Regex("(?i)^(?:open|enter|go\s+(?:to|into))\s+clock\s+and\s+set\s+(?:an\s+)?alarm\s+for\s+).+$").matches(command) -> {
+                val value = when {
+                    lower.contains("alarm for ") -> command.substringAfter("alarm for ").trim()
+                    lower.contains("alarm in clock for ") -> command.substringAfter("alarm in clock for ").trim()
+                    lower.contains("alarm inside clock for ") -> command.substringAfter("alarm inside clock for ").trim()
+                    lower.contains("alarm within clock for ") -> command.substringAfter("alarm within clock for ").trim()
+                    else -> command.substringAfter(Regex("(?i)alarm\\s+for\\s+").find(command)?.value.orEmpty()).trim()
+                }
                 openAlarm(value, done)
             }
 
