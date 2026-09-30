@@ -427,7 +427,7 @@ class EmaCommandRouter(
                 val prompt = runCatching {
                     EmaAiCommandInterpreter.buildPrompt(context, command)
                 }.getOrElse {
-                    val message = "I could not prepare that AI request. EMA's native assistant is still available."
+                    val message = "I could not prepare that request. EMA is still available."
                     speak(message); done(message); return@executeInternal
                 }
 
@@ -1438,20 +1438,20 @@ class EmaCommandRouter(
         if (normalized.isBlank()) return false
 
         val actionPatterns = listOf(
-            Regex("""^(open|launch|start|close|exit|go to|navigate to|enter)"""),
-            Regex("""^(tap|click|press|select|choose|type|write|enter)"""),
-            Regex("""^(search|find|look for|google)"""),
-            Regex("""^(call|phone|dial|send|message|text)"""),
-            Regex("""^(play|pause|stop|skip|resume)"""),
-            Regex("""^(set|create|add|schedule|remind|remember)"""),
-            Regex("""^(turn|enable|disable|increase|decrease|raise|lower|change|set)"""),
-            Regex("""^(scroll|swipe|back|home|read screen|inspect screen|show notifications)"""),
-            Regex("""^(take|capture|screenshot|record)""")
+            Regex("""^(open|launch|start|close|exit|go to|navigate to|enter)\\b"""),
+            Regex("""^(tap|click|press|select|choose|type|write|enter)\\b"""),
+            Regex("""^(search|find|look for|google)\\b"""),
+            Regex("""^(call|phone|dial|send|message|text)\\b"""),
+            Regex("""^(play|pause|stop|skip|resume)\\b"""),
+            Regex("""^(set|create|add|schedule|remind|remember)\\b"""),
+            Regex("""^(turn|enable|disable|increase|decrease|raise|lower|change|set)\\b"""),
+            Regex("""^(scroll|swipe|back|home|read screen|inspect screen|show notifications)\\b"""),
+            Regex("""^(take|capture|screenshot|record)\\b""")
         )
         if (actionPatterns.any { it.containsMatchIn(normalized) }) return true
 
         // Natural requests that explicitly delegate an operation to EMA.
-        return Regex("""^(help me|i need you to|i want you to)s+(open|launch|search|find|call|message|send|play|set|create|schedule|navigate|go to|tap|type|scroll|turn|enable|disable)""")
+        return Regex("""^(help me|i need you to|i want you to)\\s+(open|launch|search|find|call|message|send|play|set|create|schedule|navigate|go to|tap|type|scroll|turn|enable|disable)\\b""")
             .containsMatchIn(command.trim().lowercase(Locale.getDefault()))
     }
 
