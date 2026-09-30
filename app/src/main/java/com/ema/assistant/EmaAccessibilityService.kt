@@ -105,9 +105,10 @@ class EmaAccessibilityService : AccessibilityService() {
                 callback(true)
                 return
             }
-            service.captureAndTapTextVisually(
+            service.captureAndTapTextVisuallyWithRetry(
                 packageName = service.rootInActiveWindow?.packageName?.toString().orEmpty(),
                 target = text,
+                attempts = 3,
                 callback = callback
             )
         }
@@ -679,6 +680,23 @@ class EmaAccessibilityService : AccessibilityService() {
                 callback(null)
             }
         })
+    }
+
+    private fun captureAndTapTextVisuallyWithRetry(
+        packageName: String,
+        target: String,
+        attempts: Int,
+        callback: (Boolean) -> Unit
+    ) {
+        captureAndTapTextVisually(packageName, target) { ok ->
+            if (ok || attempts <= 1) {
+                callback(ok)
+            } else {
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    captureAndTapTextVisuallyWithRetry(packageName, target, attempts - 1, callback)
+                }, 350L)
+            }
+        }
     }
 
     private fun captureAndTapTextVisually(
