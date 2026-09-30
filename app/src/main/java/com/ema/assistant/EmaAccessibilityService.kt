@@ -522,12 +522,11 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun obtainVisualBitmap(callback: (Bitmap?) -> Unit) {
-        EmaVoiceInteractionSession.currentScreenScreenshotCopy()?.let {
-            callback(it)
-            return
-        }
         EmaVoiceInteractionSession.withAssistantUiHidden {
-            captureDisplayScreenshotInternal(callback)
+            captureDisplayScreenshotInternal { live ->
+                if (live != null) callback(live)
+                else EmaVoiceInteractionSession.currentScreenScreenshotCopy()?.let { callback(it) } ?: callback(null)
+            }
         }
     }
 
