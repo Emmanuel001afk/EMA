@@ -7,6 +7,7 @@ import org.json.JSONObject
 object EmaAiCommandInterpreter {
     fun buildPrompt(context: Context, userCommand: String): String {
         val conversation = EmaConversationStore.contextText(context, 10)
+        val assistContext = EmaVoiceInteractionSession.currentAssistText().take(12000)
         val ui = EmaAccessibilityService.inspectCurrentUi(12000)
         val screen = EmaAccessibilityService.currentScreenText(12000)
         return """
@@ -40,6 +41,9 @@ Never invent that an action succeeded. EMA will verify actions locally.
 
 Recent conversation:
 $conversation
+
+Android assistant context (AssistStructure):
+$assistContext
 
 Accessible UI currently exposed by Android:
 $ui
