@@ -188,8 +188,7 @@ class EmaAppActionEngine(private val context: Context) {
             }
             main.postDelayed({
                 val ui = EmaAccessibilityService.inspectCurrentUi(12000)
-                val queryWords = query.lowercase().split(Regex("\\s+")).filter { it.length > 1 }
-                val foundQuery = queryWords.isEmpty() || queryWords.any { ui.lowercase().contains(it) }
+                val foundQuery = EmaExecutionVerifier.queryVisible(ui, query)
                 done(
                     foundQuery,
                     if (foundQuery) "I searched " + target.label + " for " + query + "."
@@ -287,8 +286,7 @@ class EmaAppActionEngine(private val context: Context) {
         runCatching { context.startActivity(intent) }.onSuccess {
             main.postDelayed({
                 val screen = EmaAccessibilityService.currentScreenText(8000).lowercase()
-                val words = recipientName.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
-                val recipientVerified = words.all { screen.contains(it) }
+                val recipientVerified = EmaExecutionVerifier.recipientVisible(screen, recipientName)
                 if (!recipientVerified) {
                     composeThroughAccessibleUi(target, recipientName, body, done)
                     return@postDelayed
@@ -301,7 +299,7 @@ class EmaAppActionEngine(private val context: Context) {
                     main.postDelayed({
                         val remaining = EmaAccessibilityService.focusedEditableText().trim()
                         done(
-                            remaining.isBlank(),
+                            EmaExecutionVerifier.inputCleared(remaining),
                             if (remaining.isBlank()) "Message sent to " + recipientName + " on " + target.label + "."
                             else "I opened the correct chat for " + recipientName + ", but the message was not verified as sent."
                         )
@@ -423,8 +421,8 @@ class EmaAppActionEngine(private val context: Context) {
         query: String,
         done: (Boolean, String) -> Unit
     ) {
-        val ui = EmaAccessibilityService.inspectCurrentUi(12000).lowercase()
-        if (ui.contains("pause") || ui.contains("playing") || ui.contains("now playing")) {
+        val ui = EmaAccessibilityService.inspectCurrentUi(12000)
+        if (EmaExecutionVerifier.mediaPlaying(ui)) {
             done(true, "Playback is active for $query in $appName.")
             return
         }
@@ -434,8 +432,8 @@ class EmaAppActionEngine(private val context: Context) {
                 return@activateWithVisualFallback
             }
             main.postDelayed({
-                val after = EmaAccessibilityService.inspectCurrentUi(12000).lowercase()
-                val playing = after.contains("pause") || after.contains("playing") || after.contains("now playing")
+                val after = EmaAccessibilityService.inspectCurrentUi(12000)
+                val playing = EmaExecutionVerifier.mediaPlaying(after)
                 done(playing, if (playing) "Playing $query in $appName." else "I activated Play in $appName, but could not verify playback.")
             }, 600L)
         }
