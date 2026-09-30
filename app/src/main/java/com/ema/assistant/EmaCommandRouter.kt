@@ -566,27 +566,24 @@ class EmaCommandRouter(
     }
 
     private fun handleScheduledAction(command: String, done: (String) -> Unit): Boolean {
-        // A scheduled item is the same native command EMA would execute now.
-        // Multiple timed clauses share the normal command router.
-        val pattern = Regex("(?i)(?:^|[,;]|\\bthen\\b)\\s*(.*?)\\s+(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\b")
+        // Support the natural time-first form: “by 4 PM call Mom, by 7 PM set an alarm”.
+        // Every item is stored as the original native command, so execution later
+        // re-enters the same understand -> execute -> observe path.
+        val time = "[0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+        val pattern = Regex("(?i)(?:^|[,;]|\\bthen\\b)\\s*(?:by|at)\\s+($time)\\s*(?:[,;:]|-)?\\s*(.*?)(?=(?:[,;]|\\s+\\bthen\\b)?\\s*(?:by|at)\\s+(?:$time)\\b|$)")
         val matches = pattern.findAll(command).toList()
-        if (matches.isEmpty()) {
-            val single = Regex("(?i)^(.*?)\\s+(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?)\\s*$").find(command) ?: return false
-            val action = single.groupValues[1].trim()
-            val trigger = EmaScheduler.parseTimeToFutureMillis(single.groupValues[2].trim())
-            if (action.isBlank() || trigger == null) return false
-            val ok = EmaScheduler.schedule(context, action, trigger)
-            val message = if (ok) "Scheduled that action for " + java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(trigger)) + "." else "I understood the action and time, but Android could not schedule it."
-            speak(message); done(message); return true
-        }
+        if (matches.isEmpty()) return false
+
         var count = 0
         val failed = mutableListOf<String>()
         for (match in matches) {
-            val action = match.groupValues[1].trim().trim(',', ';', '-', '–', '—')
+            val action = match.groupValues[2].trim().trim(',', ';', '-', '–', '—')
             if (action.isBlank()) continue
-            val trigger = EmaScheduler.parseTimeToFutureMillis(match.groupValues[2].trim())
-            if (trigger != null && EmaScheduler.schedule(context, action, trigger)) count++ else failed += action + " at " + match.groupValues[2].trim()
+            val trigger = EmaScheduler.parseTimeToFutureMillis(match.groupValues[1].trim())
+            if (trigger != null && EmaScheduler.schedule(context, action, trigger)) count++
+            else failed += action + " at " + match.groupValues[1].trim()
         }
+
         if (count == 0 && failed.isEmpty()) return false
         val message = buildString {
             if (count > 0) append("Scheduled ").append(count).append(" action").append(if (count == 1) "" else "s").append(".")
