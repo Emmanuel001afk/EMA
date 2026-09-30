@@ -34,13 +34,22 @@ class EmaCommandRouter(
     companion object { @Volatile private var pendingTask: PendingTask? = null }
 
     fun execute(raw: String, done: (String) -> Unit) {
+        // Every completion leaves the router through one main-thread boundary.
+        // This is intentionally generic: native handlers, AI callbacks, and
+        // third-party app callbacks must not depend on which thread completed.
+        val safeDone: (String) -> Unit = { result ->
+            Handler(Looper.getMainLooper()).post {
+                runCatching { done(result) }
+                    .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
+            }
+        }
         try {
-            executeInternal(raw, done)
+            executeInternal(raw, safeDone)
         } catch (t: Throwable) {
             android.util.Log.e("EMA", "Command execution crashed; keeping assistant alive", t)
             val message = "I could not complete that command, but EMA is still running."
             runCatching { speak(message) }
-            runCatching { done(message) }
+            safeDone(message)
         }
     }
 
@@ -148,7 +157,7 @@ class EmaCommandRouter(
                     val prompt = "Describe what is visible on the current Android screen. Image labels: " + labels + "\\nVisible text: " + ocr
                     CentralHubClient(context).ask(prompt) { answer ->
                         val result = answer.ifBlank { if (labels.isBlank()) "I could not identify visual content on this screen." else "I can identify: " + labels }
-                        speak(result); done(result)
+                        deliverAiAnswer(result, done)
                     }
                 }
             }
@@ -1491,8 +1500,8 @@ class EmaCommandRouter(
         if (index >= actions.size) {
             val answer = finalAnswer.ifBlank { "Done." }
             executionController.shutdown()
-            EmaConversationStore.add(context, "assistant", answer)
-            speak(answer); done(answer); return
+            finishAssistantResponse(answer, done)
+            return
         }
 
         executionController.runStep(
@@ -1501,21 +1510,18 @@ class EmaCommandRouter(
         ) { result ->
             if (isActionFailure(result)) {
                 executionController.shutdown()
-                EmaConversationStore.add(context, "assistant", result)
-                speak(result)
-                done(result)
+                finishAssistantResponse(result, done)
             } else if (index == actions.lastIndex) {
                 val answer = result.ifBlank { finalAnswer.ifBlank { "Done." } }
                 executionController.shutdown()
-                EmaConversationStore.add(context, "assistant", answer)
-                speak(answer); done(answer)
+                finishAssistantResponse(answer, done)
             } else {
                 executeAiActions(actions, index + 1, finalAnswer, done)
             }
         }
     }
 
-    private fun deliverAiAnswer(raw: String, done: (String) -> Unit) {
+    private fun finishAssistantResponse(raw: String, done: (String) -> Unit) {
         val answer = raw.trim().ifBlank { "I could not answer that right now. Please try again." }
         Handler(Looper.getMainLooper()).post {
             runCatching { EmaConversationStore.add(context, "assistant", answer) }
@@ -1525,6 +1531,10 @@ class EmaCommandRouter(
             runCatching { done(answer) }
                 .onFailure { android.util.Log.e("EMA", "Could not deliver assistant response", it) }
         }
+    }
+
+    private fun deliverAiAnswer(raw: String, done: (String) -> Unit) {
+        finishAssistantResponse(raw, done)
     }
 
     private fun isActionFailure(result: String): Boolean {
