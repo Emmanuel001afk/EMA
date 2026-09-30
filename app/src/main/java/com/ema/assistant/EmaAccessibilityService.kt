@@ -460,6 +460,76 @@ class EmaAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun tapLikelySubmitControlInternal(packageName: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != packageName) return false
+        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: findEditable(root)
+            ?: return false
+        val fieldBounds = Rect().also { field.getBoundsInScreen(it) }
+        if (fieldBounds.isEmpty) return false
+
+        data class Candidate(val node: AccessibilityNodeInfo, val score: Int)
+        val candidates = mutableListOf<Candidate>()
+        val excluded = setOf("emoji", "sticker", "gif", "attach", "attachment", "camera", "gallery", "microphone", "voice message", "plus")
+
+        fun walk(node: AccessibilityNodeInfo?) {
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return
+            if (node.isClickable) {
+                val label = (
+                    node.text?.toString().orEmpty() + " " +
+                        node.contentDescription?.toString().orEmpty() + " " +
+                        node.viewIdResourceName.orEmpty()
+                ).trim().lowercase()
+                val bounds = Rect().also { node.getBoundsInScreen(it) }
+                if (!bounds.isEmpty && bounds.width() >= 24 && bounds.height() >= 24) {
+                    if (excluded.none { label.contains(it) }) {
+                        var score = 0
+                        if (label.contains("send") || label.contains("submit")) score += 100
+                        val verticalOverlap = minOf(bounds.bottom, fieldBounds.bottom) - maxOf(bounds.top, fieldBounds.top)
+                        val overlapsVertically = verticalOverlap > 0
+                        if (bounds.left >= fieldBounds.right - 20 && overlapsVertically) score += 65
+                        if (bounds.centerX() > fieldBounds.centerX() && overlapsVertically) score += 25
+                        if (bounds.bottom >= fieldBounds.top && bounds.top <= fieldBounds.bottom + 40) score += 10
+                        if (score > 0) candidates.add(Candidate(node, score))
+                    }
+                }
+            }
+            for (i in 0 until node.childCount) walk(node.getChild(i))
+        }
+
+        walk(root)
+        val candidate = candidates.maxByOrNull { it.score } ?: return false
+        if (candidate.score < 60) return false
+        return candidate.node.performAction(AccessibilityNodeInfo.ACTION_CLICK) ||
+            run {
+                val bounds = Rect().also { candidate.node.getBoundsInScreen(it) }
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || bounds.isEmpty) false
+                else {
+                    val path = android.graphics.Path().apply {
+                        moveTo(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    }
+                    dispatchGesture(
+                        GestureDescription.Builder()
+                            .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+                            .build(),
+                        null,
+                        null
+                    )
+                }
+            }
+    }
+
+    private fun obtainVisualBitmap(callback: (Bitmap?) -> Unit) {
+        EmaVoiceInteractionSession.currentScreenScreenshotCopy()?.let {
+            callback(it)
+            return
+        }
+        EmaVoiceInteractionSession.withAssistantUiHidden {
+            captureDisplayScreenshotInternal(callback)
+        }
+    }
+
     private fun setFocusedTextInternal(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -670,26 +740,23 @@ class EmaAccessibilityService : AccessibilityService() {
             callback("")
             return
         }
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(screenshot: ScreenshotResult) {
-                val bitmap = runCatching {
-                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
-                }.getOrNull()
-                screenshot.hardwareBuffer.close()
-                if (bitmap == null) { callback(""); return }
-                val labeler = ImageLabeling.getClient(ImageLabelerOptions.Builder().setConfidenceThreshold(0.55f).build())
-                labeler.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { labels ->
-                        callback(labels.take(12).joinToString(", ") { it.text })
-                        labeler.close(); bitmap.recycle()
-                    }
-                    .addOnFailureListener {
-                        callback("")
-                        labeler.close(); bitmap.recycle()
-                    }
-            }
-            override fun onFailure(errorCode: Int) { callback("") }
-        })
+        obtainVisualBitmap { bitmap ->
+            if (bitmap == null) { callback(""); return@obtainVisualBitmap }
+            val labeler = ImageLabeling.getClient(
+                ImageLabelerOptions.Builder().setConfidenceThreshold(0.35f).build()
+            )
+            labeler.process(InputImage.fromBitmap(bitmap, 0))
+                .addOnSuccessListener { labels ->
+                    callback(labels.take(20).joinToString(", ") { it.text })
+                    labeler.close()
+                    bitmap.recycle()
+                }
+                .addOnFailureListener {
+                    callback("")
+                    labeler.close()
+                    bitmap.recycle()
+                }
+        }
     }
 
     private fun captureAndRecognize(callback: (String) -> Unit) {
@@ -697,34 +764,24 @@ class EmaAccessibilityService : AccessibilityService() {
             callback("")
             return
         }
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(screenshot: ScreenshotResult) {
-                val bitmap = runCatching {
-                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
-                }.getOrNull()
-                screenshot.hardwareBuffer.close()
-                if (bitmap == null) {
-                    callback("")
-                    return
-                }
-                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-                recognizer.process(InputImage.fromBitmap(bitmap, 0))
-                    .addOnSuccessListener { result ->
-                        callback(result.text)
-                        recognizer.close()
-                        bitmap.recycle()
-                    }
-                    .addOnFailureListener {
-                        callback("")
-                        recognizer.close()
-                        bitmap.recycle()
-                    }
-            }
-
-            override fun onFailure(errorCode: Int) {
+        obtainVisualBitmap { bitmap ->
+            if (bitmap == null) {
                 callback("")
+                return@obtainVisualBitmap
             }
-        })
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                .addOnSuccessListener { result ->
+                    callback(result.text)
+                    recognizer.close()
+                    bitmap.recycle()
+                }
+                .addOnFailureListener {
+                    callback("")
+                    recognizer.close()
+                    bitmap.recycle()
+                }
+        }
     }
 
     private fun findEditable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
