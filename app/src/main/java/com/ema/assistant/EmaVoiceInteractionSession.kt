@@ -241,9 +241,45 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             setState("Ready", "Microphone permission is required for voice.")
         }
 
-        if ((showFlags and SHOW_WITH_SCREENSHOT) != 0) {
+        val userDisabledContext = getUserDisabledShowContext()
+        val requestedScreenshot = (showFlags and SHOW_WITH_SCREENSHOT) != 0
+        val screenshotDisabled = (userDisabledContext and SHOW_WITH_SCREENSHOT) != 0
+        val assistDisabled = (userDisabledContext and SHOW_WITH_ASSIST) != 0
+
+        if (assistDisabled || screenshotDisabled) {
+            setState("Context limited", screenContextStatus())
+        } else if (requestedScreenshot) {
             setState("Listening", "I can use the current screen as context.")
         }
+
+        android.util.Log.i(
+            "EMA",
+            "Screen context: " + screenContextStatusDetail() + "; showFlags=" + showFlags
+        )
+    }
+
+    private fun screenContextStatus(): String {
+        val userDisabled = getUserDisabledShowContext()
+        val assistDisabled = (userDisabled and SHOW_WITH_ASSIST) != 0
+        val screenshotDisabled = (userDisabled and SHOW_WITH_SCREENSHOT) != 0
+
+        return when {
+            assistDisabled && screenshotDisabled ->
+                "Android has disabled both screen assist data and screenshots for EMA in system settings."
+            assistDisabled ->
+                "Android has disabled screen assist data for EMA in system settings. Screenshot context may still be available."
+            screenshotDisabled ->
+                "Android has disabled screenshot context for EMA in system settings. Assist data may still be available."
+            else ->
+                "Android has not disabled EMA's requested assist or screenshot context. App-specific or transient restrictions can still apply."
+        }
+    }
+
+    private fun screenContextStatusDetail(): String {
+        val userDisabled = getUserDisabledShowContext()
+        val assistDisabled = (userDisabled and SHOW_WITH_ASSIST) != 0
+        val screenshotDisabled = (userDisabled and SHOW_WITH_SCREENSHOT) != 0
+        return "assistDisabled=$assistDisabled, screenshotDisabled=$screenshotDisabled"
     }
 
     private fun initTts() {
@@ -462,6 +498,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onHandleAssist(state: AssistState) {
         super.onHandleAssist(state)
         state.assistStructure?.let { screenText = extractAssistText(it, 12000) }
+        if (sessionVisible && (getUserDisabledShowContext() and SHOW_WITH_ASSIST) != 0) {
+            setState("Context limited", screenContextStatus())
+        }
     }
 
     override fun onHandleScreenshot(screenshot: Bitmap?) {
@@ -469,6 +508,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         screenScreenshot = screenshot?.copy(Bitmap.Config.ARGB_8888, false)
         if (screenScreenshot != null) {
             EmaAccessibilityService.updateAssistantScreenshot(screenScreenshot)
+        } else if (sessionVisible && (getUserDisabledShowContext() and SHOW_WITH_SCREENSHOT) != 0) {
+            setState("Context limited", screenContextStatus())
         }
     }
 
