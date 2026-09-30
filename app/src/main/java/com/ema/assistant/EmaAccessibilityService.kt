@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 class EmaAccessibilityService : AccessibilityService() {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var assistantScreenshot: Bitmap? = null
     companion object {
         @Volatile private var instance: EmaAccessibilityService? = null
         private val pendingSearch = AtomicReference<PendingSearch?>(null)
@@ -44,6 +45,19 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         fun isConnected(): Boolean = instance != null
+
+        fun updateAssistantScreenshot(bitmap: Bitmap?) {
+            instance?.setAssistantScreenshotInternal(bitmap)
+        }
+
+        fun captureDisplayScreenshot(callback: (Bitmap?) -> Unit) {
+            val service = instance
+            if (service == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                callback(null)
+                return
+            }
+            service.captureDisplayScreenshotInternal(callback)
+        }
 
         fun currentScreenText(maxChars: Int = 12000): String {
             return instance?.readCurrentWindow(maxChars).orEmpty()
@@ -130,7 +144,8 @@ class EmaAccessibilityService : AccessibilityService() {
                 callback(false)
                 return
             }
-            if (service.tapSendButtonInternal(packageName)) {
+            if (service.tapSendButtonInternal(packageName) ||
+                service.tapLikelySubmitControlInternal(packageName)) {
                 callback(true)
                 return
             }
@@ -571,6 +586,31 @@ class EmaAccessibilityService : AccessibilityService() {
      * text bounds, then EMA dispatches a normal accessibility gesture to that
      * visual location.
      */
+    private fun setAssistantScreenshotInternal(bitmap: Bitmap?) {
+        assistantScreenshot?.recycle()
+        assistantScreenshot = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+    }
+
+    private fun captureDisplayScreenshotInternal(callback: (Bitmap?) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            callback(null)
+            return
+        }
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val bitmap = runCatching {
+                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                }.getOrNull()
+                screenshot.hardwareBuffer.close()
+                callback(bitmap)
+            }
+
+            override fun onFailure(errorCode: Int) {
+                callback(null)
+            }
+        })
+    }
+
     private fun captureAndTapTextVisually(
         packageName: String,
         target: String,
@@ -582,15 +622,11 @@ class EmaAccessibilityService : AccessibilityService() {
             return
         }
 
-        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-            override fun onSuccess(screenshot: ScreenshotResult) {
-                val bitmap = runCatching {
-                    Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
-                }.getOrNull()
-                screenshot.hardwareBuffer.close()
+        EmaVoiceInteractionSession.withAssistantUiHidden {
+            captureDisplayScreenshotInternal { bitmap ->
                 if (bitmap == null) {
                     callback(false)
-                    return
+                    return@captureDisplayScreenshotInternal
                 }
 
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -613,9 +649,7 @@ class EmaAccessibilityService : AccessibilityService() {
                                 moveTo(box.centerX().toFloat(), box.centerY().toFloat())
                             }
                             val gesture = GestureDescription.Builder()
-                                .addStroke(
-                                    GestureDescription.StrokeDescription(path, 0, 90)
-                                )
+                                .addStroke(GestureDescription.StrokeDescription(path, 0, 90))
                                 .build()
                             callback(dispatchGesture(gesture, null, null))
                         }
@@ -628,11 +662,7 @@ class EmaAccessibilityService : AccessibilityService() {
                         callback(false)
                     }
             }
-
-            override fun onFailure(errorCode: Int) {
-                callback(false)
-            }
-        })
+        }
     }
 
     private fun captureAndLabel(callback: (String) -> Unit) {
