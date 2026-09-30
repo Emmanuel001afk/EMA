@@ -13,8 +13,8 @@ class CentralHubClient(private val context: Context) {
         private const val HUB_URL = "https://qnogfzwmdjggqtdrkzpv.supabase.co/functions/v1/ai-tunnel"
         private const val APP_ID = "com.ema.assistant"
         private const val PREFS = "ema_tunnel"
-        private const val TOKEN_KEY = "token"
-        private const val DEVICE_KEY = "device_id"
+        private const val TOKEN_KEY = "token_v2"
+        private const val DEVICE_KEY = "device_id_v2"
     }
 
     private data class HttpResult(val code: Int, val body: String)
