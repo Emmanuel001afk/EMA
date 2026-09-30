@@ -465,12 +465,9 @@ class EmaCommandRouter(
                                         parsed.answer.ifBlank { "I could not determine what you wanted EMA to do." },
                                         done
                                     )
-                                } else if (!hasExplicitDeviceActionIntent(command)) {
-                                    deliverAiAnswer(
-                                        parsed.answer.ifBlank { "I can answer that, but I need you to tell me if you want me to perform an action." },
-                                        done
-                                    )
                                 } else {
+                                    // AI is the second-layer interpreter, not an authorization gate.
+                                    // Native routing gets first refusal; executable AI fallback actions are still run.
                                     executeAiActions(parsed.actions, 0, parsed.answer, done)
                                 }
                             }
@@ -569,54 +566,33 @@ class EmaCommandRouter(
     }
 
     private fun handleScheduledAction(command: String, done: (String) -> Unit): Boolean {
-        // Scheduling is deliberately an additional layer over the existing
-        // command language. The scheduled item is the same command EMA would
-        // execute immediately, so it does not create a second action system.
-        val match = Regex(
-            """(?i)^(.*?)(?:\s+)(?:by|at)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*$"""
-        ).find(command) ?: return false
-
-        val baseCommand = match.groupValues[1].trim()
-        val timeText = match.groupValues[2].trim()
-
-        val lowerBase = baseCommand.lowercase(Locale.getDefault())
-        val isSchedulableAction = lowerBase.isNotBlank()
-        if (!isSchedulableAction) return false
-
-        val normalizedTime = when (timeText.lowercase(Locale.getDefault())) {
-            "one" -> "1"
-            "two" -> "2"
-            "three" -> "3"
-            "four" -> "4"
-            "five" -> "5"
-            "six" -> "6"
-            "seven" -> "7"
-            "eight" -> "8"
-            "nine" -> "9"
-            "ten" -> "10"
-            "eleven" -> "11"
-            "twelve" -> "12"
-            else -> timeText
+        // A scheduled item is the same native command EMA would execute now.
+        // Multiple timed clauses share the normal command router.
+        val pattern = Regex("(?i)(?:^|[,;]|\\bthen\\b)\\s*(.*?)\\s+(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\b")
+        val matches = pattern.findAll(command).toList()
+        if (matches.isEmpty()) {
+            val single = Regex("(?i)^(.*?)\\s+(?:by|at)\\s+([0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?)\\s*$").find(command) ?: return false
+            val action = single.groupValues[1].trim()
+            val trigger = EmaScheduler.parseTimeToFutureMillis(single.groupValues[2].trim())
+            if (action.isBlank() || trigger == null) return false
+            val ok = EmaScheduler.schedule(context, action, trigger)
+            val message = if (ok) "Scheduled that action for " + java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(trigger)) + "." else "I understood the action and time, but Android could not schedule it."
+            speak(message); done(message); return true
         }
-
-        val trigger = EmaScheduler.parseTimeToFutureMillis(normalizedTime)
-        if (trigger == null) {
-            val result = "I understood the scheduled action, but I could not understand the time."
-            speak(result); done(result)
-            return true
+        var count = 0
+        val failed = mutableListOf<String>()
+        for (match in matches) {
+            val action = match.groupValues[1].trim().trim(',', ';', '-', '–', '—')
+            if (action.isBlank()) continue
+            val trigger = EmaScheduler.parseTimeToFutureMillis(match.groupValues[2].trim())
+            if (trigger != null && EmaScheduler.schedule(context, action, trigger)) count++ else failed += action + " at " + match.groupValues[2].trim()
         }
-
-        val scheduled = EmaScheduler.schedule(context, baseCommand, trigger)
-        val formatted = java.text.SimpleDateFormat("h:mm a", Locale.getDefault())
-            .format(java.util.Date(trigger))
-
-        val result = if (scheduled) {
-            "Scheduled that action for $formatted."
-        } else {
-            "I understood the action and time, but Android could not schedule it."
+        if (count == 0 && failed.isEmpty()) return false
+        val message = buildString {
+            if (count > 0) append("Scheduled ").append(count).append(" action").append(if (count == 1) "" else "s").append(".")
+            if (failed.isNotEmpty()) { if (isNotEmpty()) append("\n"); append("Could not schedule: ").append(failed.joinToString("; ")) }
         }
-        speak(result); done(result)
-        return true
+        speak(message); done(message); return true
     }
 
     private fun handleAppSectionNavigation(targetPhrase: String, done: (String) -> Unit): Boolean {
