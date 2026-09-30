@@ -5,7 +5,7 @@ import android.service.voice.VoiceInteractionSession
 
 class EmaVoiceInteractionService : VoiceInteractionService() {
     override fun onLaunchVoiceAssistFromKeyguard() {
-        showSession(null, VoiceInteractionSession.SHOW_WITH_ASSIST)
+        showSession(null, VoiceInteractionSession.SHOW_WITH_ASSIST or VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
     }
 
     override fun onReady() {
