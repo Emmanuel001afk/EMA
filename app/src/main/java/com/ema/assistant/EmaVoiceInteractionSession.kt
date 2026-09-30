@@ -45,7 +45,11 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var commandGeneration = 0L
     private var commandWatchdog: Runnable? = null
     private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
-    private val sessionTimeoutRunnable = Runnable { if (sessionVisible && !processingCommand && !speakingResponse) closeActive() }
+    private val sessionTimeoutRunnable = Runnable {
+        // Never close an active voice capture. SpeechRecognizer may still be
+        // delivering microphone callbacks while the assistant is visible.
+        if (sessionVisible && !processingCommand && !speakingResponse && recognizer == null) closeActive()
+    }
     private val commandTimeoutMs = 30_000L
 
     companion object {
@@ -405,11 +409,13 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
+                    android.util.Log.i("EMA", "SpeechRecognizer ready; mic session active")
                     setState("Listening", "I'm listening…")
                     transcript.text = "Speak now"
                 }
 
                 override fun onBeginningOfSpeech() {
+                    android.util.Log.i("EMA", "SpeechRecognizer received microphone audio")
                     handler.removeCallbacks(sessionTimeoutRunnable)
                     setState("Listening", "Hearing you…")
                 }
@@ -429,6 +435,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onError(error: Int) {
+                    android.util.Log.w("EMA", "SpeechRecognizer error=$error")
                     recognizer?.destroy()
                     recognizer = null
                     if (sessionVisible) {
@@ -438,6 +445,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onEndOfSpeech() {
+                    android.util.Log.i("EMA", "SpeechRecognizer end of speech")
                     if (sessionVisible) {
                         setState("Thinking", "Processing…")
                         scheduleSessionTimeout()
