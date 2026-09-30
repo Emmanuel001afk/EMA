@@ -25,6 +25,7 @@ class EmaCommandRouter(
     private val tts: TextToSpeech
 ) {
     private val appEngine = EmaAppActionEngine(context)
+    private val executionController = EmaExecutionController()
     private var lastAppName: String? = null
 
     private data class PendingTask(val type: String, val target: String, val app: String? = null, val body: String? = null, val sim: Int? = null, val candidates: List<String> = emptyList())
@@ -407,11 +408,20 @@ class EmaCommandRouter(
         done: (String) -> Unit
     ) {
         if (index >= steps.size) {
+            executionController.shutdown()
             done("Done.")
             return
         }
-        execute(steps[index]) { result ->
-            if (index == steps.lastIndex) {
+
+        executionController.runStep(
+            action = { finish -> execute(steps[index], finish) },
+            onTimeout = { "I couldn't complete step " + (index + 1) + " of " + steps.size + " before the execution timeout." }
+        ) { result ->
+            if (isActionFailure(result)) {
+                executionController.shutdown()
+                done(result)
+            } else if (index == steps.lastIndex) {
+                executionController.shutdown()
                 done(result)
             } else {
                 executeSequence(steps, index + 1, done)
@@ -1303,18 +1313,23 @@ class EmaCommandRouter(
     private fun executeAiActions(actions: List<String>, index: Int, finalAnswer: String, done: (String) -> Unit) {
         if (index >= actions.size) {
             val answer = finalAnswer.ifBlank { "Done." }
+            executionController.shutdown()
             EmaConversationStore.add(context, "assistant", answer)
             speak(answer); done(answer); return
         }
-        execute(actions[index]) { result ->
+
+        executionController.runStep(
+            action = { finish -> execute(actions[index], finish) },
+            onTimeout = { "I couldn't complete step " + (index + 1) + " of " + actions.size + " before the execution timeout." }
+        ) { result ->
             if (isActionFailure(result)) {
+                executionController.shutdown()
                 EmaConversationStore.add(context, "assistant", result)
                 speak(result)
                 done(result)
-                return@execute
-            }
-            if (index == actions.lastIndex) {
+            } else if (index == actions.lastIndex) {
                 val answer = result.ifBlank { finalAnswer.ifBlank { "Done." } }
+                executionController.shutdown()
                 EmaConversationStore.add(context, "assistant", answer)
                 speak(answer); done(answer)
             } else {
