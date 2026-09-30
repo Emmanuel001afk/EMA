@@ -6,6 +6,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import android.os.Handler
+import android.os.Looper
 import kotlin.concurrent.thread
 
 class CentralHubClient(private val context: Context) {
@@ -18,6 +20,11 @@ class CentralHubClient(private val context: Context) {
     }
 
     private data class HttpResult(val code: Int, val body: String)
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun deliver(callback: (String) -> Unit, value: String) {
+        mainHandler.post { runCatching { callback(value) } }
+    }
 
     fun ask(message: String, callback: (String) -> Unit) {
         thread(name = "EMA-CentralHub-AI") {
@@ -31,7 +38,7 @@ class CentralHubClient(private val context: Context) {
                 var token = prefs.getString(TOKEN_KEY, null)
                 if (token.isNullOrBlank()) token = register(stableDeviceId, prefs)
                 if (token.isNullOrBlank()) {
-                    callback("Central Hub AI registration failed.")
+                    deliver(callback, "I could not get an answer right now. Please try that again.")
                     return@thread
                 }
 
@@ -45,7 +52,7 @@ class CentralHubClient(private val context: Context) {
                 if (result.code == 401) {
                     token = register(stableDeviceId, prefs)
                     if (token.isNullOrBlank()) {
-                        callback("Central Hub AI session expired and could not be renewed.")
+                        deliver(callback, "I could not reconnect to the answer service. Please try that again.")
                         return@thread
                     }
                     result = post(token, JSONObject()
@@ -59,17 +66,16 @@ class CentralHubClient(private val context: Context) {
                 val json = runCatching { JSONObject(result.body) }.getOrNull()
                 if (result.code !in 200..299 || json?.optBoolean("ok", false) != true) {
                     val detail = json?.optString("error").orEmpty().ifBlank { "HTTP ${result.code}" }
-                    callback("Central Hub AI error: $detail")
+                    android.util.Log.w("EMA", "AI tunnel error: $detail")
+                    deliver(callback, "I could not answer that right now. Please try again.")
                     return@thread
                 }
 
                 val answer = extractAnswer(json)
-                callback(answer.ifBlank { "Central Hub AI returned an empty answer." })
+                deliver(callback, answer.ifBlank { "I did not receive an answer. Please try that again." })
             } catch (e: Exception) {
-                callback(
-                    "I can still handle phone actions, but Central Hub AI is unavailable: " +
-                        (e.message ?: "network error")
-                )
+                android.util.Log.e("EMA", "AI tunnel request failed", e)
+                deliver(callback, "I could not answer that right now. Your EMA device controls are still available.")
             }
         }
     }
@@ -125,6 +131,7 @@ class CentralHubClient(private val context: Context) {
             connection.doOutput = true
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("User-Agent", "EMA-Android/1.0")
             if (!token.isNullOrBlank()) {
                 connection.setRequestProperty("Authorization", "Bearer $token")
             }
