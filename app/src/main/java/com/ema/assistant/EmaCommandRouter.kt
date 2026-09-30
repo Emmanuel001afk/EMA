@@ -32,6 +32,17 @@ class EmaCommandRouter(
     companion object { @Volatile private var pendingTask: PendingTask? = null }
 
     fun execute(raw: String, done: (String) -> Unit) {
+        try {
+            executeInternal(raw, done)
+        } catch (t: Throwable) {
+            android.util.Log.e("EMA", "Command execution crashed; keeping assistant alive", t)
+            val message = "I could not complete that command, but EMA is still running."
+            runCatching { speak(message) }
+            runCatching { done(message) }
+        }
+    }
+
+    private fun executeInternal(raw: String, done: (String) -> Unit) {
         val command = raw.trim()
         if (command.isBlank()) return
         if (isCloseAssistantCommand(command.lowercase(Locale.getDefault()))) {
@@ -366,6 +377,17 @@ class EmaCommandRouter(
                 googleSearch(query, done)
             }
 
+            lower.startsWith("schedule my day") || lower.startsWith("set my schedule for today") ||
+                lower.startsWith("set today's schedule") -> {
+                handleDaySchedule(command, done)
+            }
+
+            lower == "what can you do" || lower == "what can you do?" ||
+                lower == "what can you do for me" || lower == "what can you do for me?" -> {
+                val message = "I can set alarms and reminders, schedule your day, open and control apps, search and play media, send messages, make calls, navigate Settings, read or inspect the screen, control volume and brightness, and perform other Android actions. The native assistant layer runs first; AI is only used when a command needs additional reasoning."
+                speak(message); done(message)
+            }
+
             lower.startsWith("search ") || lower.startsWith("find ") -> {
                 val query = command.substringAfter(' ').trim()
                 val app = lastAppName
@@ -378,23 +400,42 @@ class EmaCommandRouter(
                 openTarget(command.substringAfter(' ').trim().removePrefix("to ").trim(), done)
 
             else -> {
-                val prompt = EmaAiCommandInterpreter.buildPrompt(context, command)
-                CentralHubClient(context).ask(prompt) { rawAnswer ->
-                    when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
-                        is EmaAiCommandInterpreter.Result.Actions -> {
-                            if (parsed.actions.isEmpty()) {
-                                val answer = parsed.answer.ifBlank { "I could not turn that request into a phone action." }
-                                EmaConversationStore.add(context, "assistant", answer)
-                                speak(answer); done(answer)
-                            } else {
-                                executeAiActions(parsed.actions, 0, parsed.answer, done)
+                val prompt = runCatching {
+                    EmaAiCommandInterpreter.buildPrompt(context, command)
+                }.getOrElse {
+                    val message = "I could not prepare that AI request. EMA's native assistant is still available."
+                    speak(message); done(message); return@executeInternal
+                }
+
+                runCatching {
+                    CentralHubClient(context).ask(prompt) { rawAnswer ->
+                        runCatching {
+                            when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
+                                is EmaAiCommandInterpreter.Result.Actions -> {
+                                    if (parsed.actions.isEmpty()) {
+                                        val answer = parsed.answer.ifBlank { "I could not turn that request into a phone action." }
+                                        EmaConversationStore.add(context, "assistant", answer)
+                                        speak(answer); done(answer)
+                                    } else {
+                                        executeAiActions(parsed.actions, 0, parsed.answer, done)
+                                    }
+                                }
+                                is EmaAiCommandInterpreter.Result.Answer -> {
+                                    EmaConversationStore.add(context, "assistant", parsed.text)
+                                    speak(parsed.text); done(parsed.text)
+                                }
                             }
-                        }
-                        is EmaAiCommandInterpreter.Result.Answer -> {
-                            EmaConversationStore.add(context, "assistant", parsed.text)
-                            speak(parsed.text); done(parsed.text)
+                        }.onFailure {
+                            android.util.Log.e("EMA", "AI response handling failed", it)
+                            val message = "The AI layer could not process that request. EMA's native assistant is still available."
+                            runCatching { speak(message) }
+                            runCatching { done(message) }
                         }
                     }
+                }.onFailure {
+                    android.util.Log.e("EMA", "AI request failed", it)
+                    val message = "The AI layer is unavailable right now. EMA's native assistant is still available."
+                    speak(message); done(message)
                 }
             }
         }
@@ -1358,6 +1399,41 @@ class EmaCommandRouter(
             text.contains("but could not") ||
             text.contains("but couldn't") ||
             text.contains("failed")
+    }
+
+    private fun handleDaySchedule(command: String, done: (String) -> Unit) {
+        val body = command.substringAfter(":", missingDelimiterValue = "").trim()
+        if (body.isBlank()) {
+            val message = "Give me today's schedule as times and tasks, for example: schedule my day: 8 AM class; 1 PM meeting; 6 PM gym."
+            speak(message); done(message); return
+        }
+
+        val entries = body.split(Regex("\\s*;\\s*"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        var scheduled = 0
+        val failed = mutableListOf<String>()
+        for (entry in entries) {
+            val match = Regex("(?i)^(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)\\s*(?:-|–|—|:|to)?\\s*(.+)$").find(entry)
+            if (match == null) {
+                failed.add(entry)
+                continue
+            }
+            val trigger = EmaScheduler.parseTimeToFutureMillis(match.groupValues[1].trim())
+            val task = match.groupValues[2].trim()
+            if (trigger == null || !EmaReminderScheduler.schedule(context, task, trigger)) failed.add(entry)
+            else scheduled++
+        }
+
+        val message = if (scheduled > 0 && failed.isEmpty()) {
+            "I scheduled " + scheduled + " item" + if (scheduled == 1) "" else "s" + " for today. EMA will remind you at each time."
+        } else if (scheduled > 0) {
+            "I scheduled " + scheduled + " item" + if (scheduled == 1) "" else "s" + " for today, but could not schedule: " + failed.joinToString(", ") + "."
+        } else {
+            "I could not schedule those items. Check EMA's notification and alarm permissions and try again."
+        }
+        speak(message); done(message)
     }
 
     private fun handleReminder(command: String, done: (String) -> Unit) {
