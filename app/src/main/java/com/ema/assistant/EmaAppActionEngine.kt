@@ -404,7 +404,15 @@ class EmaAppActionEngine(private val context: Context) {
                 main.postDelayed({
                     val selected = EmaAccessibilityService.tapFirstResult(query)
                     if (!selected) {
-                        done(false, "I searched $appName for $query, but could not select the requested result.")
+                        EmaGenericUiController.tap(query) { visualSelected, _ ->
+                            if (!visualSelected) {
+                                done(false, "I searched $appName for $query, but could not select the requested result.")
+                                return@tap
+                            }
+                            main.postDelayed({
+                                ensureMediaPlaying(target.packageName, appName, query, done)
+                            }, 700L)
+                        }
                         return@postDelayed
                     }
                     main.postDelayed({
