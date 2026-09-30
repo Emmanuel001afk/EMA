@@ -288,17 +288,31 @@ class EmaAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
+
+        fun clickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isVisibleToUser && parent.isEnabled && parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return null
+        }
+
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
             if (node == null || !node.isVisibleToUser || !node.isEnabled) return null
             val nodeText = node.text?.toString().orEmpty().trim().lowercase()
             val nodeDesc = node.contentDescription?.toString().orEmpty().trim().lowercase()
-            if ((nodeText == wanted || nodeDesc == wanted) && node.isClickable) return node
+            if (nodeText == wanted || nodeDesc == wanted) {
+                if (node.isClickable) return node
+                clickableAncestor(node)?.let { return it }
+            }
             for (i in 0 until node.childCount) {
                 val found = find(node.getChild(i))
                 if (found != null) return found
             }
             return null
         }
+
         return find(root)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
@@ -307,16 +321,25 @@ class EmaAccessibilityService : AccessibilityService() {
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
 
-        fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-            if (node == null) return null
+        fun clickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isVisibleToUser && parent.isEnabled && parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return null
+        }
 
+        fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) return null
             val label = (
                 node.text?.toString().orEmpty() + " " +
                     node.contentDescription?.toString().orEmpty()
-                ).trim().lowercase()
+            ).trim().lowercase()
 
-            if (label.contains(wanted) && node.isVisibleToUser && node.isClickable) {
-                return node
+            if (label.contains(wanted)) {
+                if (node.isClickable) return node
+                clickableAncestor(node)?.let { return it }
             }
 
             for (i in 0 until node.childCount) {
