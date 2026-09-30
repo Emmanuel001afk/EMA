@@ -1154,9 +1154,16 @@ class EmaCommandRouter(
 
         installedLabels.firstOrNull { label ->
             spoken.equals(label, ignoreCase = true) ||
-                spoken.endsWith(" " + label, ignoreCase = true)
+                spoken.endsWith(" " + label, ignoreCase = true) ||
+                Regex("(?i)\\b" + Regex.escape(label) + "\\b").containsMatchIn(spoken)
         }?.let { app ->
-            val query = spoken.dropLast(app.length).trim()
+            val query = spoken
+                .replace(Regex("(?i)\\b" + Regex.escape(app) + "\\b"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .removePrefix("and ")
+                .removeSuffix(" and")
+                .trim()
             if (query.isNotBlank()) return query to app
         }
 
