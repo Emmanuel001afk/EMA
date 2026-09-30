@@ -58,6 +58,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         fun currentScreenScreenshotCopy(): Bitmap? =
             activeSession?.screenScreenshot?.copy(Bitmap.Config.ARGB_8888, false)
 
+        fun currentAssistText(): String =
+            activeSession?.screenText.orEmpty()
+
         fun withAssistantUiHidden(action: () -> Unit) {
             val session = activeSession ?: run {
                 action()
