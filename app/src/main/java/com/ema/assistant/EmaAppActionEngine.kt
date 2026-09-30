@@ -107,7 +107,16 @@ class EmaAppActionEngine(private val context: Context) {
                 val started = runCatching { context.startActivity(intent); true }.getOrDefault(false)
                 if (started) {
                     main.postDelayed({
-                        ensureMediaPlaying(target.packageName, appName, query, done)
+                        ensureMediaPlaying(target.packageName, appName, query) { playing, message ->
+                            if (playing) {
+                                done(true, message)
+                            } else {
+                                // A media intent can launch the app without actually
+                                // resolving the requested item. Fall back to the same
+                                // generic open -> search -> select -> play path.
+                                fallbackSearchAndPlay(target, appName, query, done)
+                            }
+                        }
                     }, 900L)
                     return
                 }
@@ -125,7 +134,7 @@ class EmaAppActionEngine(private val context: Context) {
                 return@searchInPackage
             }
             main.postDelayed({
-                val selected = EmaAccessibilityService.tapFirstResult()
+                val selected = EmaAccessibilityService.tapFirstResult(query)
                 if (!selected) {
                     done(false, "I searched $appName for $query, but could not select a result.")
                     return@postDelayed
@@ -143,7 +152,7 @@ class EmaAppActionEngine(private val context: Context) {
         EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
             if (!searched) { done(false, "I opened " + target.label + ", but couldn't access its search field."); return@searchInPackage }
             main.postDelayed({
-                val tapped = EmaAccessibilityService.tapFirstResult()
+                val tapped = EmaAccessibilityService.tapFirstResult(query)
                 done(tapped, if (tapped) "I searched " + target.label + " for " + query + " and selected the first result." else "I searched " + target.label + ", but couldn't identify the first selectable result.")
             }, 900L)
         }
@@ -375,6 +384,37 @@ class EmaAppActionEngine(private val context: Context) {
                 done(false, "I entered the message in $appLabel, but I could not find or activate its Send control.")
             }
         }
+    }
+
+    private fun fallbackSearchAndPlay(
+        target: AppTarget,
+        appName: String,
+        query: String,
+        done: (Boolean, String) -> Unit
+    ) {
+        val opened = openApp(target.label)
+        if (opened == null) {
+            done(false, "I opened $appName, but could not reopen it for a verified search.")
+            return
+        }
+        main.postDelayed({
+            EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
+                if (!searched) {
+                    done(false, "I opened $appName, but its search field was not accessible.")
+                    return@searchInPackage
+                }
+                main.postDelayed({
+                    val selected = EmaAccessibilityService.tapFirstResult(query)
+                    if (!selected) {
+                        done(false, "I searched $appName for $query, but could not select the requested result.")
+                        return@postDelayed
+                    }
+                    main.postDelayed({
+                        ensureMediaPlaying(target.packageName, appName, query, done)
+                    }, 700L)
+                }, 1000L)
+            }
+        }, 700L)
     }
 
     private fun ensureMediaPlaying(
