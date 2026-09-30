@@ -52,11 +52,35 @@ class EmaCommandRouter(
             done(message)
             return
         }
-        if (handlePendingFollowUp(command, done)) return
+        // Pre-routing state helpers must never abort normal command routing.
+        // Conversation history, stale pending tasks, or scheduler state are
+        // auxiliary; a failure there must not make every command fail.
+        runCatching {
+            if (handlePendingFollowUp(command, done)) return
+        }.onFailure {
+            android.util.Log.e("EMA", "Pending follow-up handling failed; continuing", it)
+        }
+
         pendingTask = null
-        if (handleScheduledAction(command, done)) return
-        EmaConversationStore.add(context, "user", command)
-        if (handleRecurringRoutine(command, done)) return
+
+        runCatching {
+            if (handleScheduledAction(command, done)) return
+        }.onFailure {
+            android.util.Log.e("EMA", "Scheduled-action precheck failed; continuing", it)
+        }
+
+        runCatching {
+            EmaConversationStore.add(context, "user", command)
+        }.onFailure {
+            android.util.Log.e("EMA", "Conversation history write failed; continuing", it)
+        }
+
+        runCatching {
+            if (handleRecurringRoutine(command, done)) return
+        }.onFailure {
+            android.util.Log.e("EMA", "Recurring-routine precheck failed; continuing", it)
+        }
+
         val lower = command.lowercase(Locale.getDefault())
 
         // Execute explicit multi-action requests sequentially. The existing
