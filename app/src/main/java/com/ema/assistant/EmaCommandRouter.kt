@@ -35,16 +35,34 @@ class EmaCommandRouter(
     companion object { @Volatile private var pendingTask: PendingTask? = null }
 
     private var executionStage = "routing"
+    private val commandHandler = Handler(Looper.getMainLooper())
+    private val commandTimeoutMs = 60_000L
+
+    /** Cancel delayed multi-step work when the Android voice session disappears. */
+    fun shutdown() {
+        commandHandler.removeCallbacksAndMessages(null)
+        executionController.shutdown()
+    }
 
     fun execute(raw: String, done: (String) -> Unit) {
         // A command has one terminal result. This prevents a late callback,
         // timeout, or duplicated provider callback from producing conflicting
         // answers for the same user command.
         val completed = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (!completed.compareAndSet(false, true)) return@Runnable
+            executionController.shutdown()
+            android.util.Log.e("EMA", "Command timed out after ${commandTimeoutMs}ms at stage=$executionStage: ${raw.trim()}")
+            runCatching { done("I couldn't complete that command in time. The operation was stopped safely; I did not retry it automatically.") }
+                .onFailure { android.util.Log.e("EMA", "Assistant timeout result delivery failed", it) }
+        }
+        commandHandler.postDelayed(timeout, commandTimeoutMs)
+
         val safeDone: (String) -> Unit = { result ->
             if (!completed.compareAndSet(false, true)) {
                 android.util.Log.w("EMA", "Ignoring duplicate command completion: " + raw.trim())
             } else {
+                commandHandler.removeCallbacks(timeout)
                 Handler(Looper.getMainLooper()).post {
                     runCatching { done(result) }
                         .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
@@ -55,14 +73,8 @@ class EmaCommandRouter(
         try {
             executeInternal(raw, safeDone)
         } catch (t: Throwable) {
-            // Never convert a native execution exception into the old
-            // "EMA is still running" message. That hid the actual failure and
-            // made it impossible to distinguish a routing error from a response
-            // error. Also do not retry automatically: a side effect may already
-            // have happened before the exception was raised.
-            android.util.Log.e("EMA", "Command execution crashed: " + raw.trim(), t)
-            val message = "EMA hit an internal error while handling that command. I did not retry it automatically."
-            safeDone(message)
+            android.util.Log.e("EMA", "Command execution crashed at stage=$executionStage: " + raw.trim(), t)
+            safeDone("I couldn't complete that command because the operation failed during $executionStage. I did not retry it automatically.")
         }
     }
 
