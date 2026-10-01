@@ -15,6 +15,7 @@ import android.speech.tts.TextToSpeech
 import android.os.Handler
 import android.os.Looper
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * First-stage command router.
@@ -34,21 +35,31 @@ class EmaCommandRouter(
     companion object { @Volatile private var pendingTask: PendingTask? = null }
 
     fun execute(raw: String, done: (String) -> Unit) {
-        // Every completion leaves the router through one main-thread boundary.
-        // This is intentionally generic: native handlers, AI callbacks, and
-        // third-party app callbacks must not depend on which thread completed.
+        // A command has one terminal result. This prevents a late callback,
+        // timeout, or duplicated provider callback from producing conflicting
+        // answers for the same user command.
+        val completed = AtomicBoolean(false)
         val safeDone: (String) -> Unit = { result ->
-            Handler(Looper.getMainLooper()).post {
-                runCatching { done(result) }
-                    .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
+            if (!completed.compareAndSet(false, true)) {
+                android.util.Log.w("EMA", "Ignoring duplicate command completion: " + raw.trim())
+            } else {
+                Handler(Looper.getMainLooper()).post {
+                    runCatching { done(result) }
+                        .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
+                }
             }
         }
+
         try {
             executeInternal(raw, safeDone)
         } catch (t: Throwable) {
-            android.util.Log.e("EMA", "Command execution crashed; keeping assistant alive", t)
-            val message = "I could not complete that command, but EMA is still running."
-            runCatching { speak(message) }
+            // Never convert a native execution exception into the old
+            // "EMA is still running" message. That hid the actual failure and
+            // made it impossible to distinguish a routing error from a response
+            // error. Also do not retry automatically: a side effect may already
+            // have happened before the exception was raised.
+            android.util.Log.e("EMA", "Command execution crashed: " + raw.trim(), t)
+            val message = "EMA hit an internal error while handling that command. I did not retry it automatically."
             safeDone(message)
         }
     }
@@ -1728,6 +1739,17 @@ class EmaCommandRouter(
     }
 
     private fun speak(text: String) {
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
+        if (text.isBlank()) return
+        // Speech is a response side-effect, never a prerequisite for command
+        // completion. TTS initialization/providers can fail independently of
+        // the native action that was just executed.
+        runCatching {
+            val status = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
+            if (status == TextToSpeech.ERROR) {
+                android.util.Log.w("EMA", "TTS rejected utterance: " + text)
+            }
+        }.onFailure {
+            android.util.Log.w("EMA", "TTS failed; command result remains valid", it)
+        }
     }
 }
