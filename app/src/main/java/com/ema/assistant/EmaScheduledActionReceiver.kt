@@ -22,7 +22,7 @@ class EmaScheduledActionReceiver : BroadcastReceiver() {
                 tts?.language = Locale.getDefault()
             }
 
-            EmaCommandRouter(context.applicationContext, tts ?: TextToSpeech(context.applicationContext) {})
+            EmaCommandRouter(context.applicationContext) { tts }
                 .execute(command) {
                     tts?.shutdown()
                     pendingResult.finish()
