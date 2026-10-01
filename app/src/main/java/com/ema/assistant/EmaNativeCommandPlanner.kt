@@ -66,7 +66,7 @@ object EmaNativeCommandPlanner {
         }
 
         val message = Regex(
-            "(?i)^(?:open|go\\s+(?:into|to))\\s+(.+?)\\s+and\\s+(?:message|send(?:\\s+(?:a\\s+)?message)?)\\s+(.+?)\\s+(?:saying|that|that says|to say)\\s+(.+?)(?:\\s+and\\s+send)?$"
+            "(?i)^(?:open|go\\s+(?:into|to))\\s+(.+?)\\s+and\\s+(?:message|send(?:\\s+(?:a\\s+)?message)?)\\s+(.+?)\\s+(?:that says|saying|to say|that)\\s+(.+?)(?:\\s+and\\s+send)?$"
         ).find(command)
         if (message != null) {
             val app = message.groupValues[1].trim()
@@ -92,8 +92,6 @@ object EmaNativeCommandPlanner {
         return raw.trim()
             .replace(Regex("\\s+"), " ")
             .replace(Regex("(?i)^(please|kindly)\\s+"), "")
-            .trim()
-            .removeSuffix(".")
             .trim()
     }
 }
