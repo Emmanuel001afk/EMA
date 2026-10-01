@@ -116,11 +116,17 @@ class EmaCommandRouter(
         // cross into execution/observation/verification.
         executionStage = "understanding"
 
-        // Execute explicit multi-action requests sequentially. The existing
-        // command handlers remain responsible for each individual action.
-        val steps = splitActionSequence(command)
-        if (steps.size > 1) {
-            executeSequence(steps, 0, done)
+        // Deterministic planning happens before individual handlers.
+        // It expands natural compound requests into the same native actions
+        // used for one-step commands. No AI call is involved here.
+        val planned = EmaNativeCommandPlanner.plan(command)
+        if (planned.size > 1) {
+            executeSequence(planned, 0, done)
+            return
+        }
+        val routedCommand = planned.firstOrNull().orEmpty()
+        if (routedCommand.isNotBlank() && routedCommand != command) {
+            executeInternal(routedCommand, done)
             return
         }
 
@@ -509,16 +515,6 @@ class EmaCommandRouter(
                 }
             }
         }
-    }
-
-    private fun splitActionSequence(command: String): List<String> {
-        // Keep message bodies intact by only treating "then" as a separator
-        // when another recognizable action follows it.
-        val pieces = command.split(Regex("(?i)\\s+then\\s+"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        if (pieces.size < 2) return listOf(command)
-        return pieces
     }
 
     private fun executeSequence(
