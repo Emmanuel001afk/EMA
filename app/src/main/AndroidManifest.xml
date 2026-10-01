@@ -29,7 +29,7 @@
             <intent-filter><action android:name="android.service.voice.VoiceInteractionSessionService"/></intent-filter>
         </service>
         <receiver android:name=".EmaScheduledActionReceiver" android:exported="false"/>
-        <receiver android:name=".EmaBootReceiver" android:enabled="true" android:exported="true">
+        <receiver android:name=".EmaBootReceiver" android:enabled="true" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
         </receiver>
         <receiver android:name=".EmaReminderReceiver" android:exported="false"/>
