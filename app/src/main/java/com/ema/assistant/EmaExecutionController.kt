@@ -2,6 +2,7 @@ package com.ema.assistant
 
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Lightweight lifecycle guard for multi-step assistant execution.
@@ -20,27 +21,28 @@ class EmaExecutionController(
         onTimeout: () -> T,
         done: (T) -> Unit
     ) {
-        var finished = false
+        val finished = AtomicBoolean(false)
         val timeout = Runnable {
-            if (finished) return@Runnable
-            finished = true
-            done(onTimeout())
+            if (!finished.compareAndSet(false, true)) return@Runnable
+            runCatching { done(onTimeout()) }
+                .onFailure { android.util.Log.e("EMA", "Execution timeout callback failed", it) }
         }
 
         handler.postDelayed(timeout, timeoutMs)
 
         try {
             action { result ->
-                if (finished) return@action
-                finished = true
+                if (!finished.compareAndSet(false, true)) return@action
                 handler.removeCallbacks(timeout)
-                done(result)
+                runCatching { done(result) }
+                    .onFailure { android.util.Log.e("EMA", "Execution result callback failed", it) }
             }
-        } catch (_: Throwable) {
-            if (!finished) {
-                finished = true
+        } catch (t: Throwable) {
+            if (finished.compareAndSet(false, true)) {
                 handler.removeCallbacks(timeout)
-                done(onTimeout())
+                android.util.Log.e("EMA", "Execution step threw before completion", t)
+                runCatching { done(onTimeout()) }
+                    .onFailure { android.util.Log.e("EMA", "Execution fallback callback failed", it) }
             }
         }
     }
