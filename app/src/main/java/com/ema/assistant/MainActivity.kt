@@ -35,7 +35,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
         requestRequiredPermissions()
-        router = EmaCommandRouter(this, tts)
+        router = EmaCommandRouter(this) { tts }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -308,7 +308,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     } else {
                         commandInput.setText(command)
                         status.text = "Working…"
-                        EmaCommandRouter(this@MainActivity, tts).execute(command) { result ->
+                        EmaCommandRouter(this@MainActivity) { tts }.execute(command) { result ->
                             runOnUiThread { status.text = result }
                         }
                     }
