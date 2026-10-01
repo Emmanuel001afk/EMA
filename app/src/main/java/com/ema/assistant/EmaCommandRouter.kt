@@ -590,7 +590,7 @@ class EmaCommandRouter(
         // Every item is stored as the original native command, so execution later
         // re-enters the same understand -> execute -> observe path.
         val time = "[0-9]{1,2}(?::[0-9]{2})?\\s*(?:am|pm)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
-        val pattern = Regex("(?i)(?:^|[,;]|\\bthen\\b)\\s*(?:by|at)\\s+($time)\\s*(?:[,;:]|-)?\\s*(.*?)(?=(?:[,;]|\\s+\\bthen\\b)?\\s*(?:by|at)\\s+(?:$time)\\b|$)")
+        val pattern = Regex("(?i)(?:^|[,;]|\\bthen\\b)\\s*(?:(?:by|at)\\s+)?($time)\\s*(?:[,;:]|-)\\s*(.*?)(?=(?:[,;]|\\s+\\bthen\\b)?\\s*(?:(?:by|at)\\s+)?(?:$time)\\s*(?:[,;:]|-)|$)")
         val matches = pattern.findAll(command).toList()
         if (matches.isEmpty()) return false
 
