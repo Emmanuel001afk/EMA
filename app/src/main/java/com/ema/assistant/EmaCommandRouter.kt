@@ -1172,7 +1172,10 @@ class EmaCommandRouter(
             lower.startsWith("call up ")
 
     private fun isMediaPlayCommand(lower: String): Boolean =
-        lower.startsWith("play ") || lower.startsWith("listen to ")
+        lower.startsWith("play ") ||
+            lower.startsWith("listen to ") ||
+            Regex("(?i)^open\\s+.+?\\s+and\\s+play\\s+.+$").matches(lower) ||
+            Regex("(?i)^(?:in|inside|within)\\s+.+?,?\\s+play\\s+.+$").matches(lower)
 
     private fun parseMediaPlay(command: String): Pair<String, String>? {
         val lower = command.lowercase(Locale.getDefault())
