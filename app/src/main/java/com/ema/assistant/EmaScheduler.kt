@@ -62,9 +62,16 @@ object EmaScheduler {
             .replace(".", "")
             .replace(Regex("\\s+"), " ")
 
+        val normalized = mapOf(
+            "one" to "1", "two" to "2", "three" to "3", "four" to "4",
+            "five" to "5", "six" to "6", "seven" to "7", "eight" to "8",
+            "nine" to "9", "ten" to "10", "eleven" to "11", "twelve" to "12"
+        ).entries.fold(cleaned) { acc, (word, number) ->
+            acc.replace(Regex("\\b" + word + "\\b"), number)
+        }
         val match = Regex(
             """^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$"""
-        ).find(cleaned) ?: return null
+        ).find(normalized) ?: return null
 
         var hour = match.groupValues[1].toIntOrNull() ?: return null
         val minute = match.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: return null
