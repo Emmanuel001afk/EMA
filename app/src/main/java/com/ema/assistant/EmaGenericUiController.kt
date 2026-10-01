@@ -16,13 +16,18 @@ object EmaGenericUiController {
                 return@activateWithVisualFallback
             }
             main.postDelayed({
-                val after = inspect()
-                val changed = after.isNotBlank() && after != before
-                if (changed) {
-                    callback(true, "Activated $target and verified the foreground UI changed.")
-                } else {
-                    // A successful Accessibility click is not proof that the requested
-                    // operation completed. Never report success without observable evidence.
+                runCatching {
+                    val after = inspect()
+                    val changed = after.isNotBlank() && after != before
+                    if (changed) {
+                        callback(true, "Activated $target and verified the foreground UI changed.")
+                    } else {
+                        // A successful Accessibility click is not proof that the requested
+                        // operation completed. Never report success without observable evidence.
+                        callback(false, "Activated $target, but EMA could not verify the resulting state.")
+                    }
+                }.onFailure {
+                    android.util.Log.e("EMA", "UI tap verification failed for '$target'", it)
                     callback(false, "Activated $target, but EMA could not verify the resulting state.")
                 }
             }, 650L)
@@ -32,8 +37,13 @@ object EmaGenericUiController {
     fun type(text: String, callback: (Boolean, String) -> Unit) {
         val ok = EmaAccessibilityService.setFocusedText(text)
         main.postDelayed({
-            inspect()
-            callback(ok, if (ok) "Entered the text and re-inspected the screen." else "I could not access an editable field.")
+            runCatching {
+                inspect()
+                callback(ok, if (ok) "Entered the text and re-inspected the screen." else "I could not access an editable field.")
+            }.onFailure {
+                android.util.Log.e("EMA", "UI text verification failed", it)
+                callback(false, "I could not verify the entered text.")
+            }
         }, 300L)
     }
 
@@ -41,8 +51,13 @@ object EmaGenericUiController {
         val before = inspect()
         val ok = EmaAccessibilityService.scroll(direction)
         main.postDelayed({
-            val after = inspect()
-            callback(ok, if (ok && after != before) "Scrolled $direction and verified the accessible UI changed." else if (ok) "Scrolled $direction." else "I could not scroll the accessible UI.")
+            runCatching {
+                val after = inspect()
+                callback(ok, if (ok && after != before) "Scrolled $direction and verified the accessible UI changed." else if (ok) "Scrolled $direction." else "I could not scroll the accessible UI.")
+            }.onFailure {
+                android.util.Log.e("EMA", "UI scroll verification failed", it)
+                callback(false, "I could not verify the scroll operation.")
+            }
         }, 400L)
     }
 
