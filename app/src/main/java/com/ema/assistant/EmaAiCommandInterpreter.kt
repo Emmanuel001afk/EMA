@@ -59,10 +59,17 @@ $userCommand
 
     fun parse(raw: String): Result {
         val text = raw.trim()
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
+        // Accept structured JSON whether the model returns plain JSON or a Markdown code fence.
+        val normalized = text
+            .removePrefix("```json")
+            .removePrefix("```JSON")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+        val start = normalized.indexOf('{')
+        val end = normalized.lastIndexOf('}')
         if (start < 0 || end <= start) return Result.Answer(text)
-        val json = runCatching { JSONObject(text.substring(start, end + 1)) }.getOrNull()
+        val json = runCatching { JSONObject(normalized.substring(start, end + 1)) }.getOrNull()
             ?: return Result.Answer(text)
         return when (json.optString("mode").lowercase()) {
             "actions" -> {
