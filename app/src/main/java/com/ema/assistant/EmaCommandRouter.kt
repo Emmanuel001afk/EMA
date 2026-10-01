@@ -1277,39 +1277,59 @@ class EmaCommandRouter(
 
         val candidates = mutableListOf<ContactCandidate>()
 
-        context.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            projection, null, null,
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " COLLATE NOCASE ASC"
-        )?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-            val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            val requested = name.trim().lowercase()
-            val requestedWords = requested.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val requested = name.trim().lowercase()
+        val requestedWords = requested.split(Regex("\\s+")).filter { it.isNotBlank() }
 
-            while (cursor.moveToNext()) {
-                val contactName = cursor.getString(nameIndex).orEmpty().trim()
-                val number = cursor.getString(numberIndex).orEmpty().trim()
-                if (contactName.isBlank() || number.isBlank()) continue
+        fun readPhoneContacts(sortOrder: String? = null): Boolean {
+            return runCatching {
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    sortOrder
+                )?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    if (nameIndex < 0 || numberIndex < 0) return@use
 
-                val candidate = contactName.lowercase()
-                val candidateWords = candidate.split(Regex("\\s+")).filter { it.isNotBlank() }
+                    while (cursor.moveToNext()) {
+                        val contactName = cursor.getString(nameIndex).orEmpty().trim()
+                        val number = cursor.getString(numberIndex).orEmpty().trim()
+                        if (contactName.isBlank() || number.isBlank()) continue
 
-                val rank = when {
-                    candidate == requested -> 0
-                    candidateWords.any { it == requested } -> 1
-                    requestedWords.size > 1 && requestedWords.all { word -> candidateWords.any { it == word } } -> 2
-                    candidate.startsWith("$requested ") || candidate.endsWith(" $requested") -> 3
-                    candidate.contains(" $requested ") -> 3
-                    candidate.startsWith(requested) || candidate.endsWith(requested) -> 4
-                    candidate.contains(requested) -> 5
-                    else -> Int.MAX_VALUE
+                        val candidate = contactName.lowercase()
+                        val candidateWords = candidate.split(Regex("\\s+")).filter { it.isNotBlank() }
+
+                        val rank = when {
+                            candidate == requested -> 0
+                            candidateWords.any { it == requested } -> 1
+                            requestedWords.size > 1 && requestedWords.all { word -> candidateWords.any { it == word } } -> 2
+                            candidate.startsWith("$requested ") || candidate.endsWith(" $requested") -> 3
+                            candidate.contains(" $requested ") -> 3
+                            candidate.startsWith(requested) || candidate.endsWith(requested) -> 4
+                            candidate.contains(requested) -> 5
+                            else -> Int.MAX_VALUE
+                        }
+
+                        if (rank != Int.MAX_VALUE) {
+                            candidates.add(ContactCandidate(contactName, number, rank))
+                        }
+                    }
                 }
-
-                if (rank != Int.MAX_VALUE) {
-                    candidates.add(ContactCandidate(contactName, number, rank))
-                }
+                true
+            }.getOrElse {
+                android.util.Log.e("EMA", "Native contact lookup failed for '$name'", it)
+                false
             }
+        }
+
+        // Do not depend on provider-specific SQL sorting. Some Android/OEM
+        // Contacts providers reject COLLATE expressions. If the ordered query
+        // fails, retry with the provider's default ordering.
+        val queried = readPhoneContacts(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC")
+        if (!queried) {
+            readPhoneContacts(null)
         }
 
         if (candidates.isEmpty()) {
