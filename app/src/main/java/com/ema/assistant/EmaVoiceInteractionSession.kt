@@ -93,6 +93,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                     session.recognizer?.destroy()
                     session.recognizer = null
                     session.tts?.stop()
+                    session.commandRouter.shutdown()
                     session.handler.removeCallbacksAndMessages(null)
                     session.finish()
                 }
@@ -564,6 +565,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer?.destroy()
         recognizer = null
         tts?.stop()
+        commandRouter.shutdown()
         speakingResponse = false
         handler.removeCallbacksAndMessages(null)
         sessionVisible = false
@@ -576,6 +578,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer?.destroy()
         recognizer = null
         tts?.stop()
+        commandRouter.shutdown()
         handler.removeCallbacksAndMessages(null)
         commandWatchdog = null
         commandGeneration++
@@ -591,6 +594,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         recognizer = null
         tts?.shutdown()
         tts = null
+        commandRouter.shutdown()
         screenScreenshot?.recycle()
         screenScreenshot = null
         handler.removeCallbacksAndMessages(null)
