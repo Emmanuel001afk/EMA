@@ -1764,6 +1764,11 @@ class EmaCommandRouter(
 
     private fun speak(text: String) {
         if (text.isBlank()) return
+        // When a live VoiceInteractionSession owns the response, it performs
+        // the single final TTS operation and updates the assistant UI state.
+        // Router-level speech remains enabled for scheduled/background commands
+        // that have no visible voice session, avoiding duplicate speech.
+        if (EmaVoiceInteractionSession.isActiveVisible()) return
         // Speech is a response side-effect, never a prerequisite for command
         // completion. TTS initialization/providers can fail independently of
         // the native action that was just executed.
