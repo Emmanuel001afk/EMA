@@ -12,6 +12,8 @@ import java.util.Locale
 class EmaScheduledActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val command = intent.getStringExtra(EmaScheduler.EXTRA_COMMAND).orEmpty()
+        val id = intent.getIntExtra(EmaScheduler.EXTRA_ID, -1)
+        if (id >= 0) EmaScheduler.remove(context, id)
         if (command.isBlank()) return
 
         val pendingResult = goAsync()
