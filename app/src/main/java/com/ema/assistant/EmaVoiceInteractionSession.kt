@@ -56,6 +56,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     companion object {
         @Volatile private var activeSession: EmaVoiceInteractionSession? = null
 
+        /** True while Android has an active EMA voice-assistant session. */
+        fun isActiveVisible(): Boolean = activeSession?.sessionVisible == true
+
         fun currentScreenScreenshotCopy(): Bitmap? =
             activeSession?.screenScreenshot?.copy(Bitmap.Config.ARGB_8888, false)
 
