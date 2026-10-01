@@ -24,12 +24,7 @@ class EmaExecutionController(
         val finished = AtomicBoolean(false)
         val timeout = Runnable {
             if (!finished.compareAndSet(false, true)) return@Runnable
-            val timeoutResult = runCatching { onTimeout() }
-                .getOrElse {
-                    android.util.Log.e("EMA", "Execution timeout result creation failed", it)
-                    "EMA could not complete this step before its execution window expired."
-                }
-            runCatching { done(timeoutResult) }
+            runCatching { done(onTimeout()) }
                 .onFailure { android.util.Log.e("EMA", "Execution timeout callback failed", it) }
         }
 
@@ -46,12 +41,7 @@ class EmaExecutionController(
             if (finished.compareAndSet(false, true)) {
                 handler.removeCallbacks(timeout)
                 android.util.Log.e("EMA", "Execution step threw before completion", t)
-                val fallback = runCatching { onTimeout() }
-                    .getOrElse {
-                        android.util.Log.e("EMA", "Execution fallback result creation failed", it)
-                        "EMA could not complete this step."
-                    }
-                runCatching { done(fallback) }
+                runCatching { done(onTimeout()) }
                     .onFailure { android.util.Log.e("EMA", "Execution fallback callback failed", it) }
             }
         }
