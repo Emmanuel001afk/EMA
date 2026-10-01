@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class EmaCommandRouter(
     private val context: Context,
-    private val tts: TextToSpeech
+    private val ttsProvider: () -> TextToSpeech?
 ) {
     private val appEngine = EmaAppActionEngine(context)
     private val executionController = EmaExecutionController()
@@ -33,6 +33,8 @@ class EmaCommandRouter(
 
     private data class PendingTask(val type: String, val target: String, val app: String? = null, val body: String? = null, val sim: Int? = null, val candidates: List<String> = emptyList())
     companion object { @Volatile private var pendingTask: PendingTask? = null }
+
+    private var executionStage = "routing"
 
     fun execute(raw: String, done: (String) -> Unit) {
         // A command has one terminal result. This prevents a late callback,
@@ -66,7 +68,11 @@ class EmaCommandRouter(
 
     private fun executeInternal(raw: String, done: (String) -> Unit) {
         val command = raw.trim()
-        if (command.isBlank()) return
+        if (command.isBlank()) {
+            val message = "I didn't receive a command."
+            finishAssistantResponse(message, done)
+            return
+        }
         if (isCloseAssistantCommand(command.lowercase(Locale.getDefault()))) {
             val message = "Closing EMA."
             speak(message)
@@ -104,6 +110,11 @@ class EmaCommandRouter(
         }
 
         val lower = command.lowercase(Locale.getDefault())
+
+        // From this point the command has been understood enough to enter the
+        // action-routing phase. Individual handlers update the stage when they
+        // cross into execution/observation/verification.
+        executionStage = "understanding"
 
         // Execute explicit multi-action requests sequentially. The existing
         // command handlers remain responsible for each individual action.
@@ -459,6 +470,7 @@ class EmaCommandRouter(
             else -> {
                 // Native EMA routing has already had first refusal. Only now do
                 // we use the second layer for language reasoning/information.
+                executionStage = "planning"
                 val prompt = runCatching {
                     EmaAiCommandInterpreter.buildPrompt(context, command)
                 }.getOrElse {
@@ -469,6 +481,7 @@ class EmaCommandRouter(
 
                 CentralHubClient(context).ask(prompt) { rawAnswer ->
                     try {
+                        executionStage = "planning"
                         when (val parsed = EmaAiCommandInterpreter.parse(rawAnswer)) {
                             is EmaAiCommandInterpreter.Result.Actions -> {
                                 if (parsed.actions.isEmpty()) {
@@ -1744,7 +1757,12 @@ class EmaCommandRouter(
         // completion. TTS initialization/providers can fail independently of
         // the native action that was just executed.
         runCatching {
-            val status = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
+            val engine = ttsProvider()
+            if (engine == null) {
+                android.util.Log.w("EMA", "TTS is not initialized; delivering text response without speech")
+                return@runCatching
+            }
+            val status = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
             if (status == TextToSpeech.ERROR) {
                 android.util.Log.w("EMA", "TTS rejected utterance: " + text)
             }
