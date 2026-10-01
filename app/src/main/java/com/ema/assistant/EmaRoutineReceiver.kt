@@ -18,7 +18,7 @@ class EmaRoutineReceiver : BroadcastReceiver() {
         var tts: TextToSpeech? = null
         tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) tts?.language = Locale.getDefault()
-            EmaCommandRouter(context.applicationContext, tts ?: TextToSpeech(context.applicationContext) {}).execute(command) {
+            EmaCommandRouter(context.applicationContext) { tts }.execute(command) {
                 tts?.shutdown()
                 pending.finish()
             }
