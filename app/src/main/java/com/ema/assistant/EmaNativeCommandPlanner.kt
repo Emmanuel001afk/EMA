@@ -32,7 +32,7 @@ object EmaNativeCommandPlanner {
             "(?i)\\s+and\\s+(?=(?:open|go|search|find|play|listen|send|message|call|dial|set|turn|enable|disable|increase|decrease|lock|unlock|read|show|dismiss|clear|tap|press|type|scroll|navigate|restart|power|switch)\\b)"
         )
         val andParts = command.split(actionAnd).map { it.trim().trim(',', ';') }.filter { it.isNotBlank() }
-        if (andParts.size > 1 && andParts.size >= 3) return andParts.flatMap { plan(it) }
+        if (andParts.size > 1 && !looksLikeMessageBody(command)) return andParts.flatMap { plan(it) }
 
         // Semicolon-separated commands are unambiguous.
         val semicolonParts = command.split(';').map { it.trim() }.filter { it.isNotBlank() }
@@ -69,6 +69,14 @@ object EmaNativeCommandPlanner {
         }
 
         return null
+    }
+
+    private fun looksLikeMessageBody(command: String): Boolean {
+        val lower = command.lowercase()
+        return lower.startsWith("message ") ||
+            lower.startsWith("send a message ") ||
+            lower.startsWith("tell ") ||
+            Regex("(?i)^open\\s+.+?\\s+(?:message|send).+\\s+(?:that says|saying|to say|that)\\s+.+$").matches(command)
     }
 
     private fun normalize(raw: String): String =
