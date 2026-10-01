@@ -31,10 +31,15 @@ class EmaAppActionEngine(private val context: Context) {
         val wanted = name.trim()
         if (wanted.isBlank()) return null
 
-        val candidates = pm.queryIntentActivities(
-            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),
-            0
-        )
+        val candidates = runCatching {
+            pm.queryIntentActivities(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),
+                0
+            )
+        }.getOrElse {
+            android.util.Log.e("EMA", "Generic app discovery failed for '$wanted'", it)
+            return null
+        }
 
         val exact = candidates.firstOrNull {
             it.activityInfo?.applicationInfo?.loadLabel(pm)?.toString()?.equals(wanted, ignoreCase = true) == true
@@ -62,15 +67,25 @@ class EmaAppActionEngine(private val context: Context) {
             val resolved = intent.resolveActivity(pm) ?: return null
             val appInfo = runCatching { pm.getApplicationInfo(resolved.packageName, 0) }.getOrNull() ?: return null
             val label = pm.getApplicationLabel(appInfo).toString()
-            context.startActivity(intent)
-            return AppTarget(label = label, packageName = resolved.packageName)
+            return runCatching {
+                context.startActivity(intent)
+                AppTarget(label = label, packageName = resolved.packageName)
+            }.getOrElse {
+                android.util.Log.e("EMA", "Could not launch default browser", it)
+                null
+            }
         }
 
         val target = findApp(wanted) ?: return null
         val launch = pm.getLaunchIntentForPackage(target.packageName) ?: return null
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(launch)
-        return target
+        return runCatching {
+            context.startActivity(launch)
+            target
+        }.getOrElse {
+            android.util.Log.e("EMA", "Could not launch " + target.label, it)
+            null
+        }
     }
 
     /**
