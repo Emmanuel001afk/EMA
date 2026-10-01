@@ -44,6 +44,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var speakingResponse = false
     private var commandGeneration = 0L
     private var commandWatchdog: Runnable? = null
+    private val commandRouter: EmaCommandRouter by lazy { EmaCommandRouter(context) { tts } }
     private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
     private val sessionTimeoutRunnable = Runnable {
         // Never close an active voice capture. SpeechRecognizer may still be
@@ -360,8 +361,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         response.visibility = View.GONE
         setState("Thinking", "Working on it…")
 
-        val speech = tts ?: TextToSpeech(context) {}
-        EmaCommandRouter(context, speech).execute(trimmed) { result ->
+        commandRouter.execute(trimmed) { result ->
             handler.post {
                 if (!sessionVisible || generation != commandGeneration || !processingCommand) return@post
                 processingCommand = false
@@ -371,8 +371,16 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 response.visibility = View.VISIBLE
                 setState("Speaking", "Reading the answer…")
                 speakingResponse = true
-                tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "ema-result")
-                scheduleSessionTimeout()
+                val speechStatus = runCatching {
+                    tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "ema-result")
+                }.getOrNull()
+                if (speechStatus == TextToSpeech.ERROR || tts == null) {
+                    speakingResponse = false
+                    setState("Ready", "Command completed.")
+                    scheduleSessionTimeout()
+                } else {
+                    scheduleSessionTimeout()
+                }
             }
         }
     }
