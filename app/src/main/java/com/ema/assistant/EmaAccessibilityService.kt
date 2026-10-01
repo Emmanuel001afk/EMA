@@ -728,8 +728,8 @@ class EmaAccessibilityService : AccessibilityService() {
                                 text == wanted || text.contains(wanted)
                             }
 
-                        if (match?.boundingBox == null) {
-                            callback(false)
+                        val activated = if (match?.boundingBox == null) {
+                            false
                         } else {
                             val box = match.boundingBox!!
                             val path = android.graphics.Path().apply {
@@ -738,15 +738,18 @@ class EmaAccessibilityService : AccessibilityService() {
                             val gesture = GestureDescription.Builder()
                                 .addStroke(GestureDescription.StrokeDescription(path, 0, 90))
                                 .build()
-                            callback(dispatchGesture(gesture, null, null))
+                            dispatchGesture(gesture, null, null)
                         }
                         recognizer.close()
                         bitmap.recycle()
+                        runCatching { callback(activated) }
+                            .onFailure { android.util.Log.e("EMA", "Visual tap callback failed", it) }
                     }
                     .addOnFailureListener {
                         recognizer.close()
                         bitmap.recycle()
-                        callback(false)
+                        runCatching { callback(false) }
+                            .onFailure { android.util.Log.e("EMA", "Visual tap failure callback failed", it) }
                     }
             }
         }
@@ -764,14 +767,17 @@ class EmaAccessibilityService : AccessibilityService() {
             )
             labeler.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { labels ->
-                    callback(labels.take(20).joinToString(", ") { it.text })
+                    val value = labels.take(20).joinToString(", ") { it.text }
                     labeler.close()
                     bitmap.recycle()
+                    runCatching { callback(value) }
+                        .onFailure { android.util.Log.e("EMA", "Image-label callback failed", it) }
                 }
                 .addOnFailureListener {
-                    callback("")
                     labeler.close()
                     bitmap.recycle()
+                    runCatching { callback("") }
+                        .onFailure { android.util.Log.e("EMA", "Image-label failure callback failed", it) }
                 }
         }
     }
@@ -789,14 +795,17 @@ class EmaAccessibilityService : AccessibilityService() {
             val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
             recognizer.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { result ->
-                    callback(result.text)
+                    val value = result.text
                     recognizer.close()
                     bitmap.recycle()
+                    runCatching { callback(value) }
+                        .onFailure { android.util.Log.e("EMA", "OCR callback failed", it) }
                 }
                 .addOnFailureListener {
-                    callback("")
                     recognizer.close()
                     bitmap.recycle()
+                    runCatching { callback("") }
+                        .onFailure { android.util.Log.e("EMA", "OCR failure callback failed", it) }
                 }
         }
     }
