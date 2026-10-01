@@ -22,10 +22,12 @@ object EmaNativeCommandPlanner {
 
         // Explicit "then" is always a sequence boundary unless it is part of
         // a message body. The router already protects message bodies further.
-        val thenParts = command.split(Regex("(?i)\\s+then\\s+"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        if (thenParts.size > 1) return thenParts
+        if (!looksLikeMessageBody(command)) {
+            val thenParts = command.split(
+                Regex("(?i)\\s+then\\s+(?=(?:open|go|search|find|play|listen|send|message|call|dial|set|turn|enable|disable|increase|decrease|lock|unlock|read|show|dismiss|clear|tap|press|type|scroll|navigate|restart|power|switch)\\b")
+            ).map { it.trim() }.filter { it.isNotBlank() }
+            if (thenParts.size > 1) return thenParts
+        }
 
         // Natural assistant speech often uses "and" instead of "then".
         // Only split when the following phrase begins with an action verb.
