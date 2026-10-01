@@ -8,6 +8,8 @@ import android.os.Build
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.max
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Persistent system-timed action layer.
@@ -37,7 +39,7 @@ object EmaScheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return runCatching {
+        val ok = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 alarmManager.canScheduleExactAlarms()
             ) {
@@ -55,7 +57,70 @@ object EmaScheduler {
             }
             true
         }.getOrDefault(false)
+
+        if (ok) persist(context, id, command, triggerAtMillis)
+        return ok
     }
+
+    private fun persist(context: Context, id: Int, command: String, triggerAtMillis: Long) {
+        val prefs = context.getSharedPreferences("ema_scheduler", Context.MODE_PRIVATE)
+        val entries = runCatching {
+            JSONArray(prefs.getString("one_shot", "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        entries.put(JSONObject().apply {
+            put("id", id)
+            put("command", command)
+            put("trigger", triggerAtMillis)
+        })
+        prefs.edit().putString("one_shot", entries.toString()).apply()
+    }
+
+    fun remove(context: Context, id: Int) {
+        val prefs = context.getSharedPreferences("ema_scheduler", Context.MODE_PRIVATE)
+        val entries = runCatching {
+            JSONArray(prefs.getString("one_shot", "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        val keep = JSONArray()
+        for (i in 0 until entries.length()) {
+            val item = entries.optJSONObject(i) ?: continue
+            if (item.optInt("id", -1) != id) keep.put(item)
+        }
+        prefs.edit().putString("one_shot", keep.toString()).apply()
+    }
+
+    fun restore(context: Context) {
+        val prefs = context.getSharedPreferences("ema_scheduler", Context.MODE_PRIVATE)
+        val entries = runCatching {
+            JSONArray(prefs.getString("one_shot", "[]") ?: "[]")
+        }.getOrDefault(JSONArray())
+        val now = System.currentTimeMillis()
+        val keep = JSONArray()
+        for (i in 0 until entries.length()) {
+            val item = entries.optJSONObject(i) ?: continue
+            val id = item.optInt("id", -1)
+            val command = item.optString("command", "")
+            val trigger = item.optLong("trigger", 0L)
+            if (id < 0 || command.isBlank() || trigger <= now) continue
+            val intent = Intent(context, EmaScheduledActionReceiver::class.java)
+                .putExtra(EXTRA_COMMAND, command)
+                .putExtra(EXTRA_ID, id)
+            val restored = PendingIntent.getBroadcast(
+                context, id, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    alarmManagerFor(context).canScheduleExactAlarms()
+                ) alarmManagerFor(context).setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, restored)
+                else alarmManagerFor(context).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, restored)
+                true
+            }.onSuccess { keep.put(item) }
+        }
+        prefs.edit().putString("one_shot", keep.toString()).apply()
+    }
+
+    private fun alarmManagerFor(context: Context): AlarmManager =
+        context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
     fun parseTimeToFutureMillis(value: String, nowMillis: Long = System.currentTimeMillis()): Long? {
         val cleaned = value.trim().lowercase(Locale.getDefault())
