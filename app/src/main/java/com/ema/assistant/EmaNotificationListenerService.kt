@@ -8,9 +8,13 @@ class EmaNotificationListenerService : NotificationListenerService() {
         @Volatile var latestNotifications: List<String> = emptyList()
         @Volatile private var service: EmaNotificationListenerService? = null
 
+        fun isConnected(): Boolean = service != null
+
         fun describeActiveNotifications(): String {
-            val current = service?.getActiveNotifications().orEmpty()
-            if (current.isEmpty()) return "There are no active notifications available to EMA."
+            val activeService = service
+            if (activeService == null) return "EMA notification access is not connected. Enable Notification access for EMA first."
+            val current = activeService.getActiveNotifications().orEmpty()
+            if (current.isEmpty()) return "Notification access is connected, but there are no active notifications."
             return current.take(20).joinToString("\n") { sbn ->
                 val title = sbn.notification.extras?.getCharSequence("android.title")?.toString().orEmpty()
                 val text = sbn.notification.extras?.getCharSequence("android.text")?.toString().orEmpty()
@@ -21,13 +25,14 @@ class EmaNotificationListenerService : NotificationListenerService() {
 
         fun dismissMatching(query: String): Boolean {
             val target = query.trim().lowercase()
-            val current = service?.getActiveNotifications().orEmpty()
+            val activeService = service ?: return false
+            val current = activeService.getActiveNotifications().orEmpty()
             val match = current.firstOrNull { sbn ->
                 val title = sbn.notification.extras?.getCharSequence("android.title")?.toString().orEmpty()
                 val text = sbn.notification.extras?.getCharSequence("android.text")?.toString().orEmpty()
                 (title + " " + text + " " + sbn.packageName).lowercase().contains(target)
             } ?: return false
-            service?.cancelNotification(match.key)
+            activeService.cancelNotification(match.key)
             return true
         }
     }
