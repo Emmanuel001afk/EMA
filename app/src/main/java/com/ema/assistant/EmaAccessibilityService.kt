@@ -18,7 +18,7 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import java.util.concurrent.atomic.AtomicReference
+import java.util.ArrayDeque
 
 class EmaAccessibilityService : AccessibilityService() {
     private val mainHandler = Handler(Looper.getMainLooper())
