@@ -107,6 +107,7 @@ object EmaReminderScheduler {
                     .setContentIntent(open)
                     .build()
             )
+            EmaReminderScheduler.remove(context, intent.getIntExtra(EXTRA_ID, 1))
         }
     }
 }
