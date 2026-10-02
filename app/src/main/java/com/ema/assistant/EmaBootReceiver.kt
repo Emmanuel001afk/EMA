@@ -10,6 +10,9 @@ import android.content.Intent
 class EmaBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        EmaScheduler.restore(context.applicationContext)
+        val app = context.applicationContext
+        EmaScheduler.restore(app)
+        EmaRoutineScheduler.restore(app)
+        EmaReminderScheduler.restore(app)
     }
 }
