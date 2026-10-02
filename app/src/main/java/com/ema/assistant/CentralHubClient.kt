@@ -17,6 +17,7 @@ class CentralHubClient(private val context: Context) {
         private const val PREFS = "ema_tunnel"
         private const val TOKEN_KEY = "token_v2"
         private const val DEVICE_KEY = "device_id_v2"
+        private val REGISTRATION_LOCK = Any()
     }
 
     private data class HttpResult(val code: Int, val body: String)
@@ -36,7 +37,14 @@ class CentralHubClient(private val context: Context) {
                     }
 
                 var token = prefs.getString(TOKEN_KEY, null)
-                if (token.isNullOrBlank()) token = register(stableDeviceId, prefs)
+                if (token.isNullOrBlank()) {
+                    token = synchronized(REGISTRATION_LOCK) {
+                        // Re-read after acquiring the lock so concurrent assistant
+                        // requests cannot register the same device twice.
+                        prefs.getString(TOKEN_KEY, null)?.takeIf { it.isNotBlank() }
+                            ?: register(stableDeviceId, prefs)
+                    }
+                }
                 if (token.isNullOrBlank()) {
                     deliver(callback, "I could not get an answer right now. Please try that again.")
                     return@thread
