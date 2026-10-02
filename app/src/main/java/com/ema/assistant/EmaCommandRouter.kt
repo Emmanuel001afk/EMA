@@ -182,6 +182,26 @@ class EmaCommandRouter(
                 speak(message); done(message)
             }
 
+            lower == "list files" || lower == "show files" || lower == "list my files" -> {
+                val message = EmaFileAccessEngine.list()
+                speak(message.take(1200)); done(message)
+            }
+
+            lower.startsWith("list files in ") -> {
+                val path = command.substringAfter("list files in ").trim()
+                val message = EmaFileAccessEngine.list(path)
+                speak(message.take(1200)); done(message)
+            }
+
+            lower.startsWith("find file ") || lower.startsWith("find the file ") || lower.startsWith("search for file ") -> {
+                val query = command
+                    .replaceFirst(Regex("(?i)^find(?: the)? file\\s+"), "")
+                    .replaceFirst(Regex("(?i)^search for file\\s+"), "")
+                    .trim()
+                val message = EmaFileAccessEngine.find(query)
+                speak(message.take(1200)); done(message)
+            }
+
             lower.startsWith("dismiss notification") || lower.startsWith("clear notification") -> {
                 val target = command.substringAfter(' ').replaceFirst(Regex("(?i)^(notification|notifications)\\s*"), "").trim()
                 val ok = EmaNotificationListenerService.dismissMatching(target)
