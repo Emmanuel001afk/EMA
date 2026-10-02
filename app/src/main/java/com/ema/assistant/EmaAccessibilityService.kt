@@ -25,7 +25,8 @@ class EmaAccessibilityService : AccessibilityService() {
     private var assistantScreenshot: Bitmap? = null
     companion object {
         @Volatile private var instance: EmaAccessibilityService? = null
-        private val pendingSearch = AtomicReference<PendingSearch?>(null)
+        private val pendingSearch = ArrayDeque<PendingSearch>()
+        private val pendingSearchLock = Any()
 
         private data class PendingSearch(
             val packageName: String?,
@@ -35,12 +36,16 @@ class EmaAccessibilityService : AccessibilityService() {
         )
 
         fun requestTextSearch(query: String) {
-            pendingSearch.set(PendingSearch(null, query, {}))
+            synchronized(pendingSearchLock) {
+                pendingSearch.addLast(PendingSearch(null, query, {}))
+            }
             instance?.performPendingSearch()
         }
 
         fun searchInPackage(packageName: String, query: String, callback: (Boolean) -> Unit) {
-            pendingSearch.set(PendingSearch(packageName, query, callback))
+            synchronized(pendingSearchLock) {
+                pendingSearch.addLast(PendingSearch(packageName, query, callback))
+            }
             instance?.performPendingSearch()
         }
 
@@ -182,7 +187,12 @@ class EmaAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
-        pendingSearch.getAndSet(null)?.callback?.invoke(false)
+        val callbacks = synchronized(pendingSearchLock) {
+            val out = pendingSearch.toList()
+            pendingSearch.clear()
+            out
+        }
+        callbacks.forEach { runCatching { it.callback(false) } }
         if (instance === this) instance = null
         super.onDestroy()
     }
@@ -555,7 +565,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun performPendingSearch() {
-        val pending = pendingSearch.get() ?: return
+        val pending = synchronized(pendingSearchLock) { pendingSearch.firstOrNull() } ?: return
         val root = rootInActiveWindow ?: return
 
         if (pending.packageName != null && root.packageName?.toString() != pending.packageName) {
@@ -572,8 +582,12 @@ class EmaAccessibilityService : AccessibilityService() {
             // resulting accessibility event retry the same generic search.
             val opened = clickSearchControl(root)
             if (opened && pending.attempts < 6) {
-                val retry = pending.copy(attempts = pending.attempts + 1)
-                pendingSearch.set(retry)
+                synchronized(pendingSearchLock) {
+                    if (pendingSearch.firstOrNull() == pending) {
+                        pendingSearch.removeFirst()
+                        pendingSearch.addFirst(pending.copy(attempts = pending.attempts + 1))
+                    }
+                }
                 mainHandler.postDelayed({ performPendingSearch() }, 350L)
             }
             return
@@ -591,8 +605,15 @@ class EmaAccessibilityService : AccessibilityService() {
                 field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
             }
             clickSearchControl(root)
-            pendingSearch.compareAndSet(pending, null)
-            pending.callback(true)
+            val removed = synchronized(pendingSearchLock) {
+                if (pendingSearch.firstOrNull() == pending) {
+                    pendingSearch.removeFirst()
+                    true
+                } else false
+            }
+            if (removed) {
+                runCatching { pending.callback(true) }
+            }
         }
     }
 
