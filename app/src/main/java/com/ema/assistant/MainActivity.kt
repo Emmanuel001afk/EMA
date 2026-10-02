@@ -16,6 +16,7 @@ import android.speech.RecognizerIntent
 import android.speech.RecognitionListener
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.service.voice.VoiceInteractionService
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
@@ -39,7 +40,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(36, 48, 36, 32)
+            setPadding(dp(18), dp(24), dp(18), dp(16))
         }
 
         root.addView(TextView(this).apply {
@@ -102,7 +103,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(TextView(this).apply {
             text = "Microphone mode"
             textSize = 16f
-            setPadding(0, 24, 0, 4)
+            setPadding(0, dp(12), 0, dp(2))
         })
         val micModeSpinner = Spinner(this)
         val micModeLabels = listOf(
@@ -168,14 +169,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             })
         }
         root.addView(TextView(this).apply {
-            text = "System assistant: ${if (isAssistantRoleHeld()) "enabled" else "not enabled"}"
+            text = "System assistant: " + when {
+                !isAssistantRoleHeld() -> "not enabled"
+                isVoiceInteractionServiceActive() -> "enabled and active"
+                else -> "enabled; service not active yet"
+            }
             textSize = 14f
         })
 
         status = TextView(this).apply {
             text = "EMA is ready."
             textSize = 18f
-            setPadding(0, 28, 0, 12)
+            setPadding(0, dp(14), 0, dp(6))
         }
         root.addView(status)
 
@@ -197,6 +202,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun isAssistantRoleHeld(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
     } else false
+
+    private fun isVoiceInteractionServiceActive(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            runCatching { VoiceInteractionService.isActiveService(this, componentName) }.getOrDefault(false)
+        } else false
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun openAccessibilitySettings() {
         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -270,7 +282,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized) {
-            status.text = if (isAssistantRoleHeld()) "EMA is the system assistant." else "EMA is ready. System assistant is not enabled yet."
+            status.text = when {
+                !isAssistantRoleHeld() -> "EMA is ready. System assistant is not enabled yet."
+                isVoiceInteractionServiceActive() -> "EMA is the active system assistant."
+                else -> "EMA is selected as assistant; Android has not activated the voice service yet."
+            }
         }
     }
 
