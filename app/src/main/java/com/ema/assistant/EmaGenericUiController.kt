@@ -38,8 +38,14 @@ object EmaGenericUiController {
         val ok = EmaAccessibilityService.setFocusedText(text)
         main.postDelayed({
             runCatching {
-                inspect()
-                callback(ok, if (ok) "Entered the text and re-inspected the screen." else "I could not access an editable field.")
+                val actual = EmaAccessibilityService.focusedEditableText()
+                val verified = ok && actual == text
+                callback(
+                    verified,
+                    if (verified) "Entered the text and verified the editable field value."
+                    else if (ok) "EMA entered the text operation, but the resulting field value could not be verified."
+                    else "I could not access an editable field."
+                )
             }.onFailure {
                 android.util.Log.e("EMA", "UI text verification failed", it)
                 callback(false, "I could not verify the entered text.")
