@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
 object EmaReminderScheduler {
     const val EXTRA_TEXT = "ema.reminder.text"
     const val EXTRA_ID = "ema.reminder.id"
+    private const val PREFS = "ema_reminders"
+    private const val KEY = "items"
 
     fun schedule(context: Context, text: String, atMillis: Long): Boolean {
         if (text.isBlank() || atMillis <= System.currentTimeMillis()) return false
@@ -30,6 +32,55 @@ object EmaReminderScheduler {
             }
             true
         }.getOrDefault(false)
+    }
+
+    private fun persist(context: Context, id: Int, text: String, atMillis: Long) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val entries = runCatching { org.json.JSONArray(prefs.getString(KEY, "[]") ?: "[]") }.getOrDefault(org.json.JSONArray())
+        entries.put(org.json.JSONObject().apply {
+            put("id", id); put("text", text); put("at", atMillis)
+        })
+        prefs.edit().putString(KEY, entries.toString()).apply()
+    }
+
+    fun remove(context: Context, id: Int) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val entries = runCatching { org.json.JSONArray(prefs.getString(KEY, "[]") ?: "[]") }.getOrDefault(org.json.JSONArray())
+        val keep = org.json.JSONArray()
+        for (i in 0 until entries.length()) {
+            val item = entries.optJSONObject(i) ?: continue
+            if (item.optInt("id", -1) != id) keep.put(item)
+        }
+        prefs.edit().putString(KEY, keep.toString()).apply()
+    }
+
+    fun restore(context: Context) {
+        val alarms = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val entries = runCatching { org.json.JSONArray(prefs.getString(KEY, "[]") ?: "[]") }.getOrDefault(org.json.JSONArray())
+        val keep = org.json.JSONArray()
+        val now = System.currentTimeMillis()
+        for (i in 0 until entries.length()) {
+            val item = entries.optJSONObject(i) ?: continue
+            val id = item.optInt("id", -1)
+            val text = item.optString("text", "")
+            val at = item.optLong("at", 0L)
+            if (id < 0 || text.isBlank() || at <= now) continue
+            val intent = Intent(context, EmaReminderReceiver::class.java)
+                .putExtra(EXTRA_TEXT, text).putExtra(EXTRA_ID, id)
+            val pending = PendingIntent.getBroadcast(
+                context, id, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarms.canScheduleExactAlarms()) {
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                } else {
+                    alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                }
+            }.onSuccess { keep.put(item) }
+        }
+        prefs.edit().putString(KEY, keep.toString()).apply()
     }
 
     fun parseTime(value: String, nowMillis: Long = System.currentTimeMillis()): Long? =
