@@ -32,7 +32,9 @@ class EmaCommandRouter(
     private var lastAppName: String? = null
 
     private data class PendingTask(val type: String, val target: String, val app: String? = null, val body: String? = null, val sim: Int? = null, val candidates: List<String> = emptyList())
-    companion object { @Volatile private var pendingTask: PendingTask? = null }
+    // Follow-up state is scoped to this router/session so separate Activity and
+    // VoiceInteractionSession instances cannot consume one another's pending task.
+    private var pendingTask: PendingTask? = null
 
     private var executionStage = "routing"
     private val commandHandler = Handler(Looper.getMainLooper())
@@ -123,15 +125,15 @@ class EmaCommandRouter(
 
         val lower = command.lowercase(Locale.getDefault())
 
-        // From this point the command has been understood enough to enter the
-        // action-routing phase. Individual handlers update the stage when they
-        // cross into execution/observation/verification.
-        executionStage = "understanding"
+        // Planning is a distinct stage. Runtime native failures must not be
+        // mislabeled as an "understanding" failure.
+        executionStage = "planning"
 
         // Deterministic planning happens before individual handlers.
         // It expands natural compound requests into the same native actions
         // used for one-step commands. No AI call is involved here.
         val planned = EmaNativeCommandPlanner.plan(command)
+        executionStage = "executing"
         if (planned.size > 1) {
             executeSequence(planned, 0, done)
             return
@@ -508,9 +510,14 @@ class EmaCommandRouter(
                                         done
                                     )
                                 } else {
-                                    // AI is the second-layer interpreter, not an authorization gate.
-                                    // Native routing gets first refusal; executable AI fallback actions are still run.
-                                    executeAiActions(parsed.actions, 0, parsed.answer, done)
+                                    // AI is the second-layer interpreter, never the authorization gate.
+                                    // Only an explicitly action-oriented user command may cross into execution.
+                                    if (!hasExplicitDeviceActionIntent(command)) {
+                                        deliverAiAnswer(parsed.answer.ifBlank { "I could not determine a safe action for that request." }, done)
+                                    } else {
+                                        executionStage = "executing"
+                                        executeAiActions(parsed.actions, 0, parsed.answer, done)
+                                    }
                                 }
                             }
                             is EmaAiCommandInterpreter.Result.Answer -> {
@@ -1736,7 +1743,7 @@ class EmaCommandRouter(
     }
 
     private fun setBrightnessPercent(value: String, done: (String) -> Unit) {
-        val percent = Regex("(\\\\d{1,3})").find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val percent = Regex("""(?i)(\d{1,3})(?:\s*%)?""").find(value)?.groupValues?.getOrNull(1)?.toIntOrNull()
         if (percent == null || percent !in 1..100) { val message = "Tell me a brightness percentage from 1 to 100."; speak(message); done(message); return }
         if (!Settings.System.canWrite(context)) {
             runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
