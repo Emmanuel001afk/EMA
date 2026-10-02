@@ -1422,7 +1422,23 @@ class EmaCommandRouter(
     }
 
     private fun requestPermission(permission: String) {
-        (context as? Activity)?.requestPermissions(arrayOf(permission), 42)
+        val activity = context as? Activity
+        if (activity != null) {
+            activity.requestPermissions(arrayOf(permission), 42)
+            return
+        }
+        // VoiceInteractionService/Session is not an Activity, so the old
+        // requestPermissions call silently did nothing when EMA was invoked
+        // as the system assistant. Bring the permission-capable Activity forward.
+        runCatching {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .putExtra("ema_request_permission", permission)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            )
+        }.onFailure {
+            android.util.Log.e("EMA", "Could not open permission Activity for $permission", it)
+        }
     }
 
     private fun globalAction(action: Int, message: String, done: (String) -> Unit) {
