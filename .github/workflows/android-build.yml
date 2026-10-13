@@ -61,14 +61,17 @@ jobs:
           set -o pipefail
           gradle :app:testDebugUnitTest --no-daemon --console=plain --stacktrace 2>&1 | tee -a build-log.txt
 
+      # Diagnostics only: an artifact-storage problem must never block the build.
+      # continue-on-error keeps the job green so the APK steps below still run.
       - name: Upload unit test reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ema-unit-test-reports
           path: app/build/reports/tests/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
       - name: Build debug and release APKs
         id: build
@@ -91,15 +94,20 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ema-build-diagnostics
           path: build-log.txt
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
+      # Non-fatal: "Verify APK outputs" above is the real gate that both APKs
+      # exist, and the AEM Store publication below is the actual distribution
+      # channel. An exhausted GitHub artifact-storage quota must not block it.
       - name: Upload debug APK
         if: success()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ema-debug-apk
