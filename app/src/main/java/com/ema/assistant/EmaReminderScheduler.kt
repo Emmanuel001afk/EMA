@@ -130,9 +130,6 @@ object EmaReminderScheduler {
         writeEntries(context, keep)
     }
 
-    fun parseTime(value: String, nowMillis: Long = System.currentTimeMillis()): Long? =
-        EmaScheduler.parseTimeToFutureMillis(value, nowMillis)
-
     // ---------------------------------------------------------------- internals
 
     private fun arm(alarms: AlarmManager, context: Context, id: Int, text: String, atMillis: Long): Boolean {

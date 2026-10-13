@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_aem:
+        description: 'Publish the release APK to the AEM Store (off while the Supabase quota is exhausted)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -115,8 +120,25 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish latest release to AEM Store
+      # With AEM Store publication paused, the release APK artifact is the way to
+      # get a distributable build out of a run.
+      - name: Upload release APK
         if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ema-release-apk
+          path: ${{ env.RELEASE_APK }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report AEM Store publication status
+        if: success() && vars.EMA_PUBLISH_AEM != 'true' && inputs.publish_aem != true
+        run: |
+          echo "::notice::AEM Store publication is paused because the Supabase quota is exhausted. The release APK is attached to this run instead. To resume publishing, set the repository variable EMA_PUBLISH_AEM to true (Settings > Secrets and variables > Actions > Variables), or tick publish_aem on a manual run."
+
+      - name: Publish latest release to AEM Store
+        if: success() && (vars.EMA_PUBLISH_AEM == 'true' || inputs.publish_aem == true)
         env:
           APK: ${{ env.RELEASE_APK }}
         run: |

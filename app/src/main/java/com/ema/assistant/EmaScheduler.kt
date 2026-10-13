@@ -5,9 +5,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import java.util.Calendar
-import java.util.Locale
-import kotlin.math.max
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -122,48 +119,16 @@ object EmaScheduler {
     private fun alarmManagerFor(context: Context): AlarmManager =
         context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-    fun parseTimeToFutureMillis(value: String, nowMillis: Long = System.currentTimeMillis()): Long? {
-        val cleaned = value.trim().lowercase(Locale.getDefault())
-            .replace(".", "")
-            .replace(Regex("\\s+"), " ")
-
-        val normalized = mapOf(
-            "one" to "1", "two" to "2", "three" to "3", "four" to "4",
-            "five" to "5", "six" to "6", "seven" to "7", "eight" to "8",
-            "nine" to "9", "ten" to "10", "eleven" to "11", "twelve" to "12"
-        ).entries.fold(cleaned) { acc, (word, number) ->
-            acc.replace(Regex("\\b" + word + "\\b"), number)
-        }
-        val match = Regex(
-            """^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$"""
-        ).find(normalized) ?: return null
-
-        var hour = match.groupValues[1].toIntOrNull() ?: return null
-        val minute = match.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: return null
-        val meridiem = match.groupValues[3]
-
-        if (minute !in 0..59) return null
-
-        if (!meridiem.isNullOrBlank()) {
-            if (hour !in 1..12) return null
-            if (meridiem == "am" && hour == 12) hour = 0
-            if (meridiem == "pm" && hour != 12) hour += 12
-        } else if (hour !in 0..23) {
-            return null
-        }
-
-        val calendar = Calendar.getInstance().apply {
-            timeInMillis = nowMillis
-            set(Calendar.HOUR_OF_DAY, hour)
-            set(Calendar.MINUTE, minute)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-
-        if (calendar.timeInMillis <= nowMillis) {
-            calendar.add(Calendar.DAY_OF_YEAR, 1)
-        }
-
-        return max(calendar.timeInMillis, nowMillis + 1000L)
-    }
+    /**
+     * Resolve a spoken time to a future trigger, in milliseconds.
+     *
+     * Delegates to [EmaTimeParser] so the whole app has exactly one time parser.
+     * This used to be a second, weaker implementation that understood only
+     * "7", "7 am" and "7:30 pm"; every live call site had already moved to
+     * EmaTimeParser, leaving the duplicate here to silently lose capability
+     * ("in 20 minutes", "half past six", "tomorrow morning") if it were ever
+     * wired up again.
+     */
+    fun parseTimeToFutureMillis(value: String, nowMillis: Long = System.currentTimeMillis()): Long? =
+        EmaTimeParser.parseToFutureMillis(value, nowMillis)
 }
