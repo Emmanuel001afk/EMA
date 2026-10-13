@@ -1,9 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  EMA screen-control service.
+
+  accessibilityFlags is load-bearing, not decorative:
+    flagReportViewIds             -> without it AccessibilityNodeInfo.viewIdResourceName is
+                                     ALWAYS null, so id-based control resolution (for example
+                                     a chat app's ":id/send" button) can never match.
+    flagIncludeNotImportantViews  -> without it Compose/Flutter/custom-drawn controls that are
+                                     not marked importantForAccessibility are invisible to EMA,
+                                     which is why some apps appear to have no Send or Play button.
+    flagRetrieveInteractiveWindows-> without it only the single active window is readable, so
+                                     dialogs, sheets and IME windows are missed while EMA is
+                                     trying to finish a multi-step action.
+    flagRequestTouchExplorationMode is deliberately NOT set: EMA must not hijack touch.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeViewFocused|typeViewScrolled"
     android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true"
-    android:notificationTimeout="100"
+    android:notificationTimeout="80"
+    android:settingsActivity="com.ema.assistant.MainActivity"
     android:description="@string/accessibility_description" />

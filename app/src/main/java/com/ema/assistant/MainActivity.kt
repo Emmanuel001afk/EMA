@@ -31,6 +31,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var commandInput: EditText
     private var recognizer: SpeechRecognizer? = null
     private lateinit var router: EmaCommandRouter
+    private lateinit var modeExplanation: TextView
+    private lateinit var hubStatus: TextView
+    private lateinit var hubAddress: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,6 +102,71 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             text = "Enable broad file access"
             setOnClickListener { openAllFilesAccess() }
         })
+
+        // The assistant brain is the primary control on this screen: it makes the
+        // "native first, AI second" guarantee visible and switchable.
+        root.addView(TextView(this).apply {
+            text = "Assistant brain"
+            textSize = 16f
+            setPadding(0, dp(16), 0, dp(2))
+        })
+        val modeSpinner = Spinner(this)
+        val modes = EmaAssistantMode.values().toList()
+        modeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, modes.map { it.label })
+        val assistantPrefs = getSharedPreferences("ema", MODE_PRIVATE)
+        val savedMode = EmaAssistantMode.fromKey(assistantPrefs.getString("assistant_mode", EmaAssistantMode.DEFAULT_KEY))
+        modeExplanation = TextView(this).apply {
+            textSize = 14f
+            text = savedMode.explanation
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        modeSpinner.setSelection(modes.indexOf(savedMode).coerceAtLeast(0))
+        modeSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val selected = modes.getOrNull(position) ?: return
+                assistantPrefs.edit().putString("assistant_mode", selected.key).apply()
+                modeExplanation.text = selected.explanation
+                refreshHubStatus()
+            }
+        })
+        root.addView(modeSpinner)
+        root.addView(modeExplanation)
+
+        // Central Hub address: the AI layer is optional and must be pointable at
+        // the user's own Hub without rebuilding the app.
+        root.addView(TextView(this).apply {
+            text = "Central Hub address (optional, AI layer only)"
+            textSize = 16f
+            setPadding(0, dp(12), 0, dp(2))
+        })
+        hubAddress = EditText(this).apply {
+            hint = CentralHubClient.hubUrl(this@MainActivity)
+            isSingleLine = true
+            setText(CentralHubClient.hubUrl(this@MainActivity))
+            textSize = 13f
+        }
+        root.addView(hubAddress, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        val hubRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        hubRow.addView(Button(this).apply {
+            text = "Save Hub address"
+            setOnClickListener { saveHubAddress() }
+        })
+        hubRow.addView(Button(this).apply {
+            text = "Reset to built-in"
+            setOnClickListener {
+                CentralHubClient.setHubUrl(this@MainActivity, "")
+                hubAddress.setText(CentralHubClient.DEFAULT_HUB_URL)
+                refreshHubStatus()
+            }
+        })
+        root.addView(hubRow)
+        hubStatus = TextView(this).apply { textSize = 14f }
+        root.addView(hubStatus)
+        refreshHubStatus()
 
         root.addView(TextView(this).apply {
             text = "Microphone mode"
@@ -199,9 +267,45 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun isAssistantRoleHeld(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
-    } else false
+    /**
+     * RoleManager only exists on API 29+, and getSystemService returns null for
+     * unknown classes on older releases. Every caller used to dereference the
+     * result directly, which crashes on API 26-28.
+     */
+    private fun roleManager(): RoleManager? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { getSystemService(RoleManager::class.java) }.getOrNull()
+        } else null
+
+    private fun isAssistantRoleHeld(): Boolean =
+        runCatching { roleManager()?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true }.getOrDefault(false)
+
+    private fun saveHubAddress() {
+        val typed = hubAddress.text.toString().trim()
+        if (typed.isNotEmpty() && !typed.startsWith("https://")) {
+            hubStatus.text = "The Hub address must start with https:// so the AI tunnel is encrypted."
+            return
+        }
+        CentralHubClient.setHubUrl(this, typed)
+        hubAddress.setText(CentralHubClient.hubUrl(this))
+        refreshHubStatus()
+    }
+
+    /** States plainly whether the optional AI layer can be reached at all. */
+    private fun refreshHubStatus() {
+        if (!::hubStatus.isInitialized) return
+        val mode = EmaAssistantMode.fromKey(
+            getSharedPreferences("ema", MODE_PRIVATE).getString("assistant_mode", EmaAssistantMode.DEFAULT_KEY)
+        )
+        hubStatus.text = when {
+            !mode.allowsAi ->
+                "AI is switched off in the mode above. EMA works fully on-device."
+            !CentralHubClient.isConfigured(this) ->
+                "No Hub address is configured. EMA will answer from the device only."
+            else ->
+                "AI questions go to ${CentralHubClient.hubUrl(this)}. Phone actions are always performed on-device."
+        }
+    }
 
     private fun isVoiceInteractionServiceActive(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -247,6 +351,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (checkSelfPermission(Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             missing += Manifest.permission.WRITE_CONTACTS
         }
+        // Needed for the torch on devices whose camera stack enforces CAMERA for
+        // setTorchMode. Optional in practice: EMA reports honestly without it.
+        if (packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH) &&
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            missing += Manifest.permission.CAMERA
+        }
         if (missing.isNotEmpty()) {
             requestPermissions(missing.toTypedArray(), REQUEST_CORE_PERMISSIONS)
         }
@@ -261,10 +371,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun requestAssistantRole() {
-        val rm = getSystemService(RoleManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT) &&
-            !rm.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
+        val rm = roleManager()
+        if (rm != null &&
+            runCatching { rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT) }.getOrDefault(false) &&
+            !isAssistantRoleHeld()) {
             runCatching {
                 startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT), REQUEST_ASSISTANT)
             }.onFailure {
@@ -324,7 +434,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     } else {
                         commandInput.setText(command)
                         status.text = "Working…"
-                        EmaCommandRouter(this@MainActivity) { tts }.execute(command) { result ->
+                        // Must reuse the activity's router: a fresh instance would
+                        // drop any pending follow-up question ("What time should I
+                        // remind you?") that the previous turn asked.
+                        router.execute(command) { result ->
                             runOnUiThread { status.text = result }
                         }
                     }

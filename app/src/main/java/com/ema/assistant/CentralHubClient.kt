@@ -1,6 +1,7 @@
 package com.ema.assistant
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -12,13 +13,49 @@ import kotlin.concurrent.thread
 
 class CentralHubClient(private val context: Context) {
     companion object {
-        private const val HUB_URL = "https://qnogfzwmdjggqtdrkzpv.supabase.co/functions/v1/ai-tunnel"
         private const val APP_ID = "com.ema.assistant"
         private const val PREFS = "ema_tunnel"
         private const val TOKEN_KEY = "token_v2"
         private const val DEVICE_KEY = "device_id_v2"
+        private const val HUB_URL_KEY = "hub_url"
         private val REGISTRATION_LOCK = Any()
+
+        /**
+         * Build-time default Central Hub endpoint.
+         *
+         * Overridable at build time with `-PemaHubUrl=https://...` and at runtime
+         * from EMA's settings via [setHubUrl]. This used to be a hardcoded
+         * constant, so a retired or mismatched Hub left the AI layer silently
+         * dead while the UI kept offering it.
+         */
+        const val DEFAULT_HUB_URL: String = BuildConfig.EMA_HUB_URL
+
+        /** The endpoint EMA will actually use, honouring any saved override. */
+        fun hubUrl(context: Context): String {
+            val saved = runCatching { prefs(context).getString(HUB_URL_KEY, null) }
+                .getOrNull()?.trim().orEmpty()
+            return saved.ifBlank { DEFAULT_HUB_URL.trim() }
+        }
+
+        /**
+         * True only when there is an endpoint to reach. Callers use this to avoid
+         * promising an AI answer they cannot deliver.
+         */
+        fun isConfigured(context: Context): Boolean = hubUrl(context).isNotBlank()
+
+        /** Save a Hub endpoint; pass a blank value to fall back to the build default. */
+        fun setHubUrl(context: Context, url: String) {
+            val normalized = url.trim()
+            val editor = prefs(context).edit()
+            if (normalized.isEmpty()) editor.remove(HUB_URL_KEY) else editor.putString(HUB_URL_KEY, normalized)
+            editor.apply()
+        }
+
+        private fun prefs(context: Context): SharedPreferences =
+            context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     }
+
+    private val hubUrl: String = hubUrl(context)
 
     private data class HttpResult(val code: Int, val body: String)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -131,7 +168,7 @@ class CentralHubClient(private val context: Context) {
     }
 
     private fun post(token: String?, body: String): HttpResult {
-        val connection = URL(HUB_URL).openConnection() as HttpURLConnection
+        val connection = URL(hubUrl).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 10000

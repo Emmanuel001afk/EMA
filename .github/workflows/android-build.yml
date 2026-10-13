@@ -52,6 +52,24 @@ jobs:
           set -o pipefail
           gradle :app:compileDebugKotlin --no-daemon --console=plain --stacktrace --info 2>&1 | tee build-log.txt
 
+      - name: Run unit tests
+        id: test
+        env:
+          EMA_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest --no-daemon --console=plain --stacktrace 2>&1 | tee -a build-log.txt
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ema-unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Build debug and release APKs
         id: build
         env:
