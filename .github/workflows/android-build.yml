@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_aem:
+        description: 'Publish the release APK to the AEM Store (off while the Supabase quota is exhausted)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,6 +23,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      # Needed to attach APKs to the rolling release. Actions artifact storage is
+      # quota-limited on this account and was silently failing, so the release is
+      # the reliable distribution path while AEM Store publication is paused.
+      contents: write
 
     steps:
       - name: Check out source
@@ -52,6 +62,27 @@ jobs:
           set -o pipefail
           gradle :app:compileDebugKotlin --no-daemon --console=plain --stacktrace --info 2>&1 | tee build-log.txt
 
+      - name: Run unit tests
+        id: test
+        env:
+          EMA_VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
+        run: |
+          set -o pipefail
+          gradle :app:testDebugUnitTest --no-daemon --console=plain --stacktrace 2>&1 | tee -a build-log.txt
+
+      # Diagnostics only: an artifact-storage problem must never block the build.
+      # continue-on-error keeps the job green so the APK steps below still run.
+      - name: Upload unit test reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ema-unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Build debug and release APKs
         id: build
         env:
@@ -73,15 +104,20 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ema-build-diagnostics
           path: build-log.txt
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
+      # Non-fatal: "Verify APK outputs" above is the real gate that both APKs
+      # exist, and the AEM Store publication below is the actual distribution
+      # channel. An exhausted GitHub artifact-storage quota must not block it.
       - name: Upload debug APK
         if: success()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ema-debug-apk
@@ -89,8 +125,54 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish latest release to AEM Store
+      # With AEM Store publication paused, the release APK artifact is the way to
+      # get a distributable build out of a run.
+      - name: Upload release APK
         if: success()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ema-release-apk
+          path: ${{ env.RELEASE_APK }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish APKs to the rolling release
+        if: success() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="apk-latest"
+          notes="Latest EMA build from commit ${GITHUB_SHA::7} on ${{ github.ref_name }}.
+
+          Install ema-debug.apk (debug-signed, installs directly).
+          app-release-unsigned.apk is minified and resource-shrunk but unsigned, so it needs a signing key before it can be installed.
+
+          This release exists because AEM Store publication is paused and GitHub Actions artifact storage is quota-limited. Release assets use separate storage, so they stay downloadable."
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "EMA APK (latest build)" \
+              --notes "$notes"
+          fi
+
+          cp "$DEBUG_APK" ema-debug.apk
+          cp "$RELEASE_APK" app-release-unsigned.apk
+          gh release upload "$tag" ema-debug.apk app-release-unsigned.apk \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "::notice::APKs published to https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+
+      - name: Report AEM Store publication status
+        if: success() && vars.EMA_PUBLISH_AEM != 'true' && inputs.publish_aem != true
+        run: |
+          echo "::notice::AEM Store publication is paused because the Supabase quota is exhausted. The release APK is attached to this run instead. To resume publishing, set the repository variable EMA_PUBLISH_AEM to true (Settings > Secrets and variables > Actions > Variables), or tick publish_aem on a manual run."
+
+      - name: Publish latest release to AEM Store
+        if: success() && (vars.EMA_PUBLISH_AEM == 'true' || inputs.publish_aem == true)
         env:
           APK: ${{ env.RELEASE_APK }}
         run: |

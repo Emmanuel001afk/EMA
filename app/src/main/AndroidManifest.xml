@@ -16,6 +16,16 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <!-- Torch control for the "turn on flashlight" command. Some OEM camera
+         stacks enforce CAMERA for setTorchMode, so it is declared rather than
+         leaving the command to fail with an opaque SecurityException. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.FLASHLIGHT"/>
+    <!-- EMA is an assistant, not a camera app: no camera hardware is required,
+         and devices without a flash simply get an honest "no flash" answer. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.camera.flash" android:required="false"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
     <application android:theme="@style/Theme.EMA" android:label="@string/app_name" android:icon="@drawable/ic_ema_logo" android:roundIcon="@drawable/ic_ema_logo" android:allowBackup="true" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>

@@ -1,17 +1,164 @@
 package com.ema.assistant
 
 import android.content.Context
-import org.json.JSONArray
-import org.json.JSONObject
 
+/**
+ * Prompt construction and response parsing for EMA's optional AI layer.
+ *
+ * Two rules shape this file:
+ *
+ * 1. **The AI never performs anything.** It may only propose canonical command
+ *    strings, which are then re-interpreted by EMA's own deterministic grammar
+ *    and executed by EMA's own engine. Every phrase listed in the prompt is a
+ *    phrasing [EmaCommandGrammar] actually understands, so the AI cannot propose
+ *    an action EMA is unable to carry out.
+ * 2. **Context is proportional to the request.** Screen dumps are large and the
+ *    Central Hub tunnel is a shared, metered resource. Most requests reaching the
+ *    AI are knowledge questions, where the visible UI is irrelevant, so screen
+ *    context is attached only when the wording actually refers to the screen.
+ */
 object EmaAiCommandInterpreter {
+
+    /**
+     * One canonical command EMA advertises to the AI.
+     *
+     * @param template the shape shown in the prompt
+     * @param example a concrete instance, used by tests to prove EMA can really
+     *   execute what it offers
+     * @param grammar true when [EmaCommandGrammar] parses it; false when the
+     *   router handles it as a literal device command
+     */
+    data class Canonical(val template: String, val example: String, val grammar: Boolean)
+
+    /**
+     * The complete action vocabulary. The prompt is generated from this list, so
+     * what EMA offers the AI and what EMA can execute cannot drift apart.
+     */
+    val CANONICAL_COMMANDS: List<Canonical> = listOf(
+        Canonical("open <app>", "open Spotify", true),
+        Canonical("go to <target> in settings", "go to battery in settings", true),
+        Canonical("search <query>", "search weather in London", true),
+        Canonical("search with google <query>", "search with google best pizza near me", true),
+        Canonical("tap <visible label>", "tap Settings", true),
+        Canonical("type <text>", "type hello there", false),
+        Canonical("scroll up", "scroll up", false),
+        Canonical("scroll down", "scroll down", false),
+        Canonical("back", "back", false),
+        Canonical("home", "home", false),
+        Canonical("call <name>", "call Ada Lovelace", true),
+        Canonical(
+            "send a message to <name> on <app> saying <body>",
+            "send a message to Ada on WhatsApp saying I am on my way", true
+        ),
+        Canonical("send an email to <address> saying <body>", "send an email to ada@example.com saying hello", true),
+        Canonical("navigate to <place>", "navigate to Central Park", true),
+        Canonical("set an alarm for <time>", "set an alarm for 7 am", true),
+        Canonical("set a timer for <duration>", "set a timer for 10 minutes", true),
+        Canonical("remind me <text> at <time>", "remind me to take my medicine at 9 pm", true),
+        Canonical("list my reminders", "list my reminders", false),
+        Canonical("cancel my reminder about <text>", "cancel my reminder about medicine", false),
+        Canonical("create a calendar event <title> at <time>", "create a calendar event Meeting at 5 pm", false),
+        Canonical("create a calendar task <text>", "create a calendar task Buy milk", false),
+        Canonical("play <query> on <app>", "play Arcade on Spotify", true),
+        Canonical("open <app> and play <query>", "open YouTube and play lofi beats", true),
+        Canonical("pause", "pause", true),
+        Canonical("resume", "resume", true),
+        Canonical("next track", "next track", true),
+        Canonical("previous track", "previous track", true),
+        Canonical("stop playback", "stop playback", true),
+        Canonical("increase brightness", "increase brightness", false),
+        Canonical("decrease brightness", "decrease brightness", false),
+        Canonical("set brightness to <percent>", "set brightness to 40 percent", false),
+        Canonical("set volume to <percent>", "set volume to 50 percent", false),
+        Canonical("turn on DND", "turn on DND", false),
+        Canonical("turn off DND", "turn off DND", false),
+        Canonical("turn on flashlight", "turn on flashlight", false),
+        Canonical("turn off flashlight", "turn off flashlight", false),
+        Canonical("save <number> as <name>", "save 5551234 as Ada", true),
+        Canonical("what time is it", "what time is it", false),
+        Canonical("what is today's date", "what is today's date", false),
+        Canonical("what is my battery level", "what is my battery level", false),
+        Canonical("read notifications", "read notifications", false),
+        Canonical("read screen", "read screen", false),
+        Canonical("copy screen text", "copy screen text", false),
+        Canonical("take a screenshot", "take a screenshot", false),
+        Canonical("close EMA", "close EMA", false),
+        Canonical("what can you do", "what can you do", false)
+    )
+
+    /** The vocabulary line embedded in the prompt, generated from [CANONICAL_COMMANDS]. */
+    fun canonicalVocabulary(): String = CANONICAL_COMMANDS.joinToString(", ") { it.template }
+
+    /** Limits chosen so a screen-aware request still fits a modest tunnel budget. */
+    private const val CONVERSATION_TURNS = 10
+    private const val ASSIST_TEXT_LIMIT = 2_000
+    private const val UI_LIMIT = 4_000
+    private const val SCREEN_TEXT_LIMIT = 3_000
+
+    /**
+     * Whether the request depends on what is currently on screen.
+     *
+     * "Tap the blue button" needs the UI dump; "what is the capital of Ghana"
+     * does not, and sending 10 KB of accessibility text for it wastes the
+     * request and slows the answer.
+     */
+    fun needsScreenContext(command: String): Boolean {
+        val lower = command.lowercase()
+        // Word-bounded matching is required: "what is the capital of Ghana"
+        // contains the letters "it" inside "capital", and a substring test would
+        // attach a useless screen dump to a plain knowledge question.
+        val deictic = listOf(
+            "this", "that", "these", "those", "here", "there", "screen",
+            "current", "visible", "showing", "displayed", "above", "below",
+            "it", "them", "the page", "this app", "read out"
+        )
+        if (deictic.any { containsWord(lower, it) }) return true
+        // Generic UI verbs only make sense against a concrete screen.
+        val screenVerbs = listOf("tap", "click", "press", "type", "scroll", "select", "choose")
+        return screenVerbs.any { containsWord(lower, it) }
+    }
+
+    /** True when [word] occurs in [text] as a whole word or phrase. */
+    private fun containsWord(text: String, word: String): Boolean {
+        var from = 0
+        while (true) {
+            val index = text.indexOf(word, from)
+            if (index < 0) return false
+            val before = if (index == 0) ' ' else text[index - 1]
+            val afterIndex = index + word.length
+            val after = if (afterIndex >= text.length) ' ' else text[afterIndex]
+            if (!before.isLetterOrDigit() && !after.isLetterOrDigit()) return true
+            from = index + 1
+        }
+    }
+
     fun buildPrompt(context: Context, userCommand: String): String {
-        val conversation = EmaConversationStore.contextText(context, 10)
-        val assistContext = EmaVoiceInteractionSession.currentAssistText().take(12000)
-        val ui = EmaAccessibilityService.inspectCurrentUi(12000)
-        val screen = EmaAccessibilityService.currentScreenText(12000)
+        val conversation = EmaConversationStore.contextText(context, CONVERSATION_TURNS)
+        val screenAware = needsScreenContext(userCommand)
+        val assistContext = if (screenAware) EmaVoiceInteractionSession.currentAssistText().take(ASSIST_TEXT_LIMIT) else ""
+        val ui = if (screenAware) EmaAccessibilityService.inspectCurrentUi(UI_LIMIT) else ""
+        val screen = if (screenAware) EmaAccessibilityService.currentScreenText(SCREEN_TEXT_LIMIT) else ""
+
+        val contextBlock = if (screenAware) {
+            """
+
+Android assistant context (AssistStructure):
+$assistContext
+
+Accessible UI currently exposed by Android:
+$ui
+
+Current screen text:
+$screen"""
+        } else {
+            """
+
+The user's request does not refer to the visible screen, so no screen dump is attached. Do not ask for one; answer from the request and the conversation."""
+        }
+
         return """
 You are EMA's natural-language reasoning and information layer. You are part of EMA, the Android digital assistant; your response is EMA's response to the user.
+EMA performs phone and app actions itself, deterministically, before you are consulted. You are reached only when EMA's on-device understanding could not resolve the request, or when the request needs outside knowledge.
 You may receive a brand-new request, a follow-up to the previous turn, a correction, or a completely unrelated new request. Do not force a new utterance to be a continuation when it clearly starts a new task.
 
 IMPORTANT RESPONSIBILITY BOUNDARY:
@@ -25,7 +172,8 @@ IMPORTANT RESPONSIBILITY BOUNDARY:
 
 For PHONE ACTIONS, return JSON only:
 {"mode":"actions","actions":["canonical command 1","canonical command 2"],"answer":"short confirmation"}
-Use only canonical commands that EMA can execute: open <app>, go to <target> in settings, search <query>, search with google <query>, tap <visible label>, type <text>, scroll up, scroll down, back, home, call <name>, send a message to <name> on <app> saying <body>, navigate to <place>, set an alarm for <time>, set a timer for <duration>, remind me <text> at <time>, create a calendar event <title> at <time>, create a calendar task <text>, play <query> on <app>, open <app> and play <query>, increase brightness, decrease brightness, set brightness to <percent>, turn on DND, turn off DND, close EMA, read screen, inspect screen. For recurring actions use: every day at <time>: <canonical command>, or every <weekday> at <time>: <canonical command>.
+Use only canonical commands that EMA can execute: ${canonicalVocabulary()}. For recurring actions use: every day at <time>: <canonical command>, or every <weekday> at <time>: <canonical command>.
+Never propose a canonical command that is not in that list. If the user's goal needs something EMA cannot do, return mode "answer" with a "limitation" instead of inventing a command.
 For arbitrary third-party apps, use generic open/search/tap/type/scroll actions rather than app-specific SDKs.
 Preserve the user's roles exactly: APP is where the action happens; TARGET is the person, section, result, song, video, or other object; CONTENT is what is typed/sent/searched. Never swap these roles.
 "Go to <section> in/on <app>" means open the app, then activate the requested visible section; it does not mean search the web or look for an app named "<app> <section>".
@@ -36,58 +184,60 @@ For multi-step requests, include every required step in order. Do not stop after
 For a request that needs information rather than a phone action, return:
 {"mode":"answer","answer":"..."}
 This answer is delivered to the user as EMA. Do not describe yourself as a separate AI service or tell the user to talk to "the AI layer."
+Keep answers short enough to be spoken aloud: two or three sentences unless the user asked for detail or a list.
 For a request that cannot be executed because Android does not expose the required control, return:
 {"mode":"answer","answer":"...","limitation":"..."}
 Never invent that an action succeeded. EMA will verify actions locally.
 
 Recent conversation:
 $conversation
-
-Android assistant context (AssistStructure):
-$assistContext
-
-Accessible UI currently exposed by Android:
-$ui
-
-Current screen text:
-$screen
+$contextBlock
 
 User request:
 $userCommand
 """.trimIndent()
     }
 
+    /**
+     * Turn a model reply into either an action plan or a spoken answer.
+     *
+     * Any reply that is not well-formed JSON is delivered verbatim as an answer.
+     * That is deliberate: losing the assistant's words because of a stray brace
+     * is worse than speaking them.
+     */
     fun parse(raw: String): Result {
         val text = raw.trim()
-        // Accept structured JSON whether the model returns plain JSON or a Markdown code fence.
+        // Accept structured JSON whether the model returns plain JSON, a Markdown
+        // code fence, or JSON embedded in prose.
         val normalized = text
             .removePrefix("```json")
             .removePrefix("```JSON")
             .removePrefix("```")
             .removeSuffix("```")
             .trim()
-        val start = normalized.indexOf('{')
-        val end = normalized.lastIndexOf('}')
-        if (start < 0 || end <= start) return Result.Answer(text)
-        val json = runCatching { JSONObject(normalized.substring(start, end + 1)) }.getOrNull()
-            ?: return Result.Answer(text)
-        return when (json.optString("mode").lowercase()) {
-            "actions" -> {
-                val array = json.optJSONArray("actions") ?: JSONArray()
-                val actions = buildList {
-                    for (i in 0 until array.length()) {
-                        val item = array.optString(i).trim()
-                        if (item.isNotBlank()) add(item)
-                    }
-                }
-                Result.Actions(actions, json.optString("answer"))
-            }
-            else -> Result.Answer(json.optString("answer").ifBlank { text })
+        val json = EmaJson.readObject(normalized) ?: return Result.Answer(text)
+
+        val limitation = EmaJson.string(json, "limitation")
+        return when (EmaJson.string(json, "mode").lowercase()) {
+            "actions" -> Result.Actions(
+                EmaJson.stringList(json, "actions"),
+                EmaJson.string(json, "answer"),
+                limitation
+            )
+            else -> Result.Answer(
+                EmaJson.string(json, "answer").ifBlank { text },
+                limitation
+            )
         }
     }
 
     sealed class Result {
-        data class Actions(val actions: List<String>, val answer: String): Result()
-        data class Answer(val text: String): Result()
+        data class Actions(
+            val actions: List<String>,
+            val answer: String,
+            val limitation: String = ""
+        ) : Result()
+
+        data class Answer(val text: String, val limitation: String = "") : Result()
     }
 }

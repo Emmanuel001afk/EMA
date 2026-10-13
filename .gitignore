@@ -1,0 +1,38 @@
+# Gradle
+.gradle/
+build/
+app/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local configuration: SDK path, signing material, per-developer overrides.
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Build and test output
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+
+# Logs and reports
+*.log
+build-log.txt
+finalize-response.json
+
+# OS noise
+.DS_Store
+Thumbs.db
