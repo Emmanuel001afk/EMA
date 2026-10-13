@@ -23,6 +23,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      # Needed to attach APKs to the rolling release. Actions artifact storage is
+      # quota-limited on this account and was silently failing, so the release is
+      # the reliable distribution path while AEM Store publication is paused.
+      contents: write
 
     steps:
       - name: Check out source
@@ -131,6 +136,35 @@ jobs:
           path: ${{ env.RELEASE_APK }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish APKs to the rolling release
+        if: success() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="apk-latest"
+          notes="Latest EMA build from commit ${GITHUB_SHA::7} on ${{ github.ref_name }}.
+
+          Install ema-debug.apk (debug-signed, installs directly).
+          app-release-unsigned.apk is minified and resource-shrunk but unsigned, so it needs a signing key before it can be installed.
+
+          This release exists because AEM Store publication is paused and GitHub Actions artifact storage is quota-limited. Release assets use separate storage, so they stay downloadable."
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "EMA APK (latest build)" \
+              --notes "$notes"
+          fi
+
+          cp "$DEBUG_APK" ema-debug.apk
+          cp "$RELEASE_APK" app-release-unsigned.apk
+          gh release upload "$tag" ema-debug.apk app-release-unsigned.apk \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "::notice::APKs published to https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
 
       - name: Report AEM Store publication status
         if: success() && vars.EMA_PUBLISH_AEM != 'true' && inputs.publish_aem != true

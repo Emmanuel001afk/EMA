@@ -128,6 +128,28 @@ gradle :app:testDebugUnitTest    # unit tests
 
 The repository has no Gradle wrapper; CI provisions Gradle 8.9.
 
+### Getting a build
+
+CI attaches both APKs to the rolling release
+[`apk-latest`](../../releases/tag/apk-latest):
+
+- **`ema-debug.apk`** — debug-signed, installs directly. Use this one.
+- **`app-release-unsigned.apk`** — minified and resource-shrunk, but unsigned;
+  it needs a signing key before it can be installed.
+
+They are published as release assets rather than run artifacts because GitHub
+Actions artifact storage is quota-limited, and a quota failure silently drops the
+upload. Release assets use separate storage.
+
+### AEM Store publication
+
+Publishing to the AEM Store is currently **paused** because the Supabase quota is
+exhausted. The step is gated and skips cleanly, so it cannot fail a build.
+
+To resume, set the repository variable `EMA_PUBLISH_AEM` to `true`
+(Settings → Secrets and variables → Actions → Variables), or tick `publish_aem`
+on a manual run. No code change is needed.
+
 ---
 
 ## Tests
