@@ -1,27 +1,38 @@
 #!/usr/bin/env python3
-"""Expose useful Gradle errors even when artifact quota/log downloads fail."""
+"""Expose actionable Gradle errors without redirected logs/artifact storage."""
 import os
 import re
 import sys
 from pathlib import Path
 
 
-def report(path: Path) -> None:
-    text = path.read_text(errors="replace")
+def failure_excerpt(text: str) -> str:
     lines = text.splitlines()
-    errors = [line for line in lines if re.search(r"(^e: |^> |^\* What went wrong:|^Execution failed|^Could not|^Script compilation|^FAILURE:)", line)]
-    if not errors:
-        errors = lines[-40:]
-    # The annotations endpoint remains accessible when Actions' redirected logs
-    # or exhausted artifact storage are not. Escape workflow command data.
-    for line in errors[:30]:
-        escaped = line[:3000].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        print(f"::error title=Gradle build failure::{escaped}")
+    # Appended logs contain earlier successful tasks. Prioritize the LAST actual
+    # failure, not the first '> Task' lines (GitHub limits annotations per step).
+    starts = [i for i, line in enumerate(lines) if line.strip() == "* What went wrong:"]
+    cause = []
+    if starts:
+        for line in lines[starts[-1]:]:
+            if line.startswith(("* Try:", "* Exception is:", "* Get more help")):
+                break
+            cause.append(line)
+    compiler = [line for line in lines if re.search(r"(^e: |^ERROR: |^error: |error: resource|Android resource linking failed|Missing class )", line)]
+    selected = cause + compiler[-15:]
+    if not selected:
+        selected = lines[-50:]
+    return "\n".join(dict.fromkeys(selected))[:12000]
+
+
+def report(path: Path) -> None:
+    excerpt = failure_excerpt(path.read_text(errors="replace"))
+    escaped = excerpt.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    # One annotation preserves the useful cause under GitHub's per-step limit.
+    print(f"::error title=Gradle build failure::{escaped}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
-        excerpt = "\n".join(errors[:60]).replace("```", "'''")
         with open(summary, "a") as output:
-            output.write("## Gradle failure diagnostics\n\n```text\n" + excerpt[:16000] + "\n```\n")
+            output.write("## Gradle failure diagnostics\n\n```text\n" + excerpt.replace("```", "'''") + "\n```\n")
 
 
 if __name__ == "__main__":
