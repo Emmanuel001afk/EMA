@@ -168,6 +168,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(hubStatus)
         refreshHubStatus()
 
+        root.addView(Button(this).apply {
+            text = "Set up Hey EMA (local wake word)"
+            setOnClickListener { startActivity(Intent(this@MainActivity, EmaWakeWordSetupActivity::class.java)) }
+        })
+
         root.addView(TextView(this).apply {
             text = "Microphone mode"
             textSize = 16f
