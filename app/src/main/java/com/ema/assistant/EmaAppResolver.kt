@@ -38,6 +38,10 @@ object EmaAppResolver {
         "whatsapp" to listOf("whatsapp"),
         "wa" to listOf("whatsapp"),
         "whatsapp messenger" to listOf("whatsapp"),
+        // Common speech-recogniser spellings of "WhatsApp".
+        "whats app" to listOf("whatsapp"),
+        "what s app" to listOf("whatsapp"),
+        "what s up" to listOf("whatsapp"),
         "messenger" to listOf("messenger"),
         "fb messenger" to listOf("messenger"),
         "facebook messenger" to listOf("messenger"),
@@ -52,6 +56,7 @@ object EmaAppResolver {
         "youtube" to listOf("youtube"),
         "yt" to listOf("youtube"),
         "you tube" to listOf("youtube"),
+        "u tube" to listOf("youtube"),
         "spotify" to listOf("spotify"),
         "apple music" to listOf("music"),
         "youtube music" to listOf("youtube music"),
@@ -250,6 +255,96 @@ object EmaAppResolver {
         }
         return best
     }
+
+    /** Result of strict grounding of a short phrase that might name an app. */
+    sealed class Grounding {
+        data class One(val app: App, val via: String) : Grounding()
+        /** Several installed apps fit equally well; the user must choose. */
+        data class Ambiguous(val apps: List<App>) : Grounding()
+        /** Not installed, but a well-known app name (so the user meant an app). */
+        data class KnownNotInstalled(val name: String) : Grounding()
+    }
+
+    /** Words that can follow "on"/"in" in ordinary speech and are never an app by themselves. */
+    private val NEVER_APP_ALONE = setOf(
+        "my", "the", "a", "an", "way", "home", "time", "it", "there", "here", "phone", "screen",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "today", "tomorrow", "tonight", "morning", "evening", "afternoon", "night", "me", "him",
+        "her", "them", "us", "this", "that", "app", "one", "top", "fire", "time", "case", "line",
+        "progress", "touch", "board", "set", "loop", "repeat", "shuffle", "full", "background"
+    )
+
+    /** Canonical display names for well-known aliases, used when nothing is installed. */
+    fun knownAppDisplayName(phrase: String): String? {
+        val cleaned = normalize(phrase).removePrefix("the ").removeSuffix(" app").trim()
+        if (cleaned.isBlank() || ALIASES[cleaned] == null) return null
+        if (cleaned.length < 3) return null
+        return DISPLAY[cleaned] ?: cleaned.split(' ').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+    }
+
+    private val DISPLAY = mapOf(
+        "whatsapp" to "WhatsApp", "whatsapp messenger" to "WhatsApp", "youtube" to "YouTube",
+        "you tube" to "YouTube", "youtube music" to "YouTube Music", "tiktok" to "TikTok",
+        "linkedin" to "LinkedIn", "soundcloud" to "SoundCloud", "gmail" to "Gmail", "sms" to "Messages",
+        "what s app" to "WhatsApp", "whats app" to "WhatsApp", "what s up" to "WhatsApp"
+    )
+
+    /**
+     * Strict grounding for detecting an *app slot* inside a sentence
+     * ("message Daniel on WhatsApp", "search My Portal for invoices").
+     *
+     * Unlike [resolve], substring and prefix guesses are not accepted: "on my
+     * way" must never become an app. Accepted evidence, strongest first: exact
+     * label, exact alias, every spoken word being a whole word of the label.
+     * Several apps at the same strongest tier are reported as ambiguous.
+     */
+    fun ground(phrase: String, installed: List<App>): Grounding? {
+        val raw = normalize(phrase)
+        if (raw.isBlank()) return null
+        val cleaned = raw.split(' ').filter { it !in setOf("the", "app", "application") }.joinToString(" ")
+        if (cleaned.isBlank() || cleaned in NEVER_APP_ALONE) return null
+        val exact = mutableListOf<App>()
+        val alias = mutableListOf<App>()
+        val words = mutableListOf<App>()
+        val aliasTargets = ALIASES[cleaned]
+        val spoken = cleaned.split(' ')
+        for (app in installed) {
+            val label = normalize(app.label)
+            if (label.isBlank()) continue
+            val labelWords = label.split(' ').toSet()
+            when {
+                label == cleaned || label == raw -> exact += app
+                aliasTargets != null && aliasTargets.any { t ->
+                    label == t || labelWords.containsAll(t.split(' ')) || app.packageName.lowercase().contains(t.replace(" ", ""))
+                } -> alias += app
+                cleaned.length >= 4 && spoken.none { it in NEVER_APP_ALONE && spoken.size == 1 } &&
+                    labelWords.containsAll(spoken) -> words += app
+            }
+        }
+        fun pick(list: List<App>, via: String): Grounding {
+            if (list.size == 1) return Grounding.One(list[0], via)
+            // "WhatsApp" vs "WhatsApp Business": the shortest label that
+            // equals an alias target is the plain app the user named.
+            val shortest = list.minByOrNull { it.label.length }!!
+            val tied = list.filter { normalize(it.label).length == normalize(shortest.label).length }
+            return if (tied.size == 1) Grounding.One(shortest, via) else Grounding.Ambiguous(tied.distinctBy { it.label })
+        }
+        if (exact.isNotEmpty()) return pick(exact, "exact")
+        if (alias.isNotEmpty()) return pick(alias, "alias")
+        if (words.isNotEmpty()) {
+            return if (words.size == 1) Grounding.One(words[0], "words")
+            else Grounding.Ambiguous(words.distinctBy { it.label })
+        }
+        knownAppDisplayName(cleaned)?.let { return Grounding.KnownNotInstalled(it) }
+        return null
+    }
+
+    /** Lowercase names of well-known chat apps; used to decide whether a trailing "on X" names the messaging app. */
+    val MESSAGING_APP_WORDS = setOf(
+        "whatsapp", "telegram", "signal", "messenger", "messages", "sms", "instagram", "slack",
+        "teams", "discord", "snapchat", "viber", "wechat", "line", "skype", "linkedin", "gmail",
+        "outlook", "email", "mail", "google chat", "chat", "imo", "threads", "x", "twitter"
+    )
 
     private fun appCandidates(app: App): Set<String> {
         val out = linkedSetOf<String>()

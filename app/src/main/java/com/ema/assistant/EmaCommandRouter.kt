@@ -62,6 +62,28 @@ class EmaCommandRouter(
     // VoiceInteractionSession instances cannot consume one another's pending task.
     private var pendingTask: PendingTask? = null
 
+    /** Real progress for the UI that owns this router (app screen or voice overlay). */
+    var progressListener: EmaProgressListener? = null
+
+    /** Plan execution: ordered steps, outcomes, bounded retries, no duplicate sends. */
+    private val planExecutor by lazy {
+        EmaPlanExecutor(
+            scheduler = { delay, block ->
+                val r = Runnable { block() }
+                commandHandler.postDelayed(r, delay)
+                EmaPlanExecutor.Cancellable { commandHandler.removeCallbacks(r) }
+            },
+            clock = { android.os.SystemClock.elapsedRealtime() }
+        )
+    }
+    private var activePlan: EmaPlanExecutor.Handle? = null
+
+    /** While a plan runs, individual steps stay quiet; one summary is spoken at the end. */
+    private var suppressSpeech = false
+
+    /** Apps excluded for one routing pass after the user resolved an app ambiguity. */
+    private var excludedApps: Set<String> = emptySet()
+
     private var executionStage = "routing"
     private val commandHandler = Handler(Looper.getMainLooper())
     private val commandTimeoutMs = 60_000L
@@ -74,6 +96,9 @@ class EmaCommandRouter(
 
     /** Cancel delayed multi-step work when the Android voice session disappears. */
     fun shutdown() {
+        activePlan?.cancel()
+        activePlan = null
+        suppressSpeech = false
         commandHandler.removeCallbacksAndMessages(null)
         executionController.shutdown()
     }
@@ -106,7 +131,10 @@ class EmaCommandRouter(
         val timeout = Runnable {
             if (!completed.compareAndSet(false, true)) return@Runnable
             executionController.shutdown()
-            android.util.Log.e("EMA", "Command timed out after ${commandTimeoutMs}ms at stage=$executionStage: ${raw.trim()}")
+            activePlan?.cancel()
+            activePlan = null
+            suppressSpeech = false
+            android.util.Log.e("EMA", "Command timed out at stage=$executionStage (${EmaPrivacy.describe(raw)})")
             runCatching { done("I couldn't complete that command in time. The operation was stopped safely; I did not retry it automatically.") }
                 .onFailure { android.util.Log.e("EMA", "Assistant timeout result delivery failed", it) }
         }
@@ -115,7 +143,7 @@ class EmaCommandRouter(
 
         val safeDone: (String) -> Unit = { result ->
             if (!completed.compareAndSet(false, true)) {
-                android.util.Log.w("EMA", "Ignoring duplicate command completion: " + raw.trim())
+                android.util.Log.w("EMA", "Ignoring duplicate command completion (${EmaPrivacy.describe(raw)})")
             } else {
                 commandHandler.removeCallbacks(timeout)
                 activeTimeout = null
@@ -129,7 +157,7 @@ class EmaCommandRouter(
         try {
             executeInternal(raw, safeDone, 0)
         } catch (t: Throwable) {
-            android.util.Log.e("EMA", "Command execution crashed at stage=$executionStage: " + raw.trim(), t)
+            android.util.Log.e("EMA", "Command execution crashed at stage=$executionStage (${EmaPrivacy.describe(raw)})", t)
             safeDone("I couldn't complete that command because the operation failed during $executionStage. I did not retry it automatically.")
         }
     }
@@ -180,6 +208,30 @@ class EmaCommandRouter(
             }.onFailure {
                 android.util.Log.e("EMA", "Recurring-routine precheck failed; continuing", it)
             }
+
+            // Explicit, user-controlled memory ("remember that ...", "forget ...").
+            runCatching {
+                if (handleMemory(command, done)) return
+            }.onFailure {
+                android.util.Log.e("EMA", "Memory handling failed; continuing", it)
+            }
+
+            // Offline knowledge: calculations, conversions, dates. Computed, never invented.
+            runCatching {
+                EmaKnowledge.answer(command)?.let { answer ->
+                    finishAssistantResponse(answer.text, done)
+                    return
+                }
+            }.onFailure {
+                android.util.Log.e("EMA", "Offline knowledge failed; continuing", it)
+            }
+
+            // Semantic understanding: roles, references, multi-step goals.
+            runCatching {
+                if (handleSemantic(command, done)) return
+            }.onFailure {
+                android.util.Log.e("EMA", "Semantic layer failed; using established layers", it)
+            }
         }
 
         val lower = command.lowercase(Locale.getDefault())
@@ -215,11 +267,11 @@ class EmaCommandRouter(
 
         // LAYER 3: structured intents, understood deterministically.
         val interpreted = runCatching { EmaCommandGrammar.interpret(command) }.getOrElse {
-            android.util.Log.e("EMA", "Native grammar failed for: $command", it)
+            android.util.Log.e("EMA", "Native grammar failed (${EmaPrivacy.describe(command)})", it)
             null
         }
         if (interpreted != null) {
-            android.util.Log.i("EMA", "native grammar resolved: ${interpreted.toCanonical()}")
+            android.util.Log.i("EMA", "native grammar resolved: ${interpreted.javaClass.simpleName}")
             dispatch(interpreted, done)
             return
         }
@@ -237,26 +289,32 @@ class EmaCommandRouter(
         val fallback = runCatching {
             EmaNativeFallbackInterpreter.interpret(command, installedApps())
         }.getOrElse {
-            android.util.Log.e("EMA", "Native fallback failed for: $command", it)
+            android.util.Log.e("EMA", "Native fallback failed (${EmaPrivacy.describe(command)})", it)
             null
         }
         if (fallback != null) {
-            android.util.Log.i("EMA", "native fallback resolved (${fallback.via}): ${fallback.command.toCanonical()}")
+            android.util.Log.i("EMA", "native fallback resolved (${fallback.via}): ${fallback.command.javaClass.simpleName}")
             dispatch(fallback.command, done)
             return
         }
 
         // LAYER 5: the AI is the last resort, and only when it is allowed.
-        if (mode.allowsAi && CentralHubClient.isConfigured(context)) {
+        // In native-first mode it answers *questions*; it is not a hidden
+        // fallback for device commands the native layers failed to understand
+        // (that would mask weak native understanding). Those get an honest
+        // answer and, if the user opted in, a local entry for improvement.
+        val looksLikeCommand = hasExplicitDeviceActionIntent(command)
+        if (mode.allowsAi && CentralHubClient.isConfigured(context) && (!looksLikeCommand || mode == EmaAssistantMode.AI_ASSIST)) {
             askAi(command, done)
             return
         }
 
+        if (depth <= 1) runCatching { EmaLearningLog.recordNotUnderstood(context, command) }
         finishAssistantResponse(nativeOnlyExplanation(command, mode), done)
     }
 
     private fun installedApps(): List<EmaAppResolver.App> = runCatching {
-        appEngine.installedAppLabels().map { label -> EmaAppResolver.App(label, "") }
+        appEngine.installedAppLabels().filter { it !in excludedApps }.map { label -> EmaAppResolver.App(label, "") }
     }.getOrDefault(emptyList())
 
     /**
@@ -265,6 +323,11 @@ class EmaCommandRouter(
      * real situation is that it did not understand the wording.
      */
     private fun nativeOnlyExplanation(command: String, mode: EmaAssistantMode): String {
+        if (EmaKnowledge.needsExternalInformation(command) && !(mode.allowsAi && CentralHubClient.isConfigured(context))) {
+            return "That needs up-to-date information from outside this phone, and the optional online AI is " +
+                (if (mode == EmaAssistantMode.NATIVE_ONLY) "switched off" else "not set up") +
+                ". I can still control apps, send messages, play media, calculate, convert units and answer date questions offline."
+        }
         val reason = if (mode == EmaAssistantMode.NATIVE_ONLY) {
             "AI assistance is switched off, so I answered using only the on-device assistant."
         } else {
@@ -616,10 +679,9 @@ class EmaCommandRouter(
             EmaAssistantMode.NATIVE_FIRST -> "The on-device assistant runs first; AI is only a fallback for questions."
             EmaAssistantMode.AI_ASSIST -> "AI helps with unusual wording; the phone actions are still performed on-device."
         }
-        return "I can open and control any app, search inside apps, play music and video, " +
-            "send messages and make calls, set alarms, timers, reminders and daily routines, " +
-            "navigate Settings, read or inspect the screen, tap and type for you, control volume, " +
-            "brightness, flashlight, Do Not Disturb, take screenshots, and check battery and storage. $ai"
+        val aiAvailable = mode.allowsAi && CentralHubClient.isConfigured(context)
+        val modeNote = if (mode == EmaAssistantMode.NATIVE_ONLY) " $ai" else ""
+        return EmaCapabilityRegistry.describe(grantedPrerequisites(), aiAvailable) + modeNote
     }
 
     private fun setAssistantMode(mode: EmaAssistantMode, done: (String) -> Unit) {
@@ -652,6 +714,7 @@ class EmaCommandRouter(
             is EmaCommand.SetTimer -> openTimer(command.durationText, done)
             is EmaCommand.SetReminder -> createReminder(command.text, command.timeText, done)
             is EmaCommand.SaveContact -> saveContact(command.name, command.number, done)
+            is EmaCommand.SelectResult -> selectResultStep(command) { outcome -> speak(outcome.message); done(outcome.message) }
         }
     }
 
@@ -676,13 +739,10 @@ class EmaCommandRouter(
             return
         }
         if (command.app.isNullOrBlank()) {
-            // No app named: prefer a chat app EMA has used recently, else SMS.
-            val remembered = lastAppName
-            if (!remembered.isNullOrBlank()) {
-                sendAppMessage(command.recipient, remembered, command.body, done)
-            } else {
-                sendAppMessage(command.recipient, "Messages", command.body, done)
-            }
+            // No app named: the user's default messaging app if they set one,
+            // otherwise SMS. Never "whatever app was used last": a recipient
+            // and body must not be sent through an app the user did not choose.
+            sendAppMessage(command.recipient, defaultApps()["messaging"] ?: "Messages", command.body, done)
             return
         }
         sendAppMessage(command.recipient, command.app, command.body, done)
@@ -1119,7 +1179,17 @@ class EmaCommandRouter(
 
         pendingTask = null
         val selected = best.first()
-        appEngine.sendMessage(app, selected.displayName, selected.phone, selected.email, body) { _, result ->
+        val key = EmaDuplicateGuard.messageKey(app, selected.displayName, body)
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (EmaDuplicateGuard.shared.recentlyDone(key, now)) {
+            val result = "I sent that exact message to ${selected.displayName} less than a minute ago, so I did not send it again."
+            speak(result); done(result); return
+        }
+        appEngine.sendMessage(app, selected.displayName, selected.phone, selected.email, body) { ok, result ->
+            val outcome = EmaOutcomeClassifier.classify(result, ok)
+            if (outcome.status == EmaOutcomeStatus.SUCCESS || outcome.status == EmaOutcomeStatus.UNVERIFIED) {
+                EmaDuplicateGuard.shared.record(key, android.os.SystemClock.elapsedRealtime())
+            }
             speak(result); done(result)
         }
     }
@@ -1137,6 +1207,35 @@ class EmaCommandRouter(
             val result = if (ok) "Reminder set for ${EmaTimeParser.describe(moment.millis)}: ${task.target}."
             else "Android could not schedule that reminder."
             speak(result); done(result)
+            return true
+        }
+
+        // "who should I send it to?" follow-up: the utterance is the recipient.
+        if (task.type == "message-recipient") {
+            val name = command.trim().trimEnd('.', '!', '?')
+                .replaceFirst(Regex("(?i)^(?:send it |it'?s |send )?(?:to )?"), "").trim()
+            if (name.isBlank() || name.split(Regex("\\s+")).size > 5) return false
+            pendingTask = null
+            sendMessageCommand(EmaCommand.SendMessage(name, task.app, task.body.orEmpty()), done)
+            return true
+        }
+
+        // "which app do you mean?" follow-up: re-run the original request with the choice.
+        if (task.type == "choose-app" && task.candidates.isNotEmpty()) {
+            val ord = Regex("(?i)\\b(first|1st|one|second|2nd|two|third|3rd|three)\\b").find(command)?.value?.lowercase()
+            val index = when (ord) { "first", "1st", "one" -> 0; "second", "2nd", "two" -> 1; "third", "3rd", "three" -> 2; else -> -1 }
+            val spoken = EmaAppResolver.normalize(command)
+            val chosen = task.candidates.getOrNull(index)
+                ?: task.candidates.firstOrNull { EmaAppResolver.normalize(it) == spoken }
+                ?: task.candidates.filter { spoken.contains(EmaAppResolver.normalize(it)) }.maxByOrNull { it.length }
+                ?: return false
+            pendingTask = null
+            excludedApps = task.candidates.toSet() - chosen
+            try {
+                executeInternal(task.target, done, 1)
+            } finally {
+                excludedApps = emptySet()
+            }
             return true
         }
 
@@ -1821,6 +1920,7 @@ class EmaCommandRouter(
                 .onFailure { android.util.Log.e("EMA", "Could not store assistant response", it) }
             runCatching { speak(answer) }
                 .onFailure { android.util.Log.e("EMA", "Could not speak assistant response", it) }
+            runCatching { progressListener?.onFinished(EmaOutcomeClassifier.classify(answer).status, answer) }
             runCatching { done(answer) }
                 .onFailure { android.util.Log.e("EMA", "Could not deliver assistant response", it) }
         }
@@ -1926,8 +2026,186 @@ class EmaCommandRouter(
             }
     }
 
+    // ------------------------------------------------- semantic layer
+
+    private fun memory(): EmaMemory = EmaMemoryStore.load(context)
+
+    /** Default apps by kind, validated against what is installed. */
+    private fun defaultApps(): Map<String, String> {
+        val out = linkedMapOf<String, String>()
+        runCatching {
+            memory().defaults.forEach { (kind, app) -> appEngine.findApp(app)?.let { out[kind] = it.label } }
+            if ("video" !in out) appEngine.findApp("YouTube")?.let { out["video"] = it.label }
+        }
+        return out
+    }
+
+    private fun grantedPrerequisites(): Set<EmaCapabilityRegistry.Prerequisite> = buildSet {
+        fun granted(permission: String) = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        if (EmaAccessibilityService.isConnected()) add(EmaCapabilityRegistry.Prerequisite.ACCESSIBILITY)
+        if (granted(Manifest.permission.READ_CONTACTS)) add(EmaCapabilityRegistry.Prerequisite.CONTACTS)
+        if (granted(Manifest.permission.CALL_PHONE)) add(EmaCapabilityRegistry.Prerequisite.PHONE)
+        if (granted(Manifest.permission.RECORD_AUDIO)) add(EmaCapabilityRegistry.Prerequisite.MICROPHONE)
+        if (EmaNotificationListenerService.isConnected()) add(EmaCapabilityRegistry.Prerequisite.NOTIFICATIONS)
+        val mode = assistantMode()
+        if (mode.allowsAi && CentralHubClient.isConfigured(context)) add(EmaCapabilityRegistry.Prerequisite.INTERNET_AI)
+    }
+
+    private fun handleMemory(command: String, done: (String) -> Unit): Boolean {
+        val op = EmaMemory.parse(command) ?: return false
+        val current = memory()
+        val applied = current.apply(op) ?: return false // e.g. recall of something never saved
+        if (applied.memory != current) EmaMemoryStore.save(context, applied.memory)
+        finishAssistantResponse(applied.reply, done)
+        return true
+    }
+
+    /**
+     * Run the semantic understanding layer. Returns false when it defers to
+     * the established layers (single simple commands they already handle).
+     */
+    private fun handleSemantic(command: String, done: (String) -> Unit): Boolean {
+        val env = EmaSemanticParser.Env(
+            installedApps = installedApps(),
+            activeTask = EmaConversationContext.activeTask(),
+            aliases = memory().aliases,
+            defaultApps = defaultApps()
+        )
+        return when (val result = EmaSemanticParser.understand(command, env)) {
+            is EmaSemanticParser.Result.NotHandled -> false
+            is EmaSemanticParser.Result.Clarify -> {
+                when (result.missing) {
+                    EmaSemanticParser.Role.RECIPIENT -> {
+                        val partial = result.partial as? EmaCommand.SendMessage
+                        pendingTask = PendingTask("message-recipient", "", partial?.app, partial?.body)
+                    }
+                    EmaSemanticParser.Role.APP -> pendingTask = PendingTask("choose-app", command, candidates = result.options)
+                    else -> Unit
+                }
+                progressListener?.onClarification(result.question, result.options)
+                finishAssistantResponse(result.question, done)
+                true
+            }
+            is EmaSemanticParser.Result.Plan -> {
+                android.util.Log.i("EMA", "semantic plan: ${result.steps.joinToString { it.command?.javaClass?.simpleName ?: "legacy" }} confidence=${result.confidence}")
+                runSemanticPlan(result, done)
+                true
+            }
+        }
+    }
+
+    private fun runSemanticPlan(plan: EmaSemanticParser.Result.Plan, done: (String) -> Unit) {
+        // Validate locally before doing anything: a consequential step whose
+        // prerequisites are missing stops the plan up front.
+        val granted = grantedPrerequisites()
+        for (step in plan.steps) {
+            val cmd = step.command ?: continue
+            val sms = cmd is EmaCommand.SendMessage && (cmd.app.isNullOrBlank() || EmaAppResolver.normalize(cmd.app) in setOf("messages", "sms", "messaging"))
+            val capability = EmaCapabilityRegistry.forCommand(cmd, sms) ?: continue
+            if (!capability.consequential && capability.id != "select") continue
+            val missing = EmaCapabilityRegistry.missing(capability, granted)
+            if (missing.isNotEmpty()) {
+                if (EmaCapabilityRegistry.Prerequisite.CONTACTS in missing) requestPermission(Manifest.permission.READ_CONTACTS)
+                val message = EmaCapabilityRegistry.explainMissing(capability, missing)
+                progressListener?.onPlan(plan.steps.map { it.describe() })
+                finishAssistantResponse(message, done)
+                return
+            }
+        }
+
+        val steps = plan.steps.map { step ->
+            val cmd = step.command
+            EmaPlanExecutor.Step(
+                description = step.describe(),
+                consequential = cmd is EmaCommand.SendMessage || cmd is EmaCommand.CallContact,
+                duplicateKey = (cmd as? EmaCommand.SendMessage)?.let { EmaDuplicateGuard.messageKey(it.app, it.recipient, it.body) },
+                maxAttempts = if (cmd is EmaCommand.SearchInApp) 2 else 1,
+                timeoutMs = when (cmd) {
+                    is EmaCommand.SendMessage -> 50_000L
+                    is EmaCommand.SelectResult -> 25_000L
+                    is EmaCommand.SearchInApp -> 20_000L
+                    else -> 25_000L
+                },
+                dependsOnPrevious = step.dependsOnPrevious || step.continuation,
+                run = { finish -> runPlanStep(step, finish) }
+            )
+        }
+        val deadline = steps.sumOf { it.timeoutMs }.coerceAtMost(150_000L)
+        extendDeadline(deadline + 15_000L)
+        suppressSpeech = true
+        val listener = progressListener
+        activePlan = planExecutor.execute(steps, deadline, object : EmaPlanExecutor.Listener {
+            override fun onPlanStarted(descriptions: List<String>) { listener?.onPlan(descriptions) }
+            override fun onStepStarted(index: Int, attempt: Int) { executionStage = "step ${index + 1}"; listener?.onStepStarted(index) }
+            override fun onStepFinished(index: Int, outcome: EmaStepOutcome) { listener?.onStepFinished(index, outcome) }
+        }) { report ->
+            activePlan = null
+            suppressSpeech = false
+            finishAssistantResponse(report.summary, done)
+        }
+    }
+
+    private fun runPlanStep(step: EmaSemanticParser.Step, finish: (EmaStepOutcome) -> Unit) {
+        val cmd = step.command
+        val classify: (String) -> Unit = { result -> finish(EmaOutcomeClassifier.classify(result)) }
+        if (cmd == null) {
+            // A clause the established layers handle; depth 3 skips re-planning.
+            executeInternal(step.legacyText.orEmpty(), classify, 3)
+            return
+        }
+        when (cmd) {
+            is EmaCommand.SendMessage -> sendMessageCommand(cmd, classify)
+            is EmaCommand.SearchInApp -> searchStep(cmd, finish)
+            is EmaCommand.SelectResult -> selectResultStep(cmd, finish)
+            is EmaCommand.OpenApp -> {
+                EmaConversationContext.clear()
+                openAppOrSection(cmd.app, null, classify)
+            }
+            is EmaCommand.PlayMedia -> {
+                // Playing something elsewhere ends the old results list as "the results".
+                val task = EmaConversationContext.activeTask()
+                if (task != null && !task.app.equals(cmd.app ?: task.app, true)) EmaConversationContext.clear()
+                dispatch(cmd, classify)
+            }
+            else -> dispatch(cmd, classify)
+        }
+    }
+
+    private fun searchStep(cmd: EmaCommand.SearchInApp, finish: (EmaStepOutcome) -> Unit) {
+        val app = cmd.app
+        if (app.isNullOrBlank() || appEngine.findApp(app) == null) {
+            webSearch(cmd.query) { result -> finish(EmaOutcomeClassifier.classify(result)) }
+            return
+        }
+        appEngine.searchVerified(app, cmd.query) { outcome, target ->
+            if (target != null && outcome.status != EmaOutcomeStatus.FAILED) {
+                lastAppName = target.label
+                if (cmd.query.isNotBlank()) EmaConversationContext.recordSearch(target.label, cmd.query)
+            }
+            finish(outcome)
+        }
+    }
+
+    private fun selectResultStep(cmd: EmaCommand.SelectResult, finish: (EmaStepOutcome) -> Unit) {
+        val task = EmaConversationContext.activeTask()
+        val app = cmd.app ?: task?.app
+        val sameTask = task != null && (app == null || task.app.equals(app, true))
+        appEngine.selectResult(
+            app, cmd.selection, cmd.play,
+            alreadyChosen = if (sameTask) task!!.chosenTitles else emptyList(),
+            query = if (sameTask) task!!.query else null
+        ) { outcome, title, target ->
+            if (target != null && outcome.status != EmaOutcomeStatus.FAILED && outcome.status != EmaOutcomeStatus.NEEDS_PERMISSION) {
+                lastAppName = target.label
+                EmaConversationContext.recordSelection(target.label, title, cmd.selection, cmd.play)
+            }
+            finish(outcome)
+        }
+    }
+
     private fun speak(text: String) {
         if (text.isBlank()) return
+        if (suppressSpeech) return
         // When a live VoiceInteractionSession owns the response, it performs
         // the single final TTS operation and updates the assistant UI state.
         // Router-level speech remains enabled for scheduled/background commands

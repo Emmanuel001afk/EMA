@@ -356,6 +356,94 @@ class EmaAppActionEngine(private val context: Context) {
         }, 800L)
     }
 
+    /**
+     * Search inside an app and observe whether a result list really appeared.
+     * Success needs result rows on screen; the query merely echoed in the
+     * search box is reported as unverified.
+     */
+    fun searchVerified(appName: String, query: String, done: (EmaStepOutcome, AppTarget?) -> Unit) {
+        val target = findApp(appName)
+        if (target == null) {
+            done(EmaStepOutcome(EmaOutcomeStatus.FAILED, "I couldn't find $appName on this phone."), null)
+            return
+        }
+        if (query.isBlank()) {
+            val opened = openApp(target.label)
+            if (opened == null) { done(EmaStepOutcome(EmaOutcomeStatus.FAILED, "I couldn't open ${target.label}."), null); return }
+            main.postDelayed({
+                val revealed = EmaAccessibilityService.revealSearchEntry(target.packageName)
+                done(EmaStepOutcome(EmaOutcomeStatus.SUCCESS,
+                    if (revealed) "Opened ${target.label} and its search. What should I search for?" else "Opened ${target.label}."), target)
+            }, 900L)
+            return
+        }
+        openAndSearch(target.label, query) { ok, message ->
+            if (!ok) {
+                done(EmaOutcomeClassifier.classify(message, false).copy(retryable = !message.contains("couldn't find", true)), target)
+                return@openAndSearch
+            }
+            // Observe: wait (bounded) for result rows to appear.
+            var polls = 0
+            fun check() {
+                val rows = EmaAccessibilityService.resultItems(target.packageName, query).filterNot { it.sponsored }
+                if (rows.isNotEmpty()) {
+                    done(EmaStepOutcome(EmaOutcomeStatus.SUCCESS, "I searched ${target.label} for $query."), target)
+                } else if (polls++ < 6) {
+                    main.postDelayed({ check() }, 500L)
+                } else {
+                    done(EmaStepOutcome(EmaOutcomeStatus.UNVERIFIED,
+                        "I typed \"$query\" into ${target.label}'s search, but I can't see a results list yet."), target)
+                }
+            }
+            check()
+        }
+    }
+
+    /**
+     * Choose a result in [appName] (or the foreground app when null) and
+     * verify it opened or started playing. See [EmaResultSelectionFlow].
+     */
+    fun selectResult(
+        appName: String?,
+        selection: EmaSelection,
+        play: Boolean,
+        alreadyChosen: List<String>,
+        query: String?,
+        done: (EmaStepOutcome, String?, AppTarget?) -> Unit
+    ) {
+        val unavailable = EmaAccessibilityService.availabilityProblem()
+        if (unavailable != null) {
+            done(EmaStepOutcome(EmaOutcomeStatus.NEEDS_PERMISSION, "To choose a result on screen I need screen control. $unavailable"), null, null)
+            return
+        }
+        val foreground = EmaAccessibilityService.foregroundPackage()
+        val target = if (appName.isNullOrBlank()) {
+            installedApps().firstOrNull { it.packageName == foreground }?.let { AppTarget(it.label, it.packageName) }
+                ?: if (foreground.isNotBlank()) AppTarget(foreground.substringAfterLast('.'), foreground) else null
+        } else findApp(appName)
+        if (target == null) {
+            done(EmaStepOutcome(EmaOutcomeStatus.FAILED,
+                if (appName.isNullOrBlank()) "I can't tell which app's results you mean." else "I couldn't find $appName on this phone."), null, null)
+            return
+        }
+        val port = object : EmaResultSelectionFlow.Port {
+            override fun foregroundPackage() = EmaAccessibilityService.foregroundPackage()
+            override fun results(packageName: String, query: String?) = EmaAccessibilityService.resultItems(packageName, query)
+            override fun click(packageName: String, item: EmaResultItem, query: String?) = EmaAccessibilityService.clickResult(packageName, item, query)
+            override fun scrollForward(packageName: String) = EmaAccessibilityService.scrollResultsForward(packageName)
+            override fun back() = EmaAccessibilityService.pressBack()
+            override fun media(packageName: String): EmaResultSelectionFlow.Media? =
+                EmaNotificationListenerService.activeMedia(context, packageName)?.let { EmaResultSelectionFlow.Media(it.title, it.playing) }
+                    ?: if (EmaNotificationListenerService.isConnected()) EmaResultSelectionFlow.Media("", false) else null
+            override fun schedule(delayMs: Long, block: () -> Unit) { main.postDelayed(block, delayMs) }
+            override val rerunSearch: ((done: (Boolean) -> Unit) -> Unit)? =
+                if (query.isNullOrBlank()) null else { cb -> openAndSearch(target.label, query) { ok, _ -> cb(ok) } }
+        }
+        EmaResultSelectionFlow(port, target.packageName, target.label, selection, play, alreadyChosen, query).run { result ->
+            done(result.outcome, result.chosenTitle, target)
+        }
+    }
+
     private fun searchWithDefaultBrowser(query: String, done: (Boolean, String) -> Unit) {
         if (query.isBlank()) {
             done(false, "Tell me what to search for.")

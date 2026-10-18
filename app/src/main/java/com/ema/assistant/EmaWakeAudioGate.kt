@@ -16,8 +16,12 @@ class EmaWakeAudioGate(
     private var remaining = 0
     private var noiseFloor = 40.0
     private var decodedWindowSamples = 0
+    private var continuousVoicedSamples = 0
 
     data class Frame(val audio: List<ByteArray>, val resetDecoderAfter: Boolean)
+
+    /** Current adaptive background level (exposed for tests and diagnostics). */
+    val backgroundLevel: Double get() = noiseFloor
 
     fun accept(pcm: ByteArray, count: Int): Frame {
         require(count in 0..pcm.size && count % 2 == 0) { "Expected complete PCM16 samples" }
@@ -31,7 +35,21 @@ class EmaWakeAudioGate(
         val rms = sqrt(energy / samples)
         val voiced = rms >= max(minimumRms, noiseFloor * 3.0)
         val wasActive = remaining > 0
-        if (voiced) remaining = tailSamples else remaining = max(0, remaining - samples)
+        if (voiced) {
+            remaining = tailSamples
+            continuousVoicedSamples += samples
+            // Steady loud noise (fan, traffic, TV hum) used to hold the gate
+            // open forever because the noise floor only adapted while the gate
+            // was idle: the decoder then ran continuously, draining battery
+            // and filling its window with [unk]. Nobody says "Hey EMA" for
+            // more than a few seconds, so after 4 s of uninterrupted "voice"
+            // the floor starts to follow the level slowly; steady noise is
+            // re-classified as background within a few more seconds.
+            if (continuousVoicedSamples > SUSTAINED_SAMPLES) noiseFloor = noiseFloor * 0.99 + rms * 0.01
+        } else {
+            remaining = max(0, remaining - samples)
+            continuousVoicedSamples = 0
+        }
         if (!wasActive && !voiced) {
             noiseFloor = noiseFloor * 0.98 + rms * 0.02
             history.addLast(pcm.copyOf(count))
@@ -50,5 +68,9 @@ class EmaWakeAudioGate(
         val reset = remaining == 0 || decodedWindowSamples >= 160_000
         if (reset) decodedWindowSamples = 0
         return Frame(frames, reset)
+    }
+
+    private companion object {
+        const val SUSTAINED_SAMPLES = 64_000 // 4 seconds at 16 kHz
     }
 }

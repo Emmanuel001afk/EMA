@@ -23,6 +23,24 @@ class EmaNotificationListenerService : NotificationListenerService() {
             }.getOrDefault(false)
         }
 
+        /** What the app's media session reports, or null when not observable (no notification access, no session). */
+        data class MediaState(val packageName: String, val title: String, val playing: Boolean)
+
+        fun activeMedia(context: android.content.Context, packageName: String): MediaState? {
+            if (service == null) return null
+            return runCatching {
+                val manager = context.getSystemService(android.media.session.MediaSessionManager::class.java)
+                val component = android.content.ComponentName(context, EmaNotificationListenerService::class.java)
+                manager.getActiveSessions(component).filter { it.packageName == packageName }.map { controller ->
+                    MediaState(
+                        controller.packageName,
+                        controller.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
+                        controller.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING
+                    )
+                }.sortedByDescending { it.playing }.firstOrNull()
+            }.getOrNull()
+        }
+
         fun isConnected(): Boolean = service != null
 
         fun describeActiveNotifications(): String {

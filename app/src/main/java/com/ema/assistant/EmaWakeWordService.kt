@@ -113,7 +113,7 @@ class EmaWakeWordService : Service() {
                         while (running && (paused || EmaVoiceInteractionSession.isActiveVisible())) Thread.sleep(200)
                         continue
                     }
-                    Recognizer(model, 16000f, "[\"hey emma\", \"[unk]\"]").use { decoder ->
+                    Recognizer(model, 16000f, EmaWakeDetector.grammarJson()).use { decoder ->
                         val size = maxOf(4096, AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
                         val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
                             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size * 2)
@@ -126,6 +126,7 @@ class EmaWakeWordService : Service() {
                             // Microphone capture remains active for screen-off wake;
                             // only bounded, voice-like windows reach Vosk.
                             val gate = EmaWakeAudioGate()
+                            val detector = EmaWakeDetector()
                             val buffer = ByteArray(1600) // 50 ms, PCM16 mono 16 kHz
                             var renewal = SystemClock.elapsedRealtime()
                             capture@ while (running && !paused && !EmaVoiceInteractionSession.isActiveVisible()) {
@@ -139,13 +140,15 @@ class EmaWakeWordService : Service() {
                                     val final = decoder.acceptWaveForm(frame, frame.size)
                                     val result = JSONObject(if (final) decoder.result else decoder.partialResult)
                                     val words = result.optString(if (final) "text" else "partial").trim()
-                                    if (words == "hey emma" || words == "hey ema") {
+                                    // Token search, not string equality: "[unk] hey emma" counts.
+                                    val heard = if (final) detector.onFinal(words) else detector.onPartial(words)
+                                    if (heard) {
                                         paused = true
                                         main.post { activate() }
                                         break@capture
                                     }
                                 }
-                                if (window.resetDecoderAfter) decoder.reset()
+                                if (window.resetDecoderAfter) { decoder.reset(); detector.reset() }
                                 if (SystemClock.elapsedRealtime() - renewal > 30 * 60 * 1000L) {
                                     wakeLock?.let { if (it.isHeld) it.release(); it.acquire(60 * 60 * 1000L) }
                                     renewal = SystemClock.elapsedRealtime()
