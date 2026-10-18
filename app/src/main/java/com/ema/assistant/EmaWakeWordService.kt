@@ -69,6 +69,7 @@ class EmaWakeWordService : Service() {
                 return@Thread
             }
             var recorder: AudioRecord? = null
+            var wakeDetected = false
             try {
                 recorder = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate,
@@ -101,8 +102,9 @@ class EmaWakeWordService : Service() {
                         if (best != null && best <= threshold && System.currentTimeMillis() - lastTrigger > 8_000) {
                             lastTrigger = System.currentTimeMillis()
                             setStatus("wake_detected")
-                            sendBroadcast(Intent(ACTION_WAKE_DETECTED).setPackage(packageName))
-                            // Clear buffer to reduce repeated matches against the same utterance.
+                            wakeDetected = true
+                            running = false
+                            // Release the capture device before the assistant session opens its microphone.
                             rolling.fill(0)
                             filled = 0
                         }
@@ -115,7 +117,12 @@ class EmaWakeWordService : Service() {
             } finally {
                 try { recorder?.stop() } catch (_: Exception) {}
                 recorder?.release()
-                if (running) setStatus("stopped")
+                if (wakeDetected) {
+                    setStatus("wake_detected")
+                    sendBroadcast(Intent(ACTION_WAKE_DETECTED).setPackage(packageName))
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                } else if (running) setStatus("stopped")
                 running = false
             }
         }, "EMA-local-wake-word").apply { isDaemon = true; start() }
