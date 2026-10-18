@@ -1,3 +1,10 @@
+import java.io.File
+import java.net.URI
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 /**
@@ -79,8 +86,8 @@ val prepareBundledWakeModel by tasks.registering {
     outputs.file(archive)
     doLast {
         val target = archive.get().asFile
-        fun sha256(file: java.io.File): String {
-            val hash = java.security.MessageDigest.getInstance("SHA-256")
+        fun sha256(file: File): String {
+            val hash = MessageDigest.getInstance("SHA-256")
             file.inputStream().buffered().use { input ->
                 val buffer = ByteArray(65536)
                 while (true) {
@@ -93,7 +100,7 @@ val prepareBundledWakeModel by tasks.registering {
         }
         if (!target.isFile || sha256(target) != wakeModelSha256) {
             target.parentFile.mkdirs()
-            val temporary = java.io.File(target.parentFile, "model-download.tmp")
+            val temporary = File(target.parentFile, "model-download.tmp")
             val sources = listOf(
                 "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
                 "https://github.com/darsantiago/vosk-models-mirror/releases/download/v1/vosk-model-small-en-us-0.15.zip"
@@ -102,7 +109,7 @@ val prepareBundledWakeModel by tasks.registering {
             for (source in sources) {
                 try {
                     logger.lifecycle("Preparing built-in EMA wake model from $source")
-                    val connection = java.net.URI(source).toURL().openConnection().apply {
+                    val connection = URI(source).toURL().openConnection().apply {
                         connectTimeout = 30_000
                         readTimeout = 60_000
                     }
@@ -120,7 +127,7 @@ val prepareBundledWakeModel by tasks.registering {
                         }
                     }
                     check(sha256(temporary) == wakeModelSha256) { "Wake model SHA-256 mismatch" }
-                    java.nio.file.Files.move(temporary.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
                     downloaded = true
                     break
                 } catch (error: Exception) {
@@ -131,7 +138,7 @@ val prepareBundledWakeModel by tasks.registering {
             }
             check(downloaded) { "Cannot package EMA wake model. Restore build network access; no model-less APK will be produced." }
         }
-        java.util.zip.ZipFile(target).use { zip ->
+        ZipFile(target).use { zip ->
             listOf("am/final.mdl", "conf/mfcc.conf", "conf/model.conf", "graph/HCLr.fst", "graph/Gr.fst").forEach {
                 check(zip.getEntry("vosk-model-small-en-us-0.15/$it") != null) { "Incomplete bundled wake model: $it" }
             }
