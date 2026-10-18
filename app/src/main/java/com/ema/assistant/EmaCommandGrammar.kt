@@ -590,7 +590,7 @@ object EmaCommandGrammar {
         if (!lower.contains("alarm")) return null
         if (lower.contains("alarm clock app") || lower == "open alarm") return null
         val match = Regex(
-            """(?i)^(?:(?:set|create|make|put|schedule|add)\s+)?(?:an?\s+)?alarm\s*(?:clock)?\s*(?:in\s+clock\s+)?(?:for|at|to|of|in)?\s*(.+)$"""
+            """(?i)^(?:(?:set|create|make|put|schedule|add)\s+)?(?:an?\s+)?alarms?\s*(?:clock)?\s*(?:in\s+clock\s+)?(?:for|at|to|of|in)?\s*(.+)$"""
         ).find(command) ?: return null
         val value = match.groupValues[1].trim()
             .replaceFirst(Regex("""(?i)^(?:in|at|for)\s+"""), "")

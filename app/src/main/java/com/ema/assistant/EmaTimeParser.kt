@@ -122,20 +122,27 @@ object EmaTimeParser {
         // "half past six" -> 6:30, "quarter to seven" -> 6:45, "quarter past nine" -> 9:15.
         // Matched against `raw` (words intact) and `text` (words already numeric).
         val phrase = Regex("""(half|quarter)\s+(past|after|to|before)\s+([a-z0-9]+)""").find(raw)
-            ?: Regex("""(30|15)\s+(past|after|to|before)\s+(\d{1,2})""").find(text)
+            ?.let { it to raw }
+            ?: Regex("""(30|15)\s+(past|after|to|before)\s+(\d{1,2})""").find(text)?.let { it to text }
         if (phrase != null) {
-            val isHalf = phrase.groupValues[1] == "half" || phrase.groupValues[1] == "30"
+            val match = phrase.first
+            val source = phrase.second
+            val isHalf = match.groupValues[1] == "half" || match.groupValues[1] == "30"
             val offset = if (isHalf) 30 else 15
-            val hourWord = phrase.groupValues[3]
+            val hourWord = match.groupValues[3]
             val hour = hourWord.toIntOrNull() ?: WORD_NUMBERS[hourWord] ?: return null
-            val toward = phrase.groupValues[2]
+            val toward = match.groupValues[2]
             var baseHour = hour
             val minute = if (toward == "to" || toward == "before") {
                 baseHour -= 1
                 60 - offset
             } else offset
             if (baseHour < 0) baseHour += 12
-            val meridiem = meridiemOf(raw)
+            // Only an am/pm marker that follows the number counts. "I am busy"
+            // elsewhere in the sentence must not turn 7 into 07:00.
+            val following = source.substring(match.range.last + 1).trimStart()
+            val meridiem = Regex("^(a\\s*m|p\\s*m|am|pm|in the morning|in the afternoon|in the evening|at night)\\b")
+                .find(following)?.groupValues?.get(1)?.replace(Regex("\\s+"), "").orEmpty()
             return atTime(nowMillis, normalizeHour(baseHour, meridiem), minute)
         }
 
@@ -144,15 +151,36 @@ object EmaTimeParser {
         val hour = match.groupValues[1].toIntOrNull() ?: return null
         val minute = match.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: 0
         if (minute !in 0..59) return null
-        val meridiem = match.groupValues[3].replace(Regex("\\s+"), "").ifBlank { meridiemOf(raw) }
+        // The marker must be adjacent to the number (group 3). Scanning the
+        // whole sentence made "set an alarm for 7, I am going out" a 7 AM alarm
+        // through the "am" in "I am", and could contradict an explicit "pm".
+        val meridiem = match.groupValues[3].replace(Regex("\\s+"), "")
         if (hour !in 0..23) return null
+        if (meridiem.isBlank() && hour in 1..12) {
+            // No am/pm: choose the nearest future occurrence of this clock
+            // time (7 -> 07:00 before 7, otherwise 19:00, and only if that has
+            // passed does it become 07:00 tomorrow).
+            return nearestFuture(nowMillis, hour, minute)
+        }
         return atTime(nowMillis, normalizeHour(hour, meridiem), minute)
     }
 
-    private fun meridiemOf(text: String): String = when {
-        Regex("""\b(am|a\s*m|in the morning)\b""").containsMatchIn(text) -> "am"
-        Regex("""\b(pm|p\s*m|in the afternoon|in the evening|at night|tonight)\b""").containsMatchIn(text) -> "pm"
-        else -> ""
+    /**
+     * The nearest future occurrence of a 12-hour clock time.
+     * Both interpretations are considered; the caller states which one it used.
+     */
+    private fun nearestFuture(nowMillis: Long, hour: Int, minute: Int): Long {
+        val calendar = Calendar.getInstance().apply { timeInMillis = nowMillis }
+        val candidates = listOf(hour % 24, (hour + 12) % 24).distinct().map { h ->
+            (calendar.clone() as Calendar).apply {
+                set(Calendar.HOUR_OF_DAY, h)
+                set(Calendar.MINUTE, minute)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+        return candidates.filter { it > nowMillis }.minOrNull()
+            ?: candidates.minOrNull()!!.let { it + 86400000L }
     }
 
     /** Apply am/pm, and disambiguate a bare 1-7 as an evening hour when the text says so. */
@@ -264,6 +292,24 @@ object EmaTimeParser {
 
     fun describe(millis: Long): String =
         java.text.SimpleDateFormat("EEEE h:mm a", Locale.getDefault()).format(java.util.Date(millis))
+
+    /**
+     * "today at 7:00 PM" / "tomorrow at 7:00 AM" / "on Monday at 7:00 AM".
+     * A resolved alarm is always stated explicitly: a bare "7" is ambiguous,
+     * and EMA must not silently choose AM.
+     */
+    fun describeRelative(millis: Long, nowMillis: Long = System.currentTimeMillis()): String {
+        val target = Calendar.getInstance().apply { timeInMillis = millis }
+        val now = Calendar.getInstance().apply { timeInMillis = nowMillis }
+        val dayDelta = target.get(Calendar.DAY_OF_YEAR) - now.get(Calendar.DAY_OF_YEAR) +
+            (target.get(Calendar.YEAR) - now.get(Calendar.YEAR)) * 365
+        val time = java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(millis))
+        return when {
+            dayDelta == 0 -> "today at $time"
+            dayDelta == 1 -> "tomorrow at $time"
+            else -> "on " + java.text.SimpleDateFormat("EEEE", Locale.getDefault()).format(java.util.Date(millis)) + " at $time"
+        }
+    }
 
     fun describeShort(millis: Long): String =
         java.text.SimpleDateFormat("h:mm a", Locale.getDefault()).format(java.util.Date(millis))

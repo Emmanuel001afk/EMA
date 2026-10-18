@@ -14,6 +14,14 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.SET_ALARM"/>
+    <!-- Required for NotificationManager.setInterruptionFilter (Do Not Disturb).
+         Without this declaration EMA never appears in Android's "Do Not
+         Disturb access" list, so the grant can never become true. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <!-- Full-screen alarm UI on Android 14+, if the user grants it. Absent the
+         grant EMA still posts the alarm notification and says so. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
@@ -43,11 +51,20 @@
         <service android:name=".EmaVoiceInteractionSessionService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true">
             <intent-filter><action android:name="android.service.voice.VoiceInteractionSessionService"/></intent-filter>
         </service>
+        <!-- A recognition service is mandatory for digital-assistant
+             registration; VoiceInteractionServiceInfo rejects the voice
+             interaction XML without one. It delegates to an explicit external
+             recogniser, never to the default one (which could be EMA). -->
+        <service android:name=".EmaRecognitionService" android:exported="true" android:permission="android.permission.BIND_RECOGNITION_SERVICE">
+            <intent-filter><action android:name="android.speech.RecognitionService"/></intent-filter>
+            <meta-data android:name="android.speech" android:resource="@xml/recognition_service"/>
+        </service>
         <receiver android:name=".EmaScheduledActionReceiver" android:exported="false"/>
         <receiver android:name=".EmaBootReceiver" android:enabled="true" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
         </receiver>
         <receiver android:name=".EmaReminderReceiver" android:exported="false"/>
+        <receiver android:name=".EmaAlarmReceiver" android:exported="false"/>
         <receiver android:name=".EmaRoutineReceiver" android:exported="false"/>
         <service android:name=".EmaNotificationListenerService" android:label="EMA notification access" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="false">
             <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>

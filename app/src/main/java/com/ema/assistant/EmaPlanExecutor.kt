@@ -147,12 +147,19 @@ class EmaPlanExecutor(
 
     inner class Handle internal constructor() {
         @Volatile internal var cancelled = false
+
+        /**
+         * Stop after the step currently running, keeping its real outcome.
+         * Used when the user answers "no" to "Step N done — continue?".
+         */
+        @Volatile internal var stopAfterCurrent = false
         internal var cancelCurrent: (() -> Unit)? = null
         fun cancel() {
             if (cancelled) return
             cancelled = true
             cancelCurrent?.invoke()
         }
+        fun cancelAfterCurrent() { stopAfterCurrent = true }
     }
 
     fun execute(steps: List<Step>, deadlineMs: Long, listener: Listener? = null, done: (Report) -> Unit): Handle {
@@ -166,11 +173,11 @@ class EmaPlanExecutor(
             if (finished) return
             finished = true
             val filled = outcomes.mapIndexed { i, o -> o ?: EmaStepOutcome(EmaOutcomeStatus.SKIPPED, steps[i].description) }
-            done(Report(planStatus(filled, handle.cancelled), filled, summarize(steps, filled)))
+            done(Report(planStatus(filled, handle.cancelled || handle.stopAfterCurrent), filled, summarize(steps, filled)))
         }
 
         fun runStep(index: Int, attempt: Int) {
-            if (handle.cancelled) {
+            if (handle.cancelled || handle.stopAfterCurrent) {
                 for (k in index until steps.size) if (outcomes[k] == null) outcomes[k] = EmaStepOutcome(EmaOutcomeStatus.CANCELLED, "Cancelled.")
                 finish(); return
             }
@@ -279,8 +286,13 @@ class EmaPlanExecutor(
                     parts += o.message
                 }
             }
+            val cancelled = outcomes.indices.filter { outcomes[it].status == EmaOutcomeStatus.CANCELLED }
             val skipped = outcomes.indices.filter { outcomes[it].status == EmaOutcomeStatus.SKIPPED }
-            if (skipped.isNotEmpty()) {
+            if (cancelled.isNotEmpty()) {
+                val finishedCount = outcomes.count { it.status == EmaOutcomeStatus.SUCCESS || it.status == EmaOutcomeStatus.UNVERIFIED }
+                val names = cancelled.joinToString(", ") { steps[it].description.replaceFirstChar { c -> c.lowercase() } }
+                parts += "Stopped after $finishedCount of ${steps.size} steps, so I did not run: $names."
+            } else if (skipped.isNotEmpty()) {
                 val names = skipped.joinToString(", ") { steps[it].description.replaceFirstChar { c -> c.lowercase() } }
                 parts += "I stopped there, so I did not: $names."
             }

@@ -55,7 +55,9 @@ class EmaCommandRouter(
         val app: String? = null,
         val body: String? = null,
         val sim: Int? = null,
-        val candidates: List<String> = emptyList()
+        val candidates: List<String> = emptyList(),
+        /** Triggers waiting for an ambiguity answer ("which app did you mean?"). */
+        val triggers: List<String> = emptyList()
     )
 
     // Follow-up state is scoped to this router/session so separate Activity and
@@ -76,6 +78,18 @@ class EmaCommandRouter(
             clock = { android.os.SystemClock.elapsedRealtime() }
         )
     }
+    /** Bounded condition waits for device state; never fixed sleeps. */
+    private val waiter by lazy {
+        EmaConditionWaiter(
+            scheduler = { delay, block ->
+                val runnable = Runnable { block() }
+                commandHandler.postDelayed(runnable, delay)
+                EmaPlanExecutor.Cancellable { commandHandler.removeCallbacks(runnable) }
+            },
+            clock = { android.os.SystemClock.elapsedRealtime() }
+        )
+    }
+
     private var activePlan: EmaPlanExecutor.Handle? = null
 
     /** While a plan runs, individual steps stay quiet; one summary is spoken at the end. */
@@ -83,6 +97,24 @@ class EmaCommandRouter(
 
     /** Apps excluded for one routing pass after the user resolved an app ambiguity. */
     private var excludedApps: Set<String> = emptySet()
+
+    /**
+     * True while a shortcut is being expanded for the current user command.
+     * A shortcut therefore expands at most one level and can never recurse
+     * into itself, even when its stored command is a single trigger word.
+     */
+    private var shortcutsSuppressedForCommand = false
+
+    /** Instruction clauses found in the current request ("go home when done"). */
+    private var pendingGoHome = false
+    private var goHomeConsumedByPlan = false
+
+    /** Set while a plan pauses for "Step N done — continue?". */
+    private var pendingStepConfirmation: (() -> Unit)? = null
+
+    private companion object {
+        const val PREF_CONFIRM_STEPS = "confirm_plan_steps"
+    }
 
     private var executionStage = "routing"
     private val commandHandler = Handler(Looper.getMainLooper())
@@ -122,10 +154,24 @@ class EmaCommandRouter(
     }
 
     fun execute(raw: String, done: (String) -> Unit) {
+        // "yes / no / stop" answers a paused plan; they are not new commands.
+        if (pendingStepConfirmation != null && handleStepConfirmation(raw, done)) return
+
+        // "stop" while a plan is running cancels that plan. Its own completion
+        // reports which steps finished, so no second response is produced here.
+        if (activePlan != null && EmaPlanInstructions.isCancel(raw)) {
+            android.util.Log.i("EMA", "Plan cancellation requested by the user")
+            activePlan?.cancel()
+            return
+        }
+
         // A command has one terminal result. This prevents a late callback,
         // timeout, or duplicated provider callback from producing conflicting
         // answers for the same user command.
         executionController.reset()
+        pendingGoHome = false
+        goHomeConsumedByPlan = false
+        shortcutsSuppressedForCommand = false
         val completed = AtomicBoolean(false)
         activeCompletion = completed
         val timeout = Runnable {
@@ -154,8 +200,20 @@ class EmaCommandRouter(
             }
         }
 
+        // Instruction clauses are options, not steps. When the request itself
+        // is a single command, the final Home action runs after it completes.
+        val withHome: (String) -> Unit = { result ->
+            if (pendingGoHome && !goHomeConsumedByPlan) {
+                pendingGoHome = false
+                val moved = EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.HOME)
+                safeDone(if (moved) "$result Went home." else "$result I could not go home after that.")
+            } else {
+                safeDone(result)
+            }
+        }
+
         try {
-            executeInternal(raw, safeDone, 0)
+            executeInternal(raw, withHome, 0)
         } catch (t: Throwable) {
             android.util.Log.e("EMA", "Command execution crashed at stage=$executionStage (${EmaPrivacy.describe(raw)})", t)
             safeDone("I couldn't complete that command because the operation failed during $executionStage. I did not retry it automatically.")
@@ -166,7 +224,7 @@ class EmaCommandRouter(
      * @param depth guards against a planner rewrite looping back into itself.
      */
     private fun executeInternal(raw: String, done: (String) -> Unit, depth: Int) {
-        val command = raw.trim()
+        var command = raw.trim()
         if (command.isBlank()) {
             finishAssistantResponse("I didn't receive a command.", done)
             return
@@ -191,6 +249,18 @@ class EmaCommandRouter(
 
             pendingTask = null
 
+            // Instruction clauses ("make sure one action does not hinder
+            // another", "go home when you're done") are plan options. Strip
+            // them before any layer can turn them into a fake step.
+            val instructions = EmaPlanInstructions.parse(command)
+            if (instructions.cleaned != command) {
+                command = instructions.cleaned
+                if (instructions.goHome) pendingGoHome = true
+                if (instructions.strictSequential) {
+                    android.util.Log.i("EMA", "strict sequential plan requested")
+                }
+            }
+
             runCatching {
                 if (handleScheduledAction(command, done)) return
             }.onFailure {
@@ -214,6 +284,25 @@ class EmaCommandRouter(
                 if (handleMemory(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Memory handling failed; continuing", it)
+            }
+
+            // User-taught shortcuts expand BEFORE the grammar and semantic
+            // layers. One level only: a shortcut may not expand into itself.
+            if (!shortcutsSuppressedForCommand) {
+                runCatching {
+                    val target = memory().shortcut(command)
+                    if (target != null) {
+                        android.util.Log.i("EMA", "shortcut expanded: ${target.javaClass.simpleName}")
+                        shortcutsSuppressedForCommand = true
+                        when (target) {
+                            is EmaShortcuts.Target.App -> executeInternal("open " + target.label, done, depth)
+                            is EmaShortcuts.Target.Command -> executeInternal(target.text, done, depth)
+                        }
+                        return
+                    }
+                }.onFailure {
+                    android.util.Log.e("EMA", "Shortcut expansion failed; continuing", it)
+                }
             }
 
             // Offline knowledge: calculations, conversions, dates. Computed, never invented.
@@ -244,7 +333,12 @@ class EmaCommandRouter(
         // natural compound requests into the same native actions used for
         // one-step commands. No AI call is involved here.
         if (depth < 3) {
-            val planned = EmaNativeCommandPlanner.plan(command)
+            val plannedSteps = EmaNativeCommandPlanner.plan(command)
+            val planned = if (pendingGoHome && plannedSteps.isNotEmpty()) {
+                pendingGoHome = false
+                goHomeConsumedByPlan = true
+                plannedSteps + "go home"
+            } else plannedSteps
             executionStage = "executing"
             if (planned.size > 1) {
                 // One shared deadline for the whole request, scaled by the number
@@ -252,7 +346,7 @@ class EmaCommandRouter(
                 // sized for one. Per-step work is still bounded by the execution
                 // controller.
                 extendDeadline(commandTimeoutMs * planned.size)
-                executeSequence(planned, 0, done, depth + 1)
+                executeSequence(planned, done, depth + 1)
                 return
             }
             val routedCommand = planned.firstOrNull().orEmpty()
@@ -313,8 +407,13 @@ class EmaCommandRouter(
         finishAssistantResponse(nativeOnlyExplanation(command, mode), done)
     }
 
+    /**
+     * Installed launcher apps with their real package names. Package names are
+     * required to honour spelled-package shortcuts ("P H O R M I") and any
+     * other identity-based match; an empty package name makes that impossible.
+     */
     private fun installedApps(): List<EmaAppResolver.App> = runCatching {
-        appEngine.installedAppLabels().filter { it !in excludedApps }.map { label -> EmaAppResolver.App(label, "") }
+        appEngine.installedApps().filter { it.label !in excludedApps }
     }.getOrDefault(emptyList())
 
     /**
@@ -346,6 +445,14 @@ class EmaCommandRouter(
      * the command was consumed here.
      */
     private fun handleSystemCommand(lower: String, command: String, done: (String) -> Unit): Boolean {
+        // Generic device-settings parser first: it understands "turn on
+        // aeroplane mode", "raise brightness to full" and the exact historical
+        // phrasings alike, without an entry per wording.
+        runCatching { EmaSystemCommandVocabulary.parseDeviceSetting(command) }.getOrNull()?.let { setting ->
+            executionStage = "device setting"
+            executeDeviceSetting(setting, done)
+            return true
+        }
         when {
             lower == "scroll down" || lower == "scroll up" || lower == "scroll to top" -> {
                 val direction = if (lower.contains("up") || lower.contains("top")) "up" else "down"
@@ -862,8 +969,19 @@ class EmaCommandRouter(
             speak(message); done(message); return
         }
         lastAppName = target.label
-        val message = "Opened ${target.label}."
-        speak(message); done(message)
+        // Do not claim "Opened" from startActivity alone. The step completes
+        // only when the target package is in the foreground and its screen has
+        // stopped changing; without screen control EMA says so honestly.
+        appEngine.awaitForeground(target) { confirmed ->
+            val message = when {
+                confirmed -> "Opened ${target.label}."
+                EmaAccessibilityService.isConnected() ->
+                    "I launched ${target.label}, but I could not confirm it reached the foreground."
+                else ->
+                    "I launched ${target.label}, but screen control is off, so I could not confirm it opened."
+            }
+            speak(message); done(message)
+        }
     }
 
     private fun openSettingsPage(target: String, done: (String) -> Unit) {
@@ -903,37 +1021,106 @@ class EmaCommandRouter(
 
     // ---------------------------------------------------------- sequences
 
+    /**
+     * ONE sequencer for legacy text steps and semantic plans.
+     *
+     * A legacy sequence is now a list of [EmaPlanExecutor.Step]s: ordered,
+     * dependent, non-retried, with the same PLAN display and the same terminal
+     * summary as the semantic path. Previously this loop advanced immediately
+     * after any non-failure result, so "Opened Spotify" could be reported while
+     * Spotify was still starting and the next step ran on the wrong screen.
+     */
     private fun executeSequence(
         steps: List<String>,
-        index: Int,
         done: (String) -> Unit,
         depth: Int
     ) {
-        if (index >= steps.size) {
-            executionController.shutdown()
-            done("Done.")
+        val listener = progressListener
+        val planSteps = steps.mapIndexed { index, text ->
+            EmaPlanExecutor.Step(
+                description = text,
+                consequential = false,
+                maxAttempts = 1,
+                timeoutMs = 25_000L,
+                dependsOnPrevious = true,
+                run = { finish ->
+                    executeInternal(text, { result ->
+                        val outcome = EmaOutcomeClassifier.classify(result)
+                        maybeConfirmStep(index, steps.size, text, outcome, finish)
+                    }, depth)
+                }
+            )
+        }
+        val deadline = planSteps.sumOf { it.timeoutMs }.coerceAtMost(150_000L)
+        extendDeadline(deadline + 15_000L)
+        suppressSpeech = true
+        activePlan = planExecutor.execute(planSteps, deadline, planProgressListener(listener)) { report ->
+            activePlan = null
+            suppressSpeech = false
+            finishAssistantResponse(report.summary.ifBlank { "Done." }, done)
+        }
+    }
+
+    private fun planProgressListener(listener: EmaProgressListener?) = object : EmaPlanExecutor.Listener {
+        override fun onPlanStarted(descriptions: List<String>) { listener?.onPlan(descriptions) }
+        override fun onStepStarted(index: Int, attempt: Int) {
+            executionStage = "step ${index + 1}"
+            listener?.onStepStarted(index)
+        }
+        override fun onStepFinished(index: Int, outcome: EmaStepOutcome) { listener?.onStepFinished(index, outcome) }
+    }
+
+    /** Optional confirmation. Off by default; the plan waits for yes/no/stop. */
+    private fun maybeConfirmStep(
+        index: Int,
+        total: Int,
+        text: String,
+        outcome: EmaStepOutcome,
+        finish: (EmaStepOutcome) -> Unit
+    ) {
+        val enabled = runCatching { prefs.getBoolean(PREF_CONFIRM_STEPS, false) }.getOrDefault(false)
+        if (!enabled || !outcome.status.isSuccess || !EmaPlanInstructions.isMajorStep(text) || index >= total - 1) {
+            finish(outcome)
             return
         }
+        val question = "Step ${index + 1} done — continue?"
+        pendingStepConfirmation = { finish(outcome) }
+        speakPrompt(question)
+    }
 
-        executionController.runStep(
-            // executeInternal, not execute: the outer call already installed the
-            // single deadline and terminal guard for this user request. Calling
-            // execute() here used to nest another 60s timeout per step, and a
-            // step that finished after the outer timeout could advance the
-            // sequence the user had been told had failed.
-            action = { finish -> executeInternal(steps[index], finish, depth) },
-            onTimeout = { "I couldn't complete step " + (index + 1) + " of " + steps.size + " before the execution timeout." }
-        ) { result ->
-            if (isActionFailure(result)) {
-                executionController.shutdown()
-                done(result)
-            } else if (index == steps.lastIndex) {
-                executionController.shutdown()
-                done(result)
-            } else {
-                executeSequence(steps, index + 1, done, depth)
+    private fun handleStepConfirmation(raw: String, done: (String) -> Unit): Boolean {
+        val continuation = pendingStepConfirmation ?: return false
+        val answer = raw.lowercase().trim().trimEnd('.', '!', '?')
+        val yes = answer in setOf(
+            "yes", "yeah", "yep", "ok", "okay", "continue", "go ahead", "sure", "proceed",
+            "carry on", "next", "do it"
+        )
+        val no = answer in setOf("no", "nope", "don't", "do not", "not now") || EmaPlanInstructions.isCancel(raw)
+        return when {
+            yes -> {
+                pendingStepConfirmation = null
+                continuation()
+                true
+            }
+            no -> {
+                pendingStepConfirmation = null
+                activePlan?.cancelAfterCurrent()
+                continuation()
+                true
+            }
+            else -> {
+                finishAssistantResponse("Say yes to continue, or no or stop to end the plan.", done)
+                true
             }
         }
+    }
+
+    private fun speakPrompt(text: String) {
+        progressListener?.onClarification(text, listOf("yes", "no", "stop"))
+        if (EmaVoiceInteractionSession.isActiveVisible()) return
+        runCatching {
+            ttsProvider()?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "ema")
+        }.onFailure { android.util.Log.w("EMA", "Confirmation prompt could not be spoken", it) }
     }
 
     // --------------------------------------------------------- scheduling
@@ -986,7 +1173,7 @@ class EmaCommandRouter(
             "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s*(?::[0-9]{2})?\\s*(?:am|pm)|" +
             "[0-9]{1,2}:[0-9]{2}"
         val pattern = Regex(
-            "(?i)(?:^|[,;]|\\bthen\\b)\\s*(?:(?:by|at)\\s+)?($time)\\s*(?:[,;:])-?\\s*(.+?)(?=\\s*(?:[,;]|\\bthen\\b)\\s*(?:(?:by|at)\\s+)?(?:$time)\\s*[,;:]|$)"
+            "(?i)(?:^|[,;]|\\bthen\\b)\\s*(?:(?:by|at)\\s+)?($time)\\s*(?:[,;:]\\s*|\\s+)(.+?)(?=\\s*(?:[,;]|\\bthen\\b)\\s*(?:(?:by|at)\\s+)?(?:$time)\\s*[,;:]|$)"
         )
         val matches = pattern.findAll(command).toList()
         if (matches.isEmpty()) return false
@@ -1217,6 +1404,26 @@ class EmaCommandRouter(
             if (name.isBlank() || name.split(Regex("\\s+")).size > 5) return false
             pendingTask = null
             sendMessageCommand(EmaCommand.SendMessage(name, task.app, task.body.orEmpty()), done)
+            return true
+        }
+
+        // "which app did you mean?" for a remembered definition: finish saving
+        // the shortcut the user just taught EMA.
+        if (task.type == "shortcut-app" && task.candidates.isNotEmpty()) {
+            val spoken = EmaAppResolver.normalize(command)
+            val chosenLabel = task.candidates.firstOrNull { EmaAppResolver.normalize(it) == spoken }
+                ?: task.candidates.filter { spoken.isNotBlank() && spoken.contains(EmaAppResolver.normalize(it)) }
+                    .maxByOrNull { it.length }
+                ?: return false
+            val app = appEngine.installedApps().firstOrNull { it.label == chosenLabel } ?: return false
+            pendingTask = null
+            val current = memory()
+            val applied = current.withShortcut(
+                task.triggers,
+                EmaShortcuts.Target.App(app.packageName, app.label)
+            )
+            EmaMemoryStore.save(context, applied.memory)
+            finishAssistantResponse(applied.reply, done)
             return true
         }
 
@@ -1511,38 +1718,353 @@ class EmaCommandRouter(
             .onFailure { val result = "I could not open $label on this phone."; speak(result); done(result) }
     }
 
+    /**
+     * Alarm requests, resolved before anything leaves EMA.
+     *
+     * - several times: one ACTION_SET_ALARM each, spaced out, and every one is
+     *   reported back;
+     * - weekdays/named days: EXTRA_DAYS so the clock app repeats them;
+     * - a specific calendar day ("tomorrow"): the clock app has no date field,
+     *   so EMA schedules its own exact alarm and says exactly that.
+     *
+     * A bare hour is resolved to the nearest future occurrence and stated
+     * explicitly ("today at 7:00 PM"), never silently assumed to be AM.
+     */
     private fun openAlarm(value: String, done: (String) -> Unit) {
-        val moment = EmaTimeParser.parse(value)
-        if (moment == null) {
+        val request = EmaAlarmRequest.parse(value)
+        if (request == null) {
             val message = "I could not understand the alarm time."
             speak(message); done(message); return
         }
-        val calendar = java.util.Calendar.getInstance().apply { timeInMillis = moment.millis }
-        val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
-        val minute = calendar.get(java.util.Calendar.MINUTE)
-
-        // This is a system alarm request, not a UI-navigation task. Do not
-        // guess or click a Clock button after opening it.
-        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
-            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
-            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
-            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
-            putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
-            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (request.explicitDate && request.days.isNullOrEmpty()) {
+            scheduleOwnAlarms(request, done)
+            return
         }
+        sendClockAlarms(request, done)
+    }
 
+    private fun sendClockAlarms(request: EmaAlarmRequest.Parsed, done: (String) -> Unit) {
+        if (!EmaAccessibilityService.isConnected()) {
+            // Starting an activity from the background is restricted, but a
+            // user-issued assistant command is allowed to launch the clock app.
+            android.util.Log.i("EMA", "sending alarm without screen control")
+        }
+        val resolver = runCatching {
+            context.packageManager.resolveActivity(
+                Intent(android.provider.AlarmClock.ACTION_SET_ALARM).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), 0
+            )
+        }.getOrNull()
+        if (resolver == null) {
+            val message = "This phone has no clock app that accepts alarm requests."
+            speak(message); done(message); return
+        }
+        val clockLabel = runCatching {
+            resolver.activityInfo.applicationInfo.loadLabel(context.packageManager).toString()
+        }.getOrDefault("the clock app")
+        val now = System.currentTimeMillis()
+        val descriptions = request.times.map { EmaTimeParser.describeRelative(it.millis, now) }
+
+        var sent = 0
+        request.times.forEachIndexed { index, moment ->
+            val calendar = java.util.Calendar.getInstance().apply { timeInMillis = moment.millis }
+            val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+                putExtra(android.provider.AlarmClock.EXTRA_HOUR, calendar.get(java.util.Calendar.HOUR_OF_DAY))
+                putExtra(android.provider.AlarmClock.EXTRA_MINUTES, calendar.get(java.util.Calendar.MINUTE))
+                putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "EMA alarm")
+                putExtra(android.provider.AlarmClock.EXTRA_VIBRATE, true)
+                putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+                if (!request.days.isNullOrEmpty()) {
+                    putExtra(android.provider.AlarmClock.EXTRA_DAYS, request.days!!.toIntArray())
+                }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            commandHandler.postDelayed({
+                runCatching { context.startActivity(intent) }
+                    .onSuccess { sent++ }
+                    .onFailure { android.util.Log.e("EMA", "Alarm request $index failed", it) }
+                if (index == request.times.lastIndex) {
+                    val repeat = request.days?.let { " repeating " + describeDays(it) }.orEmpty()
+                    val message = when {
+                        sent == request.times.size && request.times.size == 1 ->
+                            "I sent an alarm for ${descriptions.first()}$repeat to $clockLabel."
+                        sent == request.times.size ->
+                            "I sent ${request.times.size} alarms to $clockLabel: ${descriptions.joinToString(", ")}."
+                        sent > 0 ->
+                            "I sent $sent of ${request.times.size} alarms to $clockLabel: ${descriptions.take(sent).joinToString(", ")}."
+                        else -> "I could not send the alarm request to the phone's alarm system."
+                    }
+                    speak(message); done(message)
+                }
+            }, index * 400L)
+        }
+    }
+
+    /** Exact alarms for a calendar day the clock app cannot represent. */
+    private fun scheduleOwnAlarms(request: EmaAlarmRequest.Parsed, done: (String) -> Unit) {
+        if (!EmaAlarmScheduler.canScheduleExact(context)) {
+            val opened = EmaAlarmScheduler.requestExactAlarmPermission(context)
+            val message = "The clock app can't take a date, so I would use EMA's own exact alarm — " +
+                "but EMA isn't allowed to set exact alarms yet. " +
+                (if (opened) "I opened the setting so you can allow it." else "Enable it in Android settings, then ask again.")
+            speak(message); done(message); return
+        }
+        val now = System.currentTimeMillis()
+        val scheduled = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+        for (moment in request.times) {
+            val description = EmaTimeParser.describeRelative(moment.millis, now)
+            val label = "Alarm for " + EmaTimeParser.describeShort(moment.millis)
+            if (EmaAlarmScheduler.schedule(context, moment.millis, label)) scheduled += description
+            else failed += description
+        }
+        val message = when {
+            scheduled.size == request.times.size ->
+                "The clock app can't take a date, so I set EMA's own alarm for ${scheduled.joinToString(", ")}. " +
+                    "It posts an alarm notification; the lock screen shows its full-screen alert only if Android allows full-screen alarms."
+            scheduled.isNotEmpty() ->
+                "I set EMA's own alarm for ${scheduled.joinToString(", ")}, but could not schedule ${failed.joinToString(", ")}."
+            else -> "I couldn't schedule that alarm."
+        }
+        speak(message); done(message)
+    }
+
+    private fun describeDays(days: List<Int>): String {
+        val weekdays = listOf(
+            java.util.Calendar.MONDAY, java.util.Calendar.TUESDAY, java.util.Calendar.WEDNESDAY,
+            java.util.Calendar.THURSDAY, java.util.Calendar.FRIDAY
+        )
+        val names = mapOf(
+            java.util.Calendar.SUNDAY to "Sunday", java.util.Calendar.MONDAY to "Monday",
+            java.util.Calendar.TUESDAY to "Tuesday", java.util.Calendar.WEDNESDAY to "Wednesday",
+            java.util.Calendar.THURSDAY to "Thursday", java.util.Calendar.FRIDAY to "Friday",
+            java.util.Calendar.SATURDAY to "Saturday"
+        )
+        return when {
+            days.toSet() == weekdays.toSet() -> "on weekdays"
+            days.toSet() == setOf(java.util.Calendar.SATURDAY, java.util.Calendar.SUNDAY) -> "on weekends"
+            days.size == 7 -> "every day"
+            else -> "on " + days.mapNotNull { names[it] }.joinToString(", ")
+        }
+    }
+
+    // ------------------------------------------------------ device settings
+
+    private fun executeDeviceSetting(setting: EmaSystemCommandVocabulary.DeviceSetting, done: (String) -> Unit) {
+        when (setting.kind) {
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.DND -> {
+                val wanted = setting.on
+                if (wanted == null) {
+                    val message = "Do Not Disturb can be turned on or off. Tell me which."
+                    speak(message); done(message)
+                } else {
+                    setDnd(wanted, done)
+                }
+            }
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.BRIGHTNESS -> changeBrightness(setting, done)
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE,
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI,
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH -> {
+                val wanted = setting.on
+                if (wanted == null) {
+                    val name = radioName(setting.kind)
+                    val message = "Tell me whether to turn $name on or off."
+                    speak(message); done(message)
+                } else {
+                    setRadio(setting.kind, wanted, done)
+                }
+            }
+        }
+    }
+
+    /**
+     * Brightness is written only after switching the display out of automatic
+     * mode, and the value is read back. Reporting a percentage EMA did not
+     * observe is exactly the kind of false success this release removes.
+     */
+    private fun changeBrightness(setting: EmaSystemCommandVocabulary.DeviceSetting, done: (String) -> Unit) {
+        if (!Settings.System.canWrite(context)) {
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + context.packageName))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+            val message = "EMA needs permission to change system brightness. I opened the setting for that permission."
+            speak(message); done(message); return
+        }
+        val current = runCatching {
+            Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+        }.getOrDefault(128).coerceIn(1, 255)
+        val target = when (setting.action) {
+            EmaSystemCommandVocabulary.DeviceSetting.Action.MAX -> 255
+            EmaSystemCommandVocabulary.DeviceSetting.Action.MIN -> 1
+            EmaSystemCommandVocabulary.DeviceSetting.Action.INCREASE -> current + 26
+            EmaSystemCommandVocabulary.DeviceSetting.Action.DECREASE -> current - 26
+            EmaSystemCommandVocabulary.DeviceSetting.Action.SET ->
+                ((setting.value ?: 50) * 255 / 100f).toInt()
+            EmaSystemCommandVocabulary.DeviceSetting.Action.ON -> 255
+            EmaSystemCommandVocabulary.DeviceSetting.Action.OFF -> 1
+        }.coerceIn(1, 255)
+        val applied = runCatching {
+            Settings.System.putInt(
+                context.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL
+            )
+            Settings.System.putInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, target)
+            val readBack = Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+            val mode = Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE)
+            readBack to mode
+        }.getOrNull()
+        if (applied == null) {
+            val message = "I could not change the system brightness."
+            speak(message); done(message); return
+        }
+        val (readBack, mode) = applied
+        val percent = (readBack * 100 / 255f).toInt()
+        val message = if (mode == Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL && kotlin.math.abs(readBack - target) <= 2) {
+            "Brightness set to $percent percent and verified."
+        } else {
+            "I asked Android to set brightness to ${(target * 100 / 255f).toInt()} percent, but the system still reports $percent percent" +
+                if (mode == Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC) " in automatic mode." else "."
+        }
+        speak(message); done(message)
+    }
+
+    private fun radioName(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): String = when (kind) {
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE -> "airplane mode"
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> "Wi-Fi"
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH -> "Bluetooth"
+        else -> "that setting"
+    }
+
+    private fun radioLabels(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): List<String> = when (kind) {
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE ->
+            listOf("airplane mode", "aeroplane mode", "flight mode", "airplane")
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> listOf("wi-fi", "wifi", "internet", "wi fi")
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH -> listOf("bluetooth")
+        else -> emptyList()
+    }
+
+    /** System-observable state, or null when this Android build hides it. */
+    private fun readRadioState(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): Boolean? = runCatching {
+        val value = when (kind) {
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE ->
+                Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, -1)
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI ->
+                Settings.Global.getInt(context.contentResolver, Settings.Global.WIFI_ON, -1)
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH ->
+                Settings.Global.getInt(context.contentResolver, Settings.Global.BLUETOOTH_ON, -1)
+            else -> -1
+        }
+        when (value) { 1 -> true; 0 -> false; else -> null }
+    }.getOrNull()
+
+    private fun settingsPageFor(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): String = when (kind) {
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE -> Settings.ACTION_AIRPLANE_MODE_SETTINGS
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> Settings.ACTION_WIFI_SETTINGS
+        else -> Settings.ACTION_BLUETOOTH_SETTINGS
+    }
+
+    /**
+     * Airplane mode, Wi-Fi and Bluetooth cannot be written by a normal app, so
+     * EMA drives the Quick Settings tile: label match, read the real state,
+     * tap only when it is wrong, then verify against system state. When the
+     * tile is not reachable it falls back to the Settings page and its switch,
+     * and if neither can be verified it says so instead of claiming success.
+     */
+    private fun setRadio(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind, enabled: Boolean, done: (String) -> Unit) {
+        val name = radioName(kind)
+        val labels = radioLabels(kind)
+        val known = readRadioState(kind)
+        if (known == enabled) {
+            val message = "$name is already ${if (enabled) "on" else "off"}."
+            speak(message); done(message); return
+        }
+        if (!EmaAccessibilityService.isConnected()) {
+            openSettings(settingsPageFor(kind), "$name settings", done)
+            return
+        }
+        EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.QUICK_SETTINGS)
+        waiter.until(3_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) != null }) { visible ->
+            if (!visible) {
+                EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
+                toggleThroughSettingsPage(kind, labels, enabled, done)
+                return@until
+            }
+            val current = EmaAccessibilityService.readToggle(labels)
+            if (current == enabled) {
+                EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
+                val state = readRadioState(kind) ?: current
+                val message = if (state == enabled) "$name is ${if (enabled) "on" else "off"}."
+                else "The $name tile already shows ${if (enabled) "on" else "off"}, but I could not verify it."
+                speak(message); done(message)
+                return@until
+            }
+            if (!EmaAccessibilityService.tapToggle(labels)) {
+                EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
+                toggleThroughSettingsPage(kind, labels, enabled, done)
+                return@until
+            }
+            waiter.until(3_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) == enabled }) { toggled ->
+                EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
+                if (!toggled) {
+                    toggleThroughSettingsPage(kind, labels, enabled, done)
+                    return@until
+                }
+                waiter.until(2_000, pollMs = 200, probe = { readRadioState(kind) == enabled }) { verified ->
+                    val state = readRadioState(kind)
+                    val message = when {
+                        verified || state == enabled -> "$name is ${if (enabled) "on" else "off"}, verified."
+                        state == null -> "I switched the $name tile to ${if (enabled) "on" else "off"}, but this Android build does not let me verify the final state."
+                        else -> "I tapped the $name tile, but Android still reports it as ${if (enabled) "off" else "on"}."
+                    }
+                    speak(message); done(message)
+                }
+            }
+        }
+    }
+
+    private fun toggleThroughSettingsPage(
+        kind: EmaSystemCommandVocabulary.DeviceSetting.Kind,
+        labels: List<String>,
+        enabled: Boolean,
+        done: (String) -> Unit
+    ) {
+        val name = radioName(kind)
         runCatching {
-            val resolver = context.packageManager.resolveActivity(intent, 0)
-                ?: throw IllegalStateException("No alarm application can handle ACTION_SET_ALARM")
-            context.startActivity(intent)
-            "Alarm request sent to " + resolver.activityInfo.applicationInfo.loadLabel(context.packageManager) +
-                " for " + EmaTimeParser.describe(moment.millis) + "."
-        }.onSuccess { message -> speak(message); done(message) }
-            .onFailure {
-                val message = "I could not send the alarm request to the phone's alarm system."
+            context.startActivity(Intent(settingsPageFor(kind)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure {
+            val message = "I couldn't reach $name controls on this phone."
+            speak(message); done(message)
+            return
+        }
+        waiter.until(6_000, pollMs = 250, probe = { EmaAccessibilityService.readToggle(labels) != null }) { found ->
+            if (!found) {
+                val message = "I opened $name settings, but I couldn't find its switch. I did not claim it changed."
+                speak(message); done(message)
+                return@until
+            }
+            val current = EmaAccessibilityService.readToggle(labels)
+            if (current == enabled) {
+                val message = "$name is ${if (enabled) "on" else "off"}."
+                speak(message); done(message)
+                return@until
+            }
+            if (!EmaAccessibilityService.tapToggle(labels)) {
+                val message = "I opened $name settings, but couldn't tap its switch."
+                speak(message); done(message)
+                return@until
+            }
+            waiter.until(3_000, pollMs = 250, probe = { EmaAccessibilityService.readToggle(labels) == enabled || readRadioState(kind) == enabled }) {
+                val state = readRadioState(kind) ?: EmaAccessibilityService.readToggle(labels)
+                val message = when {
+                    state == enabled -> "$name is ${if (enabled) "on" else "off"}, verified."
+                    state == null -> "I tapped the $name switch, but I could not verify the result on this Android build."
+                    else -> "I tapped the $name switch, but Android still reports it as ${if (enabled) "off" else "on"}."
+                }
                 speak(message); done(message)
             }
+        }
     }
 
     private fun createReminder(text: String, timeText: String, done: (String) -> Unit) {
@@ -2010,20 +2532,21 @@ class EmaCommandRouter(
             val message = "EMA needs Do Not Disturb access. I opened the setting so you can grant it."
             speak(message); done(message); return
         }
-        runCatching {
-            manager.setInterruptionFilter(
-                if (enabled) android.app.NotificationManager.INTERRUPTION_FILTER_NONE
-                else android.app.NotificationManager.INTERRUPTION_FILTER_ALL
-            )
+        val wanted = if (enabled) android.app.NotificationManager.INTERRUPTION_FILTER_NONE
+        else android.app.NotificationManager.INTERRUPTION_FILTER_ALL
+        val changed = runCatching { manager.setInterruptionFilter(wanted); true }.getOrDefault(false)
+        if (!changed) {
+            val message = "Android did not allow EMA to change Do Not Disturb right now."
+            speak(message); done(message); return
         }
-            .onSuccess {
-                val message = if (enabled) "Do Not Disturb is on." else "Do Not Disturb is off."
-                speak(message); done(message)
-            }
-            .onFailure {
-                val message = "Android did not allow EMA to change Do Not Disturb right now."
-                speak(message); done(message)
-            }
+        // Read the filter back: setInterruptionFilter can be silently ignored.
+        val actual = runCatching { manager.currentInterruptionFilter }.getOrDefault(-1)
+        val message = when {
+            actual == wanted -> if (enabled) "Do Not Disturb is on." else "Do Not Disturb is off."
+            enabled -> "I asked Android for Do Not Disturb, but it reports filter $actual instead."
+            else -> "I asked Android to leave Do Not Disturb, but it reports filter $actual instead."
+        }
+        speak(message); done(message)
     }
 
     // ------------------------------------------------- semantic layer
@@ -2054,8 +2577,19 @@ class EmaCommandRouter(
     private fun handleMemory(command: String, done: (String) -> Unit): Boolean {
         val op = EmaMemory.parse(command) ?: return false
         val current = memory()
-        val applied = current.apply(op) ?: return false // e.g. recall of something never saved
+        // Definitions are resolved against the applications really installed;
+        // no phrase list and no guessed package name.
+        val applied = current.apply(op, installedApps()) ?: return false // e.g. recall of something never saved
         if (applied.memory != current) EmaMemoryStore.save(context, applied.memory)
+        applied.pendingShortcut?.let { pending ->
+            pendingTask = PendingTask(
+                type = "shortcut-app",
+                target = pending.meaning,
+                app = pending.packageSpelling,
+                candidates = applied.candidateApps,
+                triggers = pending.triggers
+            )
+        }
         finishAssistantResponse(applied.reply, done)
         return true
     }
@@ -2065,11 +2599,13 @@ class EmaCommandRouter(
      * the established layers (single simple commands they already handle).
      */
     private fun handleSemantic(command: String, done: (String) -> Unit): Boolean {
+        val remembered = memory()
         val env = EmaSemanticParser.Env(
             installedApps = installedApps(),
             activeTask = EmaConversationContext.activeTask(),
-            aliases = memory().aliases,
-            defaultApps = defaultApps()
+            aliases = remembered.aliases,
+            defaultApps = defaultApps(),
+            shortcuts = remembered.shortcuts
         )
         return when (val result = EmaSemanticParser.understand(command, env)) {
             is EmaSemanticParser.Result.NotHandled -> false
@@ -2113,7 +2649,7 @@ class EmaCommandRouter(
             }
         }
 
-        val steps = plan.steps.map { step ->
+        val planned = plan.steps.mapIndexed { index, step ->
             val cmd = step.command
             EmaPlanExecutor.Step(
                 description = step.describe(),
@@ -2127,9 +2663,29 @@ class EmaCommandRouter(
                     else -> 25_000L
                 },
                 dependsOnPrevious = step.dependsOnPrevious || step.continuation,
-                run = { finish -> runPlanStep(step, finish) }
+                run = { finish ->
+                    runPlanStep(step) { outcome ->
+                        maybeConfirmStep(index, plan.steps.size, step.describe(), outcome, finish)
+                    }
+                }
             )
         }
+        // "go home when you're done" is a real, visible final step.
+        val steps = if (pendingGoHome) {
+            pendingGoHome = false
+            goHomeConsumedByPlan = true
+            planned + EmaPlanExecutor.Step(
+                description = "Go home",
+                dependsOnPrevious = false,
+                run = { finish ->
+                    val moved = EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.HOME)
+                    finish(
+                        if (moved) EmaStepOutcome(EmaOutcomeStatus.SUCCESS, "Went home.")
+                        else EmaStepOutcome(EmaOutcomeStatus.FAILED, "I could not go home.")
+                    )
+                }
+            )
+        } else planned
         val deadline = steps.sumOf { it.timeoutMs }.coerceAtMost(150_000L)
         extendDeadline(deadline + 15_000L)
         suppressSpeech = true

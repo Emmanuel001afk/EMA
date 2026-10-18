@@ -350,18 +350,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
         root.addView(timeoutSpinner)
 
+        root.addView(Switch(this).apply {
+            text = "Ask me before each major step of a multi-step request"
+            isChecked = getSharedPreferences("ema", MODE_PRIVATE).getBoolean("confirm_plan_steps", false)
+            setOnCheckedChangeListener { _, on ->
+                getSharedPreferences("ema", MODE_PRIVATE).edit().putBoolean("confirm_plan_steps", on).apply()
+            }
+        })
+        root.addView(TextView(this).apply {
+            text = "Off by default. When on, a plan pauses after each major step and waits for yes, no or stop."
+            textSize = 13f
+        })
+
         voiceSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(voiceSection)
         refreshVoiceUi()
 
         addMemorySection(root)
 
+        val registration = EmaAssistantRegistration.current(
+            this,
+            roleHeld = isAssistantRoleHeld(),
+            serviceActive = isVoiceInteractionServiceActive()
+        )
         root.addView(TextView(this).apply {
-            text = "System assistant: " + when {
-                !isAssistantRoleHeld() -> "not enabled"
-                isVoiceInteractionServiceActive() -> "enabled and active"
-                else -> "enabled; service not active yet"
-            }
+            text = "System assistant: " + EmaAssistantRegistration.describe(registration)
             textSize = 14f
         })
 
@@ -539,18 +552,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             textSize = 16f
             setPadding(0, dp(16), 0, dp(2))
         })
-        val memoryText = TextView(this).apply { textSize = 14f }
-        fun refresh() { memoryText.text = EmaMemoryStore.load(this).describe() }
-        refresh()
-        root.addView(memoryText)
         root.addView(TextView(this).apply {
-            text = "EMA only remembers what you explicitly ask it to (\"remember that…\", \"when I say… I mean…\", \"use Telegram for messages\"). It never stores passwords, PINs or card details. Recent results lists are forgotten after 10 minutes."
+            text = "EMA only stores what you explicitly ask it to: facts, shortcuts (\"remember that when I say… it means…\") and default apps. Shortcuts are only applied to whole requests and to app-name slots, never inside message text. EMA never stores passwords, PINs or card details. Recent results lists are forgotten after 10 minutes."
             textSize = 13f
         })
         root.addView(Button(this).apply {
             text = "Forget everything EMA remembers"
             isAllCaps = false
-            setOnClickListener { EmaMemoryStore.clear(this@MainActivity); EmaConversationContext.clear(); refresh() }
+            setOnClickListener { EmaMemoryStore.clear(this@MainActivity); EmaConversationContext.clear() }
         })
         root.addView(Switch(this).apply {
             text = "Keep requests EMA didn't understand (on this phone only)"
@@ -756,10 +765,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         EmaWakeWordService.pauseForSpeech()
         recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { sr ->
+        val vocabulary = EmaSpeechRecognition.vocabulary(this)
+        val created = EmaSpeechRecognition.createRecognizer(this)
+        if (created == null) {
+            status.text = "No speech recognizer other than EMA is available on this phone."
+            EmaWakeWordService.resumeAfterSession()
+            return
+        }
+        recognizer = created.also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onResults(b: Bundle?) {
-                    val command = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    val command = EmaSpeechRecognition.chooseHypothesis(
+                        b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
+                        vocabulary
+                    )
                     if (command.isNullOrBlank()) {
                         conversation.setState(EmaConversationView.State.READY)
                         status.text = "I couldn't hear that. Try again."
@@ -792,10 +811,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             })
         }
 
-        recognizer!!.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-        })
+        recognizer!!.startListening(
+            EmaSpeechRecognition.intent(vocabulary, partialResults = false, language = Locale.getDefault())
+        )
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

@@ -204,4 +204,25 @@ class EmaPlanExecutorTest {
         assertEquals(EmaOutcomeStatus.FAILED, c(""))
         assertEquals(EmaOutcomeStatus.FAILED, EmaOutcomeClassifier.classify("Done.", ok = false).status)
     }
+    @Test fun cancelAfterCurrentKeepsTheFinishedStepAndStopsTheRest() {
+        val time = FakeTime()
+        var nextRan = false
+        var report: EmaPlanExecutor.Report? = null
+        var handle: EmaPlanExecutor.Handle? = null
+        var finishFirst: ((EmaStepOutcome) -> Unit)? = null
+        handle = executor(time).execute(listOf(
+            EmaPlanExecutor.Step("Open Spotify") { finishFirst = it },
+            EmaPlanExecutor.Step("Play Burna Boy") { nextRan = true; it(ok()) }
+        ), 60_000) { report = it }
+        // The user answered "no" to "step 1 done - continue?": the running step
+        // still settles with its real outcome, the rest is cancelled.
+        handle.cancelAfterCurrent()
+        finishFirst!!(ok("Opened Spotify."))
+        assertEquals(EmaOutcomeStatus.SUCCESS, report!!.outcomes[0].status)
+        assertEquals(EmaOutcomeStatus.CANCELLED, report!!.outcomes[1].status)
+        assertEquals(EmaPlanExecutor.PlanStatus.CANCELLED, report!!.status)
+        assertFalse(nextRan)
+        assertTrue(report!!.summary.contains("Stopped after 1 of 2 steps"))
+        assertTrue(report!!.summary.contains("play Burna Boy"))
+    }
 }

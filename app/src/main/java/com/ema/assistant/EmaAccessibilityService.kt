@@ -238,6 +238,48 @@ class EmaAccessibilityService : AccessibilityService() {
 
         private const val RESULT_NODE_LIMIT = 1200
 
+        /**
+         * Current state of a Quick Settings / Settings toggle, or null when the
+         * control is not on screen or exposes no state at all.
+         *
+         * Reading is separate from tapping so the caller can wait for the shade
+         * to finish animating and can verify the result afterwards.
+         */
+        fun readToggle(labels: Collection<String>): Boolean? {
+            val service = instance ?: return null
+            val wanted = labels.map { EmaNodeSnapshot.normalize(it) }.filter { it.isNotBlank() }.toSet()
+            if (wanted.isEmpty()) return null
+            val snapshot = service.screenModelInternal(600).snapshot
+            val node = snapshot.nodes.firstOrNull { candidate ->
+                candidate.visible && candidate.enabled &&
+                    (EmaNodeSnapshot.normalize(candidate.label) in wanted ||
+                        wanted.any { label -> EmaNodeSnapshot.normalize(candidate.label).startsWith(label) })
+            } ?: return null
+            if (node.checkable) return node.checked
+            val state = EmaNodeSnapshot.normalize(node.stateDescription)
+            return when {
+                state.startsWith("on") || state.contains("enabled") -> true
+                state.startsWith("off") || state.contains("disabled") -> false
+                else -> null
+            }
+        }
+
+        /** Tap a Quick Settings tile by its visible label. Never guesses coordinates. */
+        fun tapToggle(labels: Collection<String>): Boolean {
+            val service = instance ?: return false
+            val wanted = labels.map { EmaNodeSnapshot.normalize(it) }.filter { it.isNotBlank() }.toSet()
+            if (wanted.isEmpty()) return false
+            val model = service.screenModelInternal(600)
+            val node = model.snapshot.nodes.firstOrNull { candidate ->
+                candidate.visible && candidate.enabled && candidate.actionable &&
+                    (EmaNodeSnapshot.normalize(candidate.label) in wanted ||
+                        wanted.any { label -> EmaNodeSnapshot.normalize(candidate.label).startsWith(label) })
+            } ?: return false
+            val target = model.nodes.getOrNull(node.clickTargetIndex) ?: return false
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            return service.tapCoordinatesInternal(node.centerX.toFloat(), node.centerY.toFloat())
+        }
+
         fun targetSnapshot(packageName: String): EmaScreenSnapshot =
             instance?.screenModelInternal(500, packageName)?.snapshot ?: EmaScreenSnapshot("", emptyList())
 
@@ -619,6 +661,12 @@ class EmaAccessibilityService : AccessibilityService() {
                 editable = node.isEditable,
                 focused = node.isFocused,
                 scrollable = node.isScrollable,
+                checkable = node.isCheckable,
+                checked = node.isChecked,
+                stateDescription = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    node.stateDescription?.toString()?.trim().orEmpty()
+                } else "",
+
                 left = bounds.left,
                 top = bounds.top,
                 right = bounds.right,

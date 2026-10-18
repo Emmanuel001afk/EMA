@@ -14,12 +14,12 @@ execution are deterministic logic in the app. The optional online AI
 | Grounding | `EmaAppResolver` | Resolves an app phrase against the apps **installed on this phone**, including private and unknown apps. Ambiguity produces a question, never a guess. |
 | References | `EmaSelection`, `EmaConversationContext` | Handles "the third result", "the longest one instead", "another one" and "him". |
 | Composition | `EmaSemanticParser.compose` | Merges clauses into one goal (open + find + tell = one message) and propagates the app across steps. Unrelated goals stay separate. |
-| Memory | `EmaMemory`, `EmaMemoryStore` | Explicit facts, name aliases ("my wife" → a contact) and default apps. |
+| Memory | `EmaMemory`, `EmaMemoryStore` | Explicit facts, name aliases ("my wife" → a contact), default apps and **learned shortcuts** (trigger → app or command). Stored atomically with a schema version. |
 | Knowledge | `EmaKnowledge` | Arithmetic, percentages, unit conversion and dates. Answers are computed, never invented. |
 | Capability check | `EmaCapabilityRegistry` | Checks prerequisites before anything is done ("I haven't done anything yet"). |
-| Execution | `EmaPlanExecutor` | Runs steps in order with per-step timeouts, a plan deadline, bounded retries, a duplicate guard and cancellation. |
+| Execution | `EmaPlanExecutor` | One sequencer for semantic plans and legacy text sequences. Steps run in order with per-step timeouts, a plan deadline, bounded retries, a duplicate guard, cancellation and optional per-step confirmation. |
 | Observation | `EmaResultExtractor`, `EmaNodeSnapshot` | Turns the accessibility tree into result rows, including durations, views, age and ads. |
-| Verification | `EmaResultSelectionFlow`, `EmaActionEvidence`, `EmaExecutionVerifier` | Requires evidence: the media session is playing the chosen title, the screen changed, the recipient header matches, the composer holds the exact text. |
+| Verification | `EmaResultSelectionFlow`, `EmaActionEvidence`, `EmaExecutionVerifier`, `EmaConditionWaiter` | Requires evidence: the target package is in the foreground and the screen has stopped changing, the media session is playing the chosen title, the screen changed, the recipient header matches, the composer holds the exact text, brightness/DND were read back. Fixed sleeps are not evidence. |
 | Recovery | `EmaResultSelectionFlow` | Bounded back navigation to the list, bounded scrolling, re-running the search. Otherwise it explains what happened. |
 | Response | `EmaPlanExecutor.summarize`, `EmaOutcomeClassifier` | Gives one honest summary: what was done, what was not, and why. |
 | UI | `EmaProgressListener`, `EmaConversationView` | Shows the real plan, per-step state and the final classified outcome. |
@@ -88,8 +88,111 @@ coordinates and no per-app IDs, so it works for private apps as well as YouTube.
   bodies.
 - **Long-term:** `EmaMemory` holds only what the user explicitly asks it to
   remember. It refuses passwords, PINs and card or bank details, holds at most
-  50 facts and 50 aliases, and can be listed and erased by voice ("what do you
-  remember", "forget everything") or in Settings.
+  50 facts, 50 aliases and 50 shortcuts, and can be listed and erased by voice
+  ("what do you remember", "forget everything"). The visible list was removed
+  from Setup & preferences at the owner's request; the erase control remains.
+
+## Learned shortcuts (taught by voice, AI off)
+
+A shortcut maps a spoken phrase to either an installed app or a whole command:
+
+- "Remember that whenever I say for me or Phormi browser it means open the
+  Phormi app, package spelling P H O R M I"
+- "Remember that offline backup means open Spotify and play the Offline Backup
+  playlist"
+- "When I say X, open Z" is accepted as explicit teaching too.
+
+Resolution is against the packages actually installed. A spelled package name
+("P H O R M I") is joined and matched to package segments, labels and package
+leaves; several matches produce "Which app do you mean?" rather than a guess.
+Shortcuts are consulted by `EmaAppActionEngine.findApp`, `EmaSemanticParser`
+grounding and the router's whole-utterance expansion. Expansion is one level
+and cannot recurse, and it is never applied inside a message body, search query
+or reminder text. The store is written synchronously (`commit()`) after each
+change, and reopens with a schema version.
+
+## Multi-step requests and instruction clauses
+
+Instruction clauses are plan options, not steps:
+
+- "make sure one action does not hinder another" / "one action at a time"
+  is removed and the plan stays strictly sequential (already the default).
+- "then go home" / "go home when you're done" is removed and appended as a
+  final **Go home** step, shown in the PLAN like every other step.
+- "stop" / "cancel" / "never mind" during a plan cancels it and the summary
+  names the steps that had finished and the ones that did not run.
+- Optional per-step confirmation is a preference, **off by default**. When on,
+  the plan pauses after each major step and waits for yes, no or stop.
+
+## Patience instead of fixed delays
+
+Cold-starting an app can take seconds, so EMA waits for observable conditions
+(`EmaConditionWaiter`) instead of sleeping:
+
+- opening an app: the target package is the foreground package **and** the
+  screen text has been unchanged for about 600 ms, bounded at about 8 s;
+- searching: the search field becomes reachable, then a non-empty result list
+  is observed (bounded ~8 s);
+- selecting a result: up to three attempts, re-checking the foreground app;
+- playback: a play-from-search intent is given about 4 s to report the
+  requested title as playing before the visible path is used. If the media
+  session already reports playing, EMA never presses Play (that would pause
+  it), and it presses at most once.
+
+## Device settings without AI
+
+`EmaSystemCommandVocabulary.parseDeviceSetting` recognises the subject and the
+action independently, so new wording works without new phrases:
+
+| Subject | Actions | Execution |
+|---|---|---|
+| Do Not Disturb / silent | on, off | `setInterruptionFilter`, then `currentInterruptionFilter` is read back |
+| Brightness | on, off, increase, decrease, maximum, minimum, set N% | manual mode is set first, the value is written and read back |
+| Airplane / Wi-Fi / Bluetooth | on, off | Quick Settings tile matched by label, tapped only when wrong, verified; Settings page as fallback; honest failure otherwise |
+
+`ACCESS_NOTIFICATION_POLICY` is declared so EMA can appear in Android's DND
+access list. Wi-Fi and Bluetooth are never written directly: a normal app
+cannot, so EMA uses the tile path and verifies what it can observe.
+
+## Alarms: nearest future, repeats and dates
+
+- A bare hour is the **nearest future occurrence** and is stated explicitly:
+  at 10:00, "wake me up at 7" is "today at 7:00 PM"; at 20:00 it is
+  "tomorrow at 7:00 AM".
+- AM/PM counts only when it is adjacent to the number. "7, I am going out"
+  is not 7 AM because of the "am" in "I am".
+- "6 and 6:30 am" becomes two separate `ACTION_SET_ALARM` requests with a gap,
+  and each alarm is reported.
+- "on weekdays", "on weekends", "every day" and named days are passed as
+  `EXTRA_DAYS`, so the clock app repeats them.
+- A specific calendar day ("tomorrow at 7") cannot be expressed by the clock
+  app. EMA says so and schedules its own exact alarm (`setAlarmClock` plus an
+  alarm notification, full-screen only when Android allows it). It also checks
+  the exact-alarm permission and opens the grant screen when it is missing.
+
+## Digital-assistant registration
+
+The voice-interaction XML names a real `RecognitionService`; without one
+Android rejects the registration silently. `EmaRecognitionService` delegates to
+an **explicit** recogniser (on-device on API 31+, otherwise an installed
+service that is not EMA). EMA never binds the default recogniser, because that
+can resolve back to EMA now that it offers one. Setup shows the real state:
+role held / service active / recognition service declared.
+
+## What still needs checking on a real phone
+
+These are implemented but cannot be proven in the repository's JVM tests:
+
+- digital-assistant registration appearing in Android's assistant picker, and
+  the recognition service receiving audio;
+- Quick Settings label matching and tile state across OEM skins, and the
+  Settings-page fallback on devices where the tile is not reachable;
+- cold-start timing for Spotify/YouTube (the waits are bounded, but real device
+  latency varies);
+- speech hypotheses and API 33 biasing strings with the device's recogniser;
+- EMA's own exact alarm notification, full-screen permission and lock-screen
+  behaviour on Android 12–15;
+- per-step voice confirmation in a live voice session.
 
 ## Improving understanding: the development-time loop
 
