@@ -15,6 +15,24 @@ class EmaNativeCommandPlannerTest {
 
     private fun plan(raw: String) = EmaNativeCommandPlanner.plan(raw)
 
+    @Test
+    fun spokenAppShorthandKeepsTargetAndBody() {
+        assertEquals(listOf("message Daniel on WhatsApp saying I am coming home"),
+            plan("open WhatsApp text Daniel I am coming home"))
+        assertEquals(listOf("message Daniel Smith on Signal saying I am coming home and open the gate"),
+            plan("open Signal then message Daniel Smith saying I am coming home and open the gate"))
+        assertEquals(listOf("message Daniel on WhatsApp saying I will land then call you"),
+            plan("open WhatsApp and text Daniel I will land then call you"))
+    }
+
+    @Test
+    fun mediaAndSearchShorthandKeepApp() {
+        assertEquals(listOf("play Arcade on Spotify"), plan("open Spotify play Arcade"))
+        assertEquals(listOf("play Arcade on YouTube"), plan("open YouTube then play Arcade"))
+        assertEquals(listOf("search restaurants on Maps"), plan("open Maps search for restaurants"))
+        assertEquals(listOf("play Arcade on Spotify"), plan("Hey EMA, please open Spotify play Arcade"))
+    }
+
     // ------------------------------------------------------------- normalization
 
     @Test

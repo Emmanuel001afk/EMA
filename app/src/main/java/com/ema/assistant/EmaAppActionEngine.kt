@@ -180,7 +180,7 @@ class EmaAppActionEngine(private val context: Context) {
                 val started = runCatching { context.startActivity(intent); true }.getOrDefault(false)
                 if (started) {
                     main.postDelayed({
-                        if (playbackConfirmed()) {
+                        if (playbackConfirmed(target, query)) {
                             done(true, "Playing $query in $appName.")
                         } else {
                             // The intent launched the app without resolving the
@@ -233,15 +233,13 @@ class EmaAppActionEngine(private val context: Context) {
                     return@searchInPackage
                 }
                 main.postDelayed({
-                    val selected = EmaAccessibilityService.tapFirstResult(query)
+                    if (EmaAccessibilityService.targetSnapshot(target.packageName).packageName != target.packageName) {
+                        done(false, "The active app changed before I could select $query. I stopped.")
+                        return@postDelayed
+                    }
+                    val selected = EmaAccessibilityService.selectMediaResult(target.packageName, query)
                     if (!selected) {
-                        EmaGenericUiController.tap(query) { visualSelected, _ ->
-                            if (!visualSelected) {
-                                done(false, "I typed \"$query\" into $appName's search, but could not select a result.")
-                                return@tap
-                            }
-                            main.postDelayed({ startPlayback(target, appName, query, done) }, 900L)
-                        }
+                        done(false, "I searched $appName, but could not verify and select a result matching $query.")
                         return@postDelayed
                     }
                     main.postDelayed({ startPlayback(target, appName, query, done) }, 900L)
@@ -251,27 +249,29 @@ class EmaAppActionEngine(private val context: Context) {
     }
 
     private fun startPlayback(target: AppTarget, appName: String, query: String, done: (Boolean, String) -> Unit) {
-        if (playbackConfirmed()) {
+        if (EmaAccessibilityService.targetSnapshot(target.packageName).packageName != target.packageName) {
+            done(false, "The active app changed. I did not press Play in another app.")
+            return
+        }
+        if (playbackConfirmed(target, query)) {
             done(true, "Playing $query in $appName.")
             return
         }
-        EmaAccessibilityService.activateWithVisualFallback("Play") { activated ->
+        val activated = EmaAccessibilityService.playInTarget(target.packageName)
+        run {
             main.postDelayed({
-                if (playbackConfirmed()) {
+                if (playbackConfirmed(target, query)) {
                     done(true, "Playing $query in $appName.")
                     return@postDelayed
                 }
-                // Some media apps expose no usable Play node. Once the requested
-                // result is selected, Android's media transport is the generic
-                // final route.
-                EmaAccessibilityService.mediaTransport(EmaAccessibilityService.MediaTransportAction.PLAY)
+                // Do not dispatch global transport: it may resume a different app.
                 main.postDelayed({
-                    val verified = playbackConfirmed()
+                    val verified = playbackConfirmed(target, query)
                     done(
                         verified,
                         when {
                             verified -> "Playing $query in $appName."
-                            activated -> "I selected \"$query\" in $appName and pressed Play, but could not confirm audio started."
+                            activated -> "I selected \"$query\" in $appName and pressed Play, but could not verify the requested title is playing. Enable EMA notification access for media-session verification."
                             else -> "I selected \"$query\" in $appName, but could not find a Play control to start it."
                         }
                     )
@@ -280,12 +280,11 @@ class EmaAppActionEngine(private val context: Context) {
         }
     }
 
-    /** Playback evidence: Android's audio state first, visible UI second. */
-    private fun playbackConfirmed(): Boolean {
-        if (EmaAccessibilityService.isAudioPlaying()) return true
-        val ui = EmaAccessibilityService.inspectCurrentUi(12000)
-        return EmaExecutionVerifier.playbackLikely(ui, false)
-    }
+    /** The requested app's active session must report the requested title.
+     * Global audio could belong to another song or another app.
+     */
+    private fun playbackConfirmed(target: AppTarget, query: String): Boolean =
+        EmaNotificationListenerService.requestedMediaPlaying(context, target.packageName, query)
 
     fun openAndSearchThenTapFirst(appName: String, query: String, done: (Boolean, String) -> Unit) {
         val target = openApp(appName)
@@ -410,8 +409,11 @@ class EmaAppActionEngine(private val context: Context) {
 
         val intent = when {
             normalizedLabel.contains("whatsapp") && !phone.isNullOrBlank() -> {
-                val digits = phone.filter { it.isDigit() }
-                if (digits.isBlank()) null else Intent(
+                val rawDigits = phone.filter { it.isDigit() }
+                val digits = if (rawDigits.startsWith("00")) rawDigits.drop(2) else rawDigits
+                // wa.me requires an international number. Do not guess a country
+                // for local contacts (e.g. Nigerian 080…); use visible chat search.
+                if (digits.length !in 8..15 || digits.startsWith("0")) null else Intent(
                     Intent.ACTION_VIEW,
                     Uri.parse("https://wa.me/$digits?text=${Uri.encode(body)}")
                 ).apply {
@@ -483,13 +485,20 @@ class EmaAppActionEngine(private val context: Context) {
         typeAttempts: Int = 0,
         done: (Boolean, String) -> Unit
     ) {
-        val screenText = EmaAccessibilityService.currentScreenText(12000)
-        val composerText = EmaAccessibilityService.focusedEditableText().trim()
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked ||
+            EmaAccessibilityService.targetSnapshot(packageName).packageName != packageName) {
+            done(false, "The phone locked or active screen changed. I did not type or send the message to $recipientName.")
+            return
+        }
+        val chat = EmaAccessibilityService.targetSnapshot(packageName)
+        if (!EmaActionEvidence.recipientHeaderMatches(chat, packageName, recipientName)) {
+            done(false, "I could not verify $recipientName in the chat header in $appLabel. I did not type or send the message.")
+            return
+        }
+        val composerText = (chat.focusedNode ?: chat.firstEditable)?.text.orEmpty().trim()
 
-        // Never type a body that is already in the composer or already posted:
-        // doing so is how a retry produces a doubled message.
-        val bodyPresent = EmaSendControlResolver.transcriptContains(screenText, body) ||
-            EmaNodeSnapshot.normalize(composerText) == EmaNodeSnapshot.normalize(body)
+        // Old transcript text is not evidence that this request is composed.
+        val bodyPresent = composerText == body.trim()
 
         if (!bodyPresent) {
             // Waiting for a deep-linked prefill and retrying a failed type are
@@ -509,34 +518,16 @@ class EmaAppActionEngine(private val context: Context) {
                 return
             }
             if (typeAttempts >= MAX_TYPE_ATTEMPTS) {
-                // The body could not be confirmed. Submit only when the composer
-                // actually holds something, so EMA never presses Send on an empty
-                // field; otherwise report the specific failure instead of looping
-                // until the command timeout produces a generic one.
-                if (composerText.isNotBlank()) {
-                    EmaAccessibilityService.pressSend(packageName, 6) { pressed ->
-                        if (!pressed) {
-                            done(
-                                false,
-                                "I typed the message to $recipientName in $appLabel, but could not find or activate its Send control."
-                            )
-                        } else {
-                            main.postDelayed({
-                                verifySent(packageName, appLabel, recipientName, body, 0, done)
-                            }, 900L)
-                        }
-                    }
-                } else {
-                    done(
-                        false,
-                        "I opened the conversation with $recipientName in $appLabel, but its message field would not accept the text."
-                    )
-                }
+                // Never submit arbitrary existing text when exact read-back fails.
+                done(
+                    false,
+                    "I opened the conversation with $recipientName in $appLabel, but could not confirm the exact message in its composer. I did not press Send."
+                )
                 return
             }
             // ACTION_SET_TEXT replaces field content rather than appending, so a
             // retry cannot double the message body.
-            val typed = EmaAccessibilityService.setFocusedText(body)
+            val typed = EmaAccessibilityService.typeMessageVerified(packageName, recipientName, body)
             if (!typed) {
                 done(
                     false,
@@ -556,17 +547,19 @@ class EmaAppActionEngine(private val context: Context) {
             return
         }
 
-        EmaAccessibilityService.pressSend(packageName, 6) { pressed ->
+        val transcriptCountBefore = EmaActionEvidence.transcriptBodyCount(EmaAccessibilityService.targetSnapshot(packageName), body)
+        val pressed = EmaAccessibilityService.sendVerified(packageName, recipientName, body)
+        run {
             if (!pressed) {
                 done(
                     false,
                     "I typed the message to $recipientName in $appLabel, but could not find or activate its Send control. " +
                         (EmaAccessibilityService.availabilityProblem() ?: "")
                 )
-                return@pressSend
+                return@run
             }
             main.postDelayed({
-                verifySent(packageName, appLabel, recipientName, body, 0, done)
+                verifySent(packageName, appLabel, recipientName, body, transcriptCountBefore, 0, done)
             }, 900L)
         }
     }
@@ -576,33 +569,38 @@ class EmaAppActionEngine(private val context: Context) {
         appLabel: String,
         recipientName: String,
         body: String,
+        transcriptCountBefore: Int,
         retry: Int = 0,
         done: (Boolean, String) -> Unit
     ) {
-        val transcript = EmaAccessibilityService.currentScreenText(14000)
-        val composer = EmaAccessibilityService.focusedEditableText().trim()
-        val focused = EmaAccessibilityService.composerHasFocus()
-
-        if (EmaSendControlResolver.sendConfirmed(composer, transcript, body, focused)) {
-            done(true, "Message sent to $recipientName on $appLabel.")
+        if (EmaAccessibilityService.targetSnapshot(packageName).packageName != packageName) {
+            done(false, "The active screen changed before I could verify the message. Check $appLabel before trying again.")
+            return
+        }
+        val screen = EmaAccessibilityService.targetSnapshot(packageName)
+        val transcript = screen.nodes.filter { !it.editable }.joinToString("\n") { it.label }
+        val composer = (screen.focusedNode ?: screen.firstEditable)?.text.orEmpty().trim()
+        val focused = screen.focusedNode != null
+        val newBubble = EmaActionEvidence.transcriptBodyCount(screen, body) > transcriptCountBefore
+        if (newBubble && EmaActionEvidence.recipientHeaderMatches(screen, packageName, recipientName) &&
+            EmaSendControlResolver.sendConfirmed(composer, transcript, body, focused)) {
+            done(true, "Message submitted to $recipientName on $appLabel; a new chat bubble is visible. Delivery is not confirmed.")
             return
         }
 
         if (retry < 2) {
-            // The control may have been pressed before the app finished laying
-            // out the message. Try the submit route again, then re-verify.
-            EmaAccessibilityService.pressSend(packageName, 4) { _ ->
-                main.postDelayed({
-                    verifySent(packageName, appLabel, recipientName, body, retry + 1, done)
-                }, 900L)
-            }
+            // Observe only. Re-pressing Send after an uncertain result can
+            // duplicate a real message; a retry must never repeat the action.
+            main.postDelayed({
+                verifySent(packageName, appLabel, recipientName, body, transcriptCountBefore, retry + 1, done)
+            }, 900L)
             return
         }
 
         done(
             false,
-            "The message to $recipientName is composed in $appLabel, but I could not confirm it was sent. " +
-                "Check the chat and press Send if it is still there."
+            "I pressed Send in $appLabel, but could not confirm a new message to $recipientName. " +
+                "Check the chat before trying again to avoid a duplicate."
         )
     }
 
@@ -643,8 +641,7 @@ class EmaAppActionEngine(private val context: Context) {
                     return@searchInPackage
                 }
                 main.postDelayed({
-                    val selected = EmaAccessibilityService.tapTextExact(recipientName) ||
-                        EmaAccessibilityService.tapFirstResult(recipientName)
+                    val selected = EmaAccessibilityService.selectContactInTarget(target.packageName, recipientName)
                     if (!selected) {
                         done(false, "I searched ${target.label} for $recipientName, but could not open that chat.")
                         return@postDelayed

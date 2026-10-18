@@ -61,6 +61,8 @@ object EmaNativeCommandPlanner {
             translateCompoundAppCommand(command)?.let { return it }
         }
 
+        appDirectedAction(command)?.let { return it }
+
         // Split explicit sequences only at action boundaries, and never inside a
         // message body.
         if (!looksLikeMessageBody(command)) {
@@ -85,6 +87,28 @@ object EmaNativeCommandPlanner {
         }
 
         return listOf(command)
+    }
+
+    private fun appDirectedAction(command: String): List<String>? {
+        val match = Regex(
+            """(?i)^(?:open|launch|go\s+(?:to|into))\s+(.+?)\s+(?:(?:and\s+then|and|then)\s+)?(play|listen to|search for|search|find|text|message)\s+(.+)$"""
+        ).find(command) ?: return null
+        val app = match.groupValues[1].trim().trimEnd(',')
+        val verb = match.groupValues[2].lowercase()
+        val content = match.groupValues[3].trim()
+        return when (verb) {
+            "play", "listen to" -> listOf("play $content on $app")
+            "search", "search for", "find" -> listOf("search $content on $app")
+            else -> {
+                // Explicit markers support multi-word contact names. Without a
+                // marker accept only a single name followed by a clear body
+                // opener; never guess where an arbitrary full name ends.
+                val explicit = Regex("""(?i)^(.+?)\s+(?:that says|saying|to say)\s+(.+)$""").find(content)
+                val shorthand = Regex("""(?i)^(\S+)\s+((?:I|I'm|I'll|we|we're|you|please|hi|hello)\b.*)$""").find(content)
+                val message = explicit ?: shorthand ?: return null
+                listOf("message ${message.groupValues[1]} on $app saying ${message.groupValues[2]}")
+            }
+        }
     }
 
     private fun translateCompoundAppCommand(command: String): List<String>? {
@@ -148,6 +172,6 @@ object EmaNativeCommandPlanner {
     private fun normalize(raw: String): String =
         raw.trim()
             .replace(Regex("\\s+"), " ")
-            .replace(Regex("(?i)^(please|kindly)\\s+"), "")
+            .replace(Regex("(?i)^(?:(?:hey[ ,]+ema|please|kindly|could you|can you)[ ,]+)+"), "")
             .trim()
 }

@@ -8,6 +8,21 @@ class EmaNotificationListenerService : NotificationListenerService() {
         @Volatile var latestNotifications: List<String> = emptyList()
         @Volatile private var service: EmaNotificationListenerService? = null
 
+        fun requestedMediaPlaying(context: android.content.Context, packageName: String, query: String): Boolean {
+            if (service == null) return false
+            return runCatching {
+                val manager = context.getSystemService(android.media.session.MediaSessionManager::class.java)
+                val component = android.content.ComponentName(context, EmaNotificationListenerService::class.java)
+                manager.getActiveSessions(component).any { controller ->
+                    val metadata = controller.metadata
+                    EmaActionEvidence.requestedMediaPlaying(packageName, controller.packageName, query,
+                        metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
+                        metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+                        controller.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING)
+                }
+            }.getOrDefault(false)
+        }
+
         fun isConnected(): Boolean = service != null
 
         fun describeActiveNotifications(): String {

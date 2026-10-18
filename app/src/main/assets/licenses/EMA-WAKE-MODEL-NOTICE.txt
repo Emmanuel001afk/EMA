@@ -1,0 +1,17 @@
+EMA built-in wake model
+
+Model: vosk-model-small-en-us-0.15
+US English model for mobile Vosk applications
+Copyright 2020 Alpha Cephei Inc
+License: Apache License, Version 2.0 (see vosk-Apache-2.0.txt)
+Original source: https://alphacephei.com/vosk/models
+Archive SHA-256: 30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
+
+EMA packages this unmodified model inside its APK at build time. EMA's own
+wake-word grammar, audio gate, service lifecycle and command execution are
+separate application code. Wake detection does not require a separate app,
+account, API key, runtime model download, or user-selected ZIP.
+
+The English vocabulary uses "hey emma" for the spoken EMA name. Recognition
+accuracy and pronunciation coverage need device testing. The model is not
+claimed to be newly trained by EMA or to be a manufacturer DSP sound model.

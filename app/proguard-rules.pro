@@ -21,3 +21,8 @@
 -keep class com.ema.assistant.BuildConfig { *; }
 
 # ML Kit provides its own consumer rules. Do not broadly keep ML libraries.
+
+# JNA resolves Vosk's native entry points reflectively.
+-keep class org.vosk.** { *; }
+-keep class com.sun.jna.** { *; }
+-dontwarn java.awt.**

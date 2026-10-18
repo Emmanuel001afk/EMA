@@ -1,5 +1,10 @@
 package com.ema.assistant
 
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.view.View
+import android.widget.Switch
 import android.Manifest
 import android.app.Activity
 import android.app.role.RoleManager
@@ -34,6 +39,22 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var modeExplanation: TextView
     private lateinit var hubStatus: TextView
     private lateinit var hubAddress: EditText
+    private lateinit var wakeStatus: TextView
+    private val wakeUiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val refreshWake = object : Runnable {
+        override fun run() {
+            if (::wakeStatus.isInitialized) {
+                val prefs = getSharedPreferences("ema", MODE_PRIVATE)
+                val enabled = prefs.getBoolean("wake_enabled", false)
+                wakeStatus.text = when {
+                    !enabled -> "Screen-off wake word is off."
+                    !EmaWakeWordService.isRunning() -> "Listening is stopped. Tap Resume listening. " + prefs.getString("wake_status", "")
+                    else -> prefs.getString("wake_status", "Starting…")
+                }
+            }
+            wakeUiHandler.postDelayed(this, 1500)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,23 +62,36 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         requestRequiredPermissions()
         router = EmaCommandRouter(this) { tts }
 
-        val root = LinearLayout(this).apply {
+        window.statusBarColor = Color.rgb(244, 246, 251)
+        window.navigationBarColor = Color.rgb(244, 246, 251)
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        var root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(24), dp(18), dp(16))
         }
 
         root.addView(TextView(this).apply {
             text = "EMA"
-            textSize = 32f
+            textSize = 36f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(27, 34, 56))
         })
 
         root.addView(TextView(this).apply {
-            text = "Digital assistant • Type by default"
+            text = "Your phone. One request."
             textSize = 16f
         })
 
+        root.addView(TextView(this).apply {
+            text = "Open apps, send messages, play music and plan your day. Native actions first."
+            textSize = 15f
+            setTextColor(Color.rgb(82, 91, 114))
+            setPadding(0, dp(12), 0, dp(24))
+        })
         commandInput = EditText(this).apply {
             hint = "Tell EMA what to do…"
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedSurface(Color.WHITE)
             minLines = 2
             maxLines = 5
             isSingleLine = false
@@ -69,7 +103,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         actions.addView(Button(this).apply {
-            text = "Ask"
+            text = "Run request"
             setOnClickListener { executeTypedCommand() }
         })
         actions.addView(Button(this).apply {
@@ -78,6 +112,48 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
         root.addView(actions)
 
+        status = TextView(this).apply {
+            text = "Ready when you are."
+            textSize = 16f
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            setTextColor(Color.rgb(56, 68, 99))
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            background = roundedSurface(Color.WHITE)
+        }
+        root.addView(status)
+        root.addView(TextView(this).apply {
+            text = "TRY A REQUEST"
+            textSize = 12f
+            letterSpacing = 0.12f
+            setPadding(0, dp(24), 0, dp(8))
+        })
+        listOf("Open Spotify and play Arcade", "Message Daniel on WhatsApp saying I am coming home",
+            "Search for cooking ideas on YouTube", "Remind me to drink water in 30 minutes").forEach { example ->
+            root.addView(Button(this).apply {
+                text = example
+                isAllCaps = false
+                gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+                setOnClickListener { commandInput.setText(example); commandInput.requestFocus() }
+            })
+        }
+        val home = root
+        val settings = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = roundedSurface(Color.WHITE)
+        }
+        home.addView(Button(this).apply {
+            text = "Setup & preferences  +"
+            isAllCaps = false
+            setOnClickListener {
+                val opening = settings.visibility != View.VISIBLE
+                settings.visibility = if (opening) View.VISIBLE else View.GONE
+                text = if (opening) "Setup & preferences  −" else "Setup & preferences  +"
+            }
+        })
+        home.addView(settings)
+        root = settings
         root.addView(Button(this).apply {
             text = "Open EMA access & permissions"
             setOnClickListener { openAccessSettings() }
@@ -103,10 +179,30 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setOnClickListener { openAllFilesAccess() }
         })
 
-        // The assistant brain is the primary control on this screen: it makes the
-        // "native first, AI second" guarantee visible and switchable.
+        root.addView(TextView(this).apply { text = "Hey EMA • screen-off listening"; textSize = 18f })
         root.addView(TextView(this).apply {
-            text = "Assistant brain"
+            text = "Built into EMA—no extra app, model import, account or download. The local model prepares automatically the first time. Audio stays on this phone during wake detection. Screen-off listening uses the microphone and battery; Android/Go may stop it. Say Hey EMA, pause for activation, then speak your request."
+            textSize = 14f
+        })
+        wakeStatus = TextView(this).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        root.addView(wakeStatus)
+        root.addView(Switch(this).apply {
+            text = "Enable screen-off Hey EMA"
+            isChecked = getSharedPreferences("ema", MODE_PRIVATE).getBoolean("wake_enabled", false)
+            setOnCheckedChangeListener { _, enabled ->
+                getSharedPreferences("ema", MODE_PRIVATE).edit().putBoolean("wake_enabled", enabled).apply()
+                if (enabled) startWakeListening() else stopService(Intent(this@MainActivity, EmaWakeWordService::class.java))
+            }
+        })
+        root.addView(Button(this).apply { text = "Resume listening"; setOnClickListener { startWakeListening() } })
+        root.addView(Button(this).apply {
+            text = "Battery settings (optional)"
+            setOnClickListener { runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } }
+        })
+
+        // AI is optional; action execution always stays native.
+        root.addView(TextView(this).apply {
+            text = "Optional AI fallback"
             textSize = 16f
             setPadding(0, dp(16), 0, dp(2))
         })
@@ -191,6 +287,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
         })
         root.addView(micModeSpinner)
+        root.addView(Switch(this).apply {
+            text = "Require Hey EMA in assistant session"
+            isChecked = prefs.getBoolean("require_wake_phrase", false)
+            setOnCheckedChangeListener { _, enabled ->
+                prefs.edit().putBoolean("require_wake_phrase", enabled).apply()
+            }
+        })
+        root.addView(TextView(this).apply {
+            text = "While the assistant is visible, say Hey EMA followed by your request, or say Hey EMA and then one request. This is not always-on background wake-up. Speech recognition may use your phone’s speech provider."
+            textSize = 13f
+        })
 
         root.addView(TextView(this).apply {
             text = "Assistant session timeout"
@@ -245,17 +352,44 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             textSize = 14f
         })
 
-        status = TextView(this).apply {
-            text = "EMA is ready."
-            textSize = 18f
-            setPadding(0, dp(14), 0, dp(6))
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(244, 246, 251))
+            isFillViewport = true
+            addView(home)
+        })
+        if (intent.getBooleanExtra("wake_capture", false)) {
+            commandInput.postDelayed({ listenOnce() }, 400)
+            intent.removeExtra("wake_capture")
         }
-        root.addView(status)
+    }
 
-        setContentView(ScrollView(this).apply { addView(root) })
+    private fun startWakeListening() {
+        val prefs = getSharedPreferences("ema", MODE_PRIVATE)
+        if (!prefs.getBoolean("wake_enabled", false)) {
+            wakeStatus.text = "Enable screen-off Hey EMA first."
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_WAKE_MIC)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_WAKE_NOTIFY)
+            return
+        }
+        EmaWakeWordService.startFromVisibleActivity(this)
+    }
+
+    override fun onPause() {
+        wakeUiHandler.removeCallbacks(refreshWake)
+        super.onPause()
     }
 
     private fun executeTypedCommand() {
+        if (getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            status.text = "Unlock your phone before running commands."
+            return
+        }
         val command = commandInput.text.toString().trim()
         if (command.isBlank()) {
             status.text = "Type a command first."
@@ -309,8 +443,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun isVoiceInteractionServiceActive(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            runCatching { VoiceInteractionService.isActiveService(this, componentName) }.getOrDefault(false)
+            runCatching { VoiceInteractionService.isActiveService(this, android.content.ComponentName(this, EmaVoiceInteractionService::class.java)) }.getOrDefault(false)
         } else false
+
+    private fun roundedSurface(color: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(20).toFloat()
+        setStroke(dp(1), Color.rgb(226, 230, 240))
+    }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -391,6 +531,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onResume() {
         super.onResume()
+        wakeUiHandler.removeCallbacks(refreshWake)
+        wakeUiHandler.post(refreshWake)
         if (::status.isInitialized) {
             status.text = when {
                 !isAssistantRoleHeld() -> "EMA is ready. System assistant is not enabled yet."
@@ -413,6 +555,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun listenOnce() {
+        if (getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            status.text = "Unlock your phone before running commands."
+            return
+        }
+        EmaWakeWordService.pauseForSpeech()
+        if (EmaWakeWordService.isCapturing()) {
+            commandInput.postDelayed({ if (!isFinishing && !isDestroyed) listenOnce() }, 100)
+            return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
             status.text = "Microphone permission is required for Voice."
@@ -424,6 +575,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
 
+        EmaWakeWordService.pauseForSpeech()
         recognizer?.destroy()
         recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
@@ -443,12 +595,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     }
                     recognizer?.destroy()
                     recognizer = null
+                    EmaWakeWordService.resumeAfterSession()
                 }
 
                 override fun onError(e: Int) {
                     status.text = "I couldn't hear that. Try again."
                     recognizer?.destroy()
                     recognizer = null
+                    EmaWakeWordService.resumeAfterSession()
                 }
 
                 override fun onReadyForSpeech(p: Bundle?) {}
@@ -469,6 +623,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_WAKE_MIC || requestCode == REQUEST_WAKE_NOTIFY) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) startWakeListening()
+            else wakeStatus.text = "Listening is stopped. Microphone and notification permissions are required for visible screen-off listening."
+        }
         if (requestCode == REQUEST_CORE_PERMISSIONS || requestCode == REQUEST_MIC) {
             val allCoreGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
                 checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED &&
@@ -491,11 +649,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         recognizer?.destroy()
+        wakeUiHandler.removeCallbacksAndMessages(null)
+        EmaWakeWordService.resumeAfterSession()
         tts.shutdown()
         super.onDestroy()
     }
 
     companion object {
+        private const val REQUEST_WAKE_MIC = 31
+        private const val REQUEST_WAKE_NOTIFY = 32
         private const val REQUEST_MIC = 10
         private const val REQUEST_CORE_PERMISSIONS = 12
         private const val REQUEST_NOTIFICATIONS = 11

@@ -49,6 +49,11 @@ class EmaSendControlResolverTest {
     // --------------------------------------------- WhatsApp's real Send shape
 
     @Test
+    fun emptyComposerAloneDoesNotProveSend() {
+        assertFalse(EmaSendControlResolver.sendConfirmed("", "Daniel online", "hello there", true))
+    }
+
+    @Test
     fun findsWhatsAppSendByViewId() {
         val screen = EmaScreenSnapshot(
             "com.whatsapp",
@@ -235,8 +240,8 @@ class EmaSendControlResolverTest {
     }
 
     @Test
-    fun confirmedByTranscriptAlone() {
-        assertTrue(
+    fun oldTranscriptDoesNotConfirmTextStillInComposer() {
+        assertFalse(
             EmaSendControlResolver.sendConfirmed(
                 composerTextAfter = "hello there",
                 transcriptAfter = "hello there",

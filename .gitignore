@@ -36,3 +36,6 @@ finalize-response.json
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Python release-verification tooling
+__pycache__/

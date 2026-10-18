@@ -60,7 +60,10 @@ jobs:
           EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
         run: |
           set -o pipefail
-          gradle :app:compileDebugKotlin --no-daemon --console=plain --stacktrace --info 2>&1 | tee build-log.txt
+          if ! gradle :app:compileDebugKotlin --no-daemon --console=plain --stacktrace --info 2>&1 | tee build-log.txt; then
+            python3 tools/report_gradle_failure.py build-log.txt
+            exit 1
+          fi
 
       - name: Run unit tests
         id: test
@@ -69,7 +72,10 @@ jobs:
           EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
         run: |
           set -o pipefail
-          gradle :app:testDebugUnitTest --no-daemon --console=plain --stacktrace 2>&1 | tee -a build-log.txt
+          if ! gradle :app:testDebugUnitTest --no-daemon --console=plain --stacktrace 2>&1 | tee -a build-log.txt; then
+            python3 tools/report_gradle_failure.py build-log.txt
+            exit 1
+          fi
 
       # Diagnostics only: an artifact-storage problem must never block the build.
       # continue-on-error keeps the job green so the APK steps below still run.
@@ -90,17 +96,24 @@ jobs:
           EMA_VERSION_NAME: ${{ steps.version.outputs.version_name }}
         run: |
           set -o pipefail
-          gradle :app:assembleDebug :app:assembleRelease --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a build-log.txt
+          if ! gradle :app:assembleDebug :app:assembleRelease --no-daemon --console=plain --stacktrace --info 2>&1 | tee -a build-log.txt; then
+            python3 tools/report_gradle_failure.py build-log.txt
+            exit 1
+          fi
 
       - name: Set APK paths
         run: |
           echo "RELEASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> "$GITHUB_ENV"
           echo "DEBUG_APK=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
 
+      - name: Test built-in wake model packaging verifier
+        run: python3 -m unittest discover -s tests -v
+
       - name: Verify APK outputs
         run: |
           test -s "$RELEASE_APK"
           test -s "$DEBUG_APK"
+          python3 tools/verify_bundled_wake_model.py "$DEBUG_APK" "$RELEASE_APK"
 
       - name: Upload build diagnostics
         if: always()
