@@ -278,7 +278,8 @@ may still use Android's configured network speech provider.
 
 ### How the self-contained APK is built
 
-`prepareBundledWakeModel` retrieves the unmodified small English model during
+The variant-specific `prepareDebugBundledWakeModel` /
+`prepareReleaseBundledWakeModel` tasks retrieve the unmodified small English model during
 **development/CI builds**, not on the user's phone. It pins SHA-256
 `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498`, checks required
 model files and packages the archive as `assets/ema-wake-model.zip`. A corrupt or

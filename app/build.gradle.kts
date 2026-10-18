@@ -4,6 +4,13 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.zip.ZipFile
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
 
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
@@ -78,14 +85,15 @@ dependencies {
 // The model is part of every APK, not an end-user download/import. Keep the
 // large binary in generated build storage, never in Git. Both sources must
 // produce the same pinned upstream archive or the build fails closed.
-val wakeModelSha256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
-val wakeAssets = layout.buildDirectory.dir("generated/wakeAssets")
-val prepareBundledWakeModel by tasks.registering {
-    val archive = wakeAssets.map { it.file("ema-wake-model.zip") }
-    inputs.property("modelSha256", wakeModelSha256)
-    outputs.file(archive)
-    doLast {
-        val target = archive.get().asFile
+@CacheableTask
+abstract class PrepareBundledWakeModel : DefaultTask() {
+    @get:Input abstract val expectedSha256: Property<String>
+    @get:OutputDirectory abstract val assetDirectory: DirectoryProperty
+
+    @TaskAction
+    fun prepare() {
+        val wakeModelSha256 = expectedSha256.get()
+        val target = assetDirectory.file("ema-wake-model.zip").get().asFile
         fun sha256(file: File): String {
             val hash = MessageDigest.getInstance("SHA-256")
             file.inputStream().buffered().use { input ->
@@ -145,8 +153,16 @@ val prepareBundledWakeModel by tasks.registering {
         }
     }
 }
-android.sourceSets.getByName("main").assets.srcDir(wakeAssets)
-android.androidResources.noCompress += "zip"
-tasks.configureEach {
-    if (name.matches(Regex("merge.*Assets"))) dependsOn(prepareBundledWakeModel)
+// Register a proper generated-assets producer for each variant. AGP propagates
+// its task dependency to merge-assets, lint models and every other consumer;
+// manually ordering only merge*Assets leaves release lint with an implicit input.
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        val capitalized = variant.name.replaceFirstChar { it.uppercase() }
+        val modelTask = tasks.register<PrepareBundledWakeModel>("prepare${capitalized}BundledWakeModel") {
+            expectedSha256.set("30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498")
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(modelTask, PrepareBundledWakeModel::assetDirectory)
+    }
 }
+android.androidResources.noCompress += "zip"
