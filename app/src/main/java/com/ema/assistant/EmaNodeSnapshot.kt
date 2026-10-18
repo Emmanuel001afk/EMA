@@ -29,6 +29,11 @@ data class EmaNodeSnapshot(
     val editable: Boolean = false,
     val focused: Boolean = false,
     val scrollable: Boolean = false,
+    /** Quick Settings tiles and Settings switches expose their state here. */
+    val checkable: Boolean = false,
+    val checked: Boolean = false,
+    /** "On" / "Off" / "On, connected": read when a control is not checkable. */
+    val stateDescription: String = "",
     val left: Int = 0,
     val top: Int = 0,
     val right: Int = 0,

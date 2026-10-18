@@ -30,6 +30,18 @@ class EmaAppActionEngine(private val context: Context) {
     private val pm = context.packageManager
     private val main = Handler(Looper.getMainLooper())
 
+    /** Condition waits, never fixed sleeps. Shared by every media/app path. */
+    private val waiter by lazy {
+        EmaConditionWaiter(
+            EmaPlanExecutor.Scheduler { delay, block ->
+                val runnable = Runnable { block() }
+                main.postDelayed(runnable, delay)
+                EmaPlanExecutor.Cancellable { main.removeCallbacks(runnable) }
+            },
+            { android.os.SystemClock.elapsedRealtime() }
+        )
+    }
+
     private companion object {
         /** Re-reads allowed while waiting for a deep-linked composer to populate. */
         const val PREFILL_WAIT_ATTEMPTS = 2
@@ -50,7 +62,8 @@ class EmaAppActionEngine(private val context: Context) {
     /** Applications the user can actually launch, cached per engine instance. */
     private var installedCache: List<EmaAppResolver.App>? = null
 
-    private fun installedApps(): List<EmaAppResolver.App> {
+    /** Installed launcher applications with their real package names. */
+    fun installedApps(): List<EmaAppResolver.App> {
         installedCache?.let { return it }
         val apps = runCatching {
             pm.queryIntentActivities(
@@ -73,6 +86,16 @@ class EmaAppActionEngine(private val context: Context) {
     fun findApp(name: String): AppTarget? {
         val wanted = name.trim()
         if (wanted.isBlank()) return null
+
+        // A user-taught trigger is an exact identity, so it is consulted first.
+        // "for me" must open the app the user mapped to it, without replacing
+        // the same words inside a message body or a query (only name slots
+        // reach this function).
+        EmaMemoryStore.load(context).appShortcut(wanted)?.let { shortcut ->
+            val installed = installedApps().firstOrNull { it.packageName == shortcut.packageName }
+                ?: return null // Uninstalled: never silently open a different app.
+            return AppTarget(installed.label, installed.packageName)
+        }
 
         // Browsers are addressed by role, not by label, on every device.
         if (EmaAppResolver.normalize(wanted) in setOf("browser", "default browser", "web browser", "default web browser", "internet")) {
@@ -109,6 +132,12 @@ class EmaAppActionEngine(private val context: Context) {
         return AppTarget(pm.getApplicationLabel(appInfo).toString(), resolved.packageName)
     }
 
+    /** Resolve an exact package name (used by stored app shortcuts). */
+    fun findAppByPackage(packageName: String): AppTarget? {
+        val app = installedApps().firstOrNull { it.packageName == packageName } ?: return null
+        return AppTarget(app.label, app.packageName)
+    }
+
     fun openApp(name: String): AppTarget? {
         val wanted = name.trim()
         if (EmaAppResolver.normalize(wanted) in setOf("browser", "default browser", "web browser", "default web browser", "internet")) {
@@ -133,6 +162,40 @@ class EmaAppActionEngine(private val context: Context) {
         }.getOrElse {
             android.util.Log.e("EMA", "Could not launch " + target.label, it)
             null
+        }
+    }
+
+    /**
+     * Evidence that a launched package really reached the foreground and the
+     * screen stopped changing (about 600 ms stable), bounded at 8 s.
+     *
+     * "startActivity returned" is not evidence: the next plan step used to run
+     * while the app was still on its cold-start splash. When accessibility is
+     * unavailable this returns false, and callers must report the action as
+     * unverified rather than claiming it opened.
+     */
+    fun awaitForeground(target: AppTarget, timeoutMs: Long = 8_000L, done: (Boolean) -> Unit) {
+        if (!EmaAccessibilityService.isConnected()) {
+            done(false)
+            return
+        }
+        val stabilityBudget = 1_500L
+        val foregroundBudget = (timeoutMs - stabilityBudget).coerceAtLeast(1_000L)
+        waiter.until(
+            timeoutMs = foregroundBudget,
+            pollMs = 150L,
+            probe = { EmaAccessibilityService.foregroundPackage() == target.packageName }
+        ) { arrived ->
+            if (!arrived) {
+                done(false)
+                return@until
+            }
+            waiter.untilStable(
+                timeoutMs = stabilityBudget,
+                pollMs = 150L,
+                stableMs = 600L,
+                sample = { EmaAccessibilityService.currentScreenText(1200) }
+            ) { stable -> done(stable) }
         }
     }
 
@@ -179,15 +242,15 @@ class EmaAppActionEngine(private val context: Context) {
             if (intent.resolveActivity(pm) != null) {
                 val started = runCatching { context.startActivity(intent); true }.getOrDefault(false)
                 if (started) {
-                    main.postDelayed({
-                        if (playbackConfirmed(target, query)) {
-                            done(true, "Playing $query in $appName.")
-                        } else {
-                            // The intent launched the app without resolving the
-                            // requested item, so fall through to the visible path.
-                            searchAndPlay(target, appName, query, unavailable, done)
-                        }
-                    }, 1200L)
+                    // A play-from-search intent is asynchronous: the app may take
+                    // seconds to resolve the query. Poll the media session for up
+                    // to 4 s before deciding that it did not work and falling
+                    // back to the visible path. Never assume success from the fact
+                    // that the intent was accepted.
+                    waiter.until(4_000, pollMs = 300, probe = { playbackConfirmed(target, query) }) { playing ->
+                        if (playing) done(true, "Playing $query in $appName.")
+                        else searchAndPlay(target, appName, query, unavailable, done)
+                    }
                     return
                 }
             }
@@ -223,7 +286,13 @@ class EmaAppActionEngine(private val context: Context) {
             return
         }
 
-        main.postDelayed({
+        // Wait for the app to be in front of the user before touching its UI;
+        // fixed sleeps raced Spotify's cold start and typed into the launcher.
+        awaitForeground(target) { inFront ->
+            if (!inFront) {
+                done(false, "I opened $appName, but it did not come to the foreground in time.")
+                return@awaitForeground
+            }
             // Search often lives behind its own navigation entry; reveal it
             // before waiting for an editable field that is not on this screen.
             EmaAccessibilityService.revealSearchEntry(target.packageName)
@@ -232,51 +301,78 @@ class EmaAppActionEngine(private val context: Context) {
                     done(false, "I opened $appName, but could not reach its search field to type \"$query\".")
                     return@searchInPackage
                 }
-                main.postDelayed({
-                    if (EmaAccessibilityService.targetSnapshot(target.packageName).packageName != target.packageName) {
-                        done(false, "The active app changed before I could select $query. I stopped.")
-                        return@postDelayed
-                    }
-                    val selected = EmaAccessibilityService.selectMediaResult(target.packageName, query)
-                    if (!selected) {
-                        done(false, "I searched $appName, but could not verify and select a result matching $query.")
-                        return@postDelayed
-                    }
-                    main.postDelayed({ startPlayback(target, appName, query, done) }, 900L)
-                }, 1200L)
+                // Wait for a non-empty, settled result list before choosing.
+                waiter.until(
+                    timeoutMs = 8_000,
+                    pollMs = 250,
+                    probe = { EmaAccessibilityService.resultItems(target.packageName, query).isNotEmpty() }
+                ) {
+                    selectWithRetry(target, appName, query, 3, done)
+                }
             }
-        }, 900L)
+        }
+    }
+
+    /**
+     * Choose the requested result, retrying a bounded three times.
+     *
+     * Result lists settle late on cold start; one immediate attempt used to
+     * report "could not select" while the rows were still rendering. Each
+     * retry re-checks that the foreground app is still the intended one.
+     */
+    private fun selectWithRetry(
+        target: AppTarget,
+        appName: String,
+        query: String,
+        attemptsLeft: Int,
+        done: (Boolean, String) -> Unit
+    ) {
+        if (EmaAccessibilityService.foregroundPackage() != target.packageName) {
+            done(false, "The active app changed before I could select $query. I stopped.")
+            return
+        }
+        val selected = EmaAccessibilityService.selectMediaResult(target.packageName, query)
+        when {
+            selected -> waiter.delay(900) { startPlayback(target, appName, query, done) }
+            attemptsLeft > 1 -> waiter.delay(700) { selectWithRetry(target, appName, query, attemptsLeft - 1, done) }
+            else -> done(false, "I searched $appName, but could not verify and select a result matching $query.")
+        }
     }
 
     private fun startPlayback(target: AppTarget, appName: String, query: String, done: (Boolean, String) -> Unit) {
-        if (EmaAccessibilityService.targetSnapshot(target.packageName).packageName != target.packageName) {
+        if (EmaAccessibilityService.foregroundPackage() != target.packageName) {
             done(false, "The active app changed. I did not press Play in another app.")
             return
         }
-        if (playbackConfirmed(target, query)) {
-            done(true, "Playing $query in $appName.")
+        // Known-playing: never press Play, which would pause it.
+        val state = EmaNotificationListenerService.mediaPlaying(context, target.packageName)
+        if (state == true) {
+            waiter.until(4_000, pollMs = 250, probe = { playbackConfirmed(target, query) }) { confirmed ->
+                done(
+                    confirmed,
+                    if (confirmed) "Playing $query in $appName."
+                    else "Something is already playing in $appName; I did not press Play because that would pause it."
+                )
+            }
             return
         }
+        // Known not playing (or unobservable): at most one Play press. The
+        // visible control EMA matches is a Play control, not a Pause control,
+        // and EMA never presses a second time.
         val activated = EmaAccessibilityService.playInTarget(target.packageName)
-        run {
-            main.postDelayed({
-                if (playbackConfirmed(target, query)) {
-                    done(true, "Playing $query in $appName.")
-                    return@postDelayed
+        if (!activated) {
+            done(false, "I selected \"$query\" in $appName, but could not find a Play control to start it.")
+            return
+        }
+        waiter.until(4_000, pollMs = 250, probe = { playbackConfirmed(target, query) }) { verified ->
+            done(
+                verified,
+                when {
+                    verified -> "Playing $query in $appName."
+                    state == null -> "I selected \"$query\" in $appName and pressed Play once, but I could not verify playback. Turning on notification access for EMA lets me check the media session."
+                    else -> "I selected \"$query\" in $appName and pressed Play, but the media session never reported the requested title playing."
                 }
-                // Do not dispatch global transport: it may resume a different app.
-                main.postDelayed({
-                    val verified = playbackConfirmed(target, query)
-                    done(
-                        verified,
-                        when {
-                            verified -> "Playing $query in $appName."
-                            activated -> "I selected \"$query\" in $appName and pressed Play, but could not verify the requested title is playing. Enable EMA notification access for media-session verification."
-                            else -> "I selected \"$query\" in $appName, but could not find a Play control to start it."
-                        }
-                    )
-                }, 900L)
-            }, 700L)
+            )
         }
     }
 
@@ -336,24 +432,30 @@ class EmaAppActionEngine(private val context: Context) {
             return
         }
 
-        main.postDelayed({
+        // Patience: wait for the app to actually be in front of the user before
+        // touching its UI. A fixed 800 ms was a guess and broke cold starts.
+        awaitForeground(target) { `inFront` ->
+            if (!`inFront`) {
+                done(false, "I opened " + target.label + ", but it did not come to the foreground in time.")
+                return@awaitForeground
+            }
             EmaAccessibilityService.revealSearchEntry(target.packageName)
             EmaAccessibilityService.searchInPackage(target.packageName, query) { success ->
                 if (!success) {
                     done(false, "I opened " + target.label + ", but couldn't reach its search field to type \"$query\".")
                     return@searchInPackage
                 }
-                main.postDelayed({
-                    val ui = EmaAccessibilityService.inspectCurrentUi(12000)
-                    val foundQuery = EmaExecutionVerifier.queryVisible(ui, query)
+                waiter.until(8_000, pollMs = 250, probe = {
+                    EmaExecutionVerifier.queryVisible(EmaAccessibilityService.inspectCurrentUi(12000), query)
+                }) {
                     done(
                         true,
-                        if (foundQuery) "I searched " + target.label + " for " + query + "."
+                        if (it) "I searched " + target.label + " for " + query + "."
                         else "I typed \"" + query + "\" into " + target.label + "'s search, but could not confirm results loaded."
                     )
-                }, 900L)
+                }
             }
-        }, 800L)
+        }
     }
 
     /**

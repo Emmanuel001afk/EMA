@@ -41,6 +41,14 @@ class EmaNotificationListenerService : NotificationListenerService() {
             }.getOrNull()
         }
 
+        /**
+         * Playing state of the app's media session, or null when it cannot be
+         * observed. Never guess: pressing Play while already playing toggles
+         * pause, so callers must distinguish "not playing" from "unknown".
+         */
+        fun mediaPlaying(context: android.content.Context, packageName: String): Boolean? =
+            activeMedia(context, packageName)?.playing
+
         fun isConnected(): Boolean = service != null
 
         fun describeActiveNotifications(): String {
