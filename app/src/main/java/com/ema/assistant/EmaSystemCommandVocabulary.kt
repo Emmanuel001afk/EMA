@@ -73,6 +73,93 @@ object EmaSystemCommandVocabulary {
     )
 
     /**
+     * A device setting the user asked EMA to change.
+     *
+     * This is a parser, not a phrase list: the subject (DND, brightness,
+     * airplane/Wi-Fi/Bluetooth) and the action (on, off, increase, decrease,
+     * maximum, minimum, a percentage) are recognised independently, so
+     * "turn on aeroplane mode", "switch flight mode off" and "raise the
+     * brightness to full" all work without an entry per wording.
+     */
+    data class DeviceSetting(val kind: Kind, val action: Action, val value: Int? = null) {
+        enum class Kind { DND, BRIGHTNESS, AIRPLANE, WIFI, BLUETOOTH }
+        enum class Action { ON, OFF, INCREASE, DECREASE, MAX, MIN, SET }
+
+        /** For on/off toggles; null for brightness-style values. */
+        val on: Boolean? get() = when (action) {
+            Action.ON -> true
+            Action.OFF -> false
+            else -> null
+        }
+    }
+
+    private val MAX_WORDS = listOf("maximum", "max", "full", "brightest", "highest", "all the way up")
+    private val MIN_WORDS = listOf("minimum", "min", "lowest", "dimmest", "all the way down")
+    private val INCREASE_WORDS = listOf("increase", "raise", "turn up", "bump up", "brighter", "higher", "up")
+    private val DECREASE_WORDS = listOf("decrease", "lower", "turn down", "dim", "darker", "down")
+    private val ON_WORDS = listOf("turn on", "switch on", "enable", "activate", "on")
+    private val OFF_WORDS = listOf("turn off", "switch off", "disable", "deactivate", "off")
+
+    /**
+     * Parse a device-setting command, or null when the utterance is not one.
+     * Pure and unit tested; the router only performs the resulting action.
+     */
+    fun parseDeviceSetting(command: String): DeviceSetting? {
+        val text = " " + command.lowercase()
+            .replace("wi-fi", "wifi")
+            .replace("wi fi", "wifi")
+            .replace("aeroplane", "airplane")
+            .replace(Regex("[^a-z0-9% ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim() + " "
+
+        val kind = when {
+            Regex("\\b(?:do not disturb|dnd|disturb|silent mode|silent)\\b").containsMatchIn(text) -> DeviceSetting.Kind.DND
+            Regex("\\bbrightness\\b|\\bdim\\b|\\bbrighter\\b|\\bdarker\\b").containsMatchIn(text) -> DeviceSetting.Kind.BRIGHTNESS
+            Regex("\\b(?:airplane|flight) mode\\b|\\bairplane\\b").containsMatchIn(text) -> DeviceSetting.Kind.AIRPLANE
+            Regex("\\b(?:wifi|wireless|wireless network)\\b").containsMatchIn(text) -> DeviceSetting.Kind.WIFI
+            Regex("\\bbluetooth\\b").containsMatchIn(text) -> DeviceSetting.Kind.BLUETOOTH
+            else -> return null
+        }
+
+        // Plain word/phrase membership. (Regex.escape emits \Q..\E, which
+        // java.util.regex does not support, so multi-word phrases never matched.)
+        fun has(words: List<String>) = words.any { phrase ->
+            Regex("(?:^| )" + phrase.replace(" ", "\\s+") + "(?= |$)").containsMatchIn(text.trim())
+        }
+
+        val percent = Regex("\\b(\\d{1,3})\\s*(?:percent|%)").find(text)?.groupValues?.get(1)?.toIntOrNull()
+            ?: valueWords(text)
+        val action = when {
+            has(MAX_WORDS) -> DeviceSetting.Action.MAX
+            has(MIN_WORDS) -> DeviceSetting.Action.MIN
+            kind != DeviceSetting.Kind.BRIGHTNESS && has(ON_WORDS) -> DeviceSetting.Action.ON
+            kind != DeviceSetting.Kind.BRIGHTNESS && has(OFF_WORDS) -> DeviceSetting.Action.OFF
+            kind == DeviceSetting.Kind.BRIGHTNESS && percent != null -> DeviceSetting.Action.SET
+            has(INCREASE_WORDS) -> DeviceSetting.Action.INCREASE
+            has(DECREASE_WORDS) -> DeviceSetting.Action.DECREASE
+            kind == DeviceSetting.Kind.BRIGHTNESS && Regex("\\bset\\b").containsMatchIn(text) -> DeviceSetting.Action.SET
+            else -> return null
+        }
+        val value = when (action) {
+            DeviceSetting.Action.SET -> (percent ?: when {
+                Regex("\\bhalf\\b").containsMatchIn(text) -> 50
+                Regex("\\bquarter\\b").containsMatchIn(text) -> 25
+                else -> 50
+            }).coerceIn(1, 100)
+            else -> percent
+        }
+        return DeviceSetting(kind, action, value)
+    }
+
+    private fun valueWords(text: String): Int? = when {
+        Regex("\\b100\\b|\\bfull\\b").containsMatchIn(text) -> 100
+        Regex("\\bhalf\\b").containsMatchIn(text) -> 50
+        Regex("\\bquarter\\b").containsMatchIn(text) -> 25
+        else -> null
+    }
+
+    /**
      * Whether [command] is a literal device command.
      *
      * [command] must already be normalized (trimmed, lowercased); the router does
