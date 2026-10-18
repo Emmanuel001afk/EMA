@@ -33,9 +33,11 @@ import java.util.Locale
 class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
 
     private val handler = Handler(Looper.getMainLooper())
+    private val wakeGate = EmaWakePhraseGate()
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var sessionVisible = false
+    private var wakeInvocation = false
     private var screenText = ""
     private var screenScreenshot: Bitmap? = null
     private var micEnabled = true
@@ -113,7 +115,15 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         sessionVisible = true
+        wakeGate.reset()
+        wakeInvocation = args?.getBoolean("wake_detected", false) == true
+        EmaWakeWordService.pauseForSpeech()
+        if (args?.getBoolean("wake_detected", false) == true) {
+            wakeGate.accept("hey ema", true, android.os.SystemClock.elapsedRealtime())
+        }
         activeSession = this
+        getWindow()?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         micMode = prefs.getString("mic_mode", "automatic") ?: "automatic"
         micEnabled = prefs.getBoolean("mic_enabled", true)
         initTts()
@@ -204,6 +214,15 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
         val controls = LinearLayout(context).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        }
+
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            controls.addView(android.widget.Button(context).apply {
+                text = "Unlock securely"
+                setOnClickListener {
+                    context.startActivity(Intent(context, EmaWakeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            })
         }
 
         controls.addView(ImageButton(context).apply {
@@ -309,6 +328,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                         handler.post {
                             if (!sessionVisible) return@post
                             speakingResponse = false
+                            if (wakeInvocation) {
+                                closeActive()
+                                return@post
+                            }
                             val autoResume = micMode == "automatic" || (micMode == "semi" && micEnabled)
                             setState(if (autoResume) "Listening" else "Ready",
                                 when (micMode) {
@@ -324,6 +347,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                         handler.post {
                             if (!sessionVisible) return@post
                             speakingResponse = false
+                            if (wakeInvocation) {
+                                closeActive()
+                                return@post
+                            }
                             scheduleSessionTimeout()
                             val autoResume = micMode == "automatic" || (micMode == "semi" && micEnabled)
                             if (autoResume && !processingCommand) startListening()
@@ -335,6 +362,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     }
 
     private fun execute(command: String) {
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            setState("Phone locked", "Unlock securely before EMA can run commands.")
+            return
+        }
         val trimmed = command.trim()
         if (trimmed.isBlank()) {
             setState("Listening", "I didn't hear a command.")
@@ -381,6 +412,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 if (speechStatus == TextToSpeech.ERROR || tts == null) {
                     speakingResponse = false
                     setState("Ready", "Command completed.")
+                    if (wakeInvocation) handler.postDelayed({ if (sessionVisible) closeActive() }, 3000)
                     scheduleSessionTimeout()
                 } else {
                     scheduleSessionTimeout()
@@ -409,6 +441,14 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     }
 
     private fun startListening() {
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            setState("Phone locked", "Tap Unlock securely to continue. EMA cannot bypass your lock.")
+            return
+        }
+        if (EmaWakeWordService.isRunning() && EmaWakeWordService.isCapturing()) {
+            handler.postDelayed({ if (sessionVisible) startListening() }, 100)
+            return
+        }
         if (!sessionVisible || (micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -445,7 +485,20 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                         setState("Listening", "I couldn't hear that. Try again.")
                         restartListeningIfNeeded()
                     } else {
-                        execute(command)
+                        val request = wakeGate.accept(command,
+                            prefs.getBoolean("require_wake_phrase", false),
+                            android.os.SystemClock.elapsedRealtime())
+                        when {
+                            request == null -> {
+                                setState("Waiting for Hey EMA", "Say Hey EMA, followed by your request.")
+                                restartListeningIfNeeded()
+                            }
+                            request.isBlank() -> {
+                                setState("Listening", "What would you like me to do?")
+                                restartListeningIfNeeded()
+                            }
+                            else -> execute(request)
+                        }
                     }
                 }
 
@@ -588,6 +641,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         speakingResponse = false
         processingCommand = false
         if (activeSession === this) activeSession = null
+        EmaWakeWordService.resumeAfterSession()
         super.onHide()
     }
 
@@ -604,6 +658,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         speakingResponse = false
         processingCommand = false
         if (activeSession === this) activeSession = null
+        EmaWakeWordService.resumeAfterSession()
         super.onDestroy()
     }
 }

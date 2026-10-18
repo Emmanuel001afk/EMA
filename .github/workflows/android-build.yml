@@ -97,10 +97,14 @@ jobs:
           echo "RELEASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> "$GITHUB_ENV"
           echo "DEBUG_APK=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
 
+      - name: Test built-in wake model packaging verifier
+        run: python3 -m unittest discover -s tests -v
+
       - name: Verify APK outputs
         run: |
           test -s "$RELEASE_APK"
           test -s "$DEBUG_APK"
+          python3 tools/verify_bundled_wake_model.py "$DEBUG_APK" "$RELEASE_APK"
 
       - name: Upload build diagnostics
         if: always()

@@ -142,6 +142,64 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun setFocusedText(text: String): Boolean = instance?.setFocusedTextInternal(text) == true
 
+        /** One synchronous, semantic Send attempt on a verified chat and body.
+         * No delayed geometric/OCR/IME fallback may act after the target changes.
+         */
+        fun sendVerified(packageName: String, recipient: String, body: String): Boolean {
+            val service = instance ?: return false
+            if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
+            val screen = service.screenModelInternal(500, packageName).snapshot
+            if (!EmaActionEvidence.maySend(screen, packageName, recipient, body)) return false
+            return service.trySnapshotSend(packageName)
+        }
+
+        fun selectContactInTarget(packageName: String, name: String): Boolean {
+            val service = instance ?: return false
+            val model = service.screenModelInternal(500, packageName)
+            val matches = model.snapshot.nodes.filter {
+                it.visible && it.enabled && !it.editable && it.actionable &&
+                    (EmaNodeSnapshot.normalize(it.text) == EmaNodeSnapshot.normalize(name) ||
+                        EmaNodeSnapshot.normalize(it.description) == EmaNodeSnapshot.normalize(name))
+            }.distinctBy { it.clickTargetIndex }
+            if (matches.size != 1) return false
+            return model.nodes.getOrNull(matches.single().clickTargetIndex)
+                ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        }
+
+        fun selectMediaResult(packageName: String, query: String): Boolean {
+            val service = instance ?: return false
+            val model = service.screenModelInternal(500, packageName)
+            val result = model.snapshot.nodes.firstOrNull {
+                it.visible && it.enabled && !it.editable && it.actionable &&
+                    EmaExecutionVerifier.queryVisible(it.label, query)
+            } ?: return false
+            return model.nodes.getOrNull(result.clickTargetIndex)
+                ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        }
+
+        fun playInTarget(packageName: String): Boolean {
+            val service = instance ?: return false
+            val model = service.screenModelInternal(500, packageName)
+            val play = model.snapshot.nodes.firstOrNull {
+                it.visible && it.enabled && it.actionable &&
+                    EmaNodeSnapshot.normalize(it.label) in setOf("play", "play song", "play video", "play track", "resume playback")
+            } ?: return false
+            return model.nodes.getOrNull(play.clickTargetIndex)
+                ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        }
+
+        fun targetSnapshot(packageName: String): EmaScreenSnapshot =
+            instance?.screenModelInternal(500, packageName)?.snapshot ?: EmaScreenSnapshot("", emptyList())
+
+        fun typeMessageVerified(packageName: String, recipient: String, body: String): Boolean {
+            val service = instance ?: return false
+            if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
+            val model = service.screenModelInternal(500, packageName)
+            if (!EmaActionEvidence.recipientHeaderMatches(model.snapshot, packageName, recipient)) return false
+            val field = model.snapshot.focusedNode ?: model.snapshot.firstEditable ?: return false
+            return model.nodes.getOrNull(field.index)?.let { service.commitText(it, body) } == true
+        }
+
         fun focusedEditableText(): String = instance?.focusedEditableTextInternal().orEmpty()
 
         /** True when a text field currently holds input focus. */
@@ -465,8 +523,16 @@ class EmaAccessibilityService : AccessibilityService() {
     private fun screenSnapshotInternal(maxNodes: Int): EmaScreenSnapshot =
         screenModelInternal(maxNodes).snapshot
 
-    private fun screenModelInternal(maxNodes: Int): ScreenModel {
-        val roots = collectRoots()
+    private fun screenModelInternal(maxNodes: Int, targetPackage: String? = null): ScreenModel {
+        val roots = if (targetPackage == null) collectRoots() else {
+            // Never combine keyboard/assistant/other-app controls with a chat.
+            // Only the top application window may be a target, including when
+            // an IME or the system-assistant window has input focus above it.
+            val application = windows.orEmpty().filter {
+                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+            }.maxByOrNull { it.layer }?.root ?: rootInActiveWindow
+            if (application?.packageName?.toString() == targetPackage) listOf(application) else emptyList()
+        }
         if (roots.isEmpty()) return ScreenModel(EmaScreenSnapshot("", emptyList()), emptyList())
 
         val nodes = mutableListOf<AccessibilityNodeInfo>()
@@ -778,6 +844,10 @@ class EmaAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (packageName.isNotBlank() && rootInActiveWindow?.packageName?.toString() != packageName) {
+            callback(false)
+            return
+        }
         val attemptOnce = {
             trySnapshotSend(packageName) ||
                 tryImeActionSend() ||
@@ -813,7 +883,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
     /** Resolve the submit control through the pure, unit-tested scorer. */
     private fun trySnapshotSend(packageName: String): Boolean {
-        val model = screenModelInternal(500)
+        val model = screenModelInternal(500, packageName.takeIf { it.isNotBlank() })
         val screen = model.snapshot
         if (screen.nodes.isEmpty()) return false
         if (packageName.isNotBlank() && screen.packageName.isNotBlank() &&

@@ -158,7 +158,7 @@ object EmaSendControlResolver {
     /**
      * True when the visible evidence says a message actually left the composer.
      *
-     * Two independent signals are accepted, because either one alone is
+     * Two independent signals are required, because either one alone is
      * unreliable: the composer being emptied proves the app consumed the text,
      * and the body appearing in the conversation transcript proves it was
      * posted. Relying on "the field is blank" alone produced false successes
@@ -182,8 +182,7 @@ object EmaSendControlResolver {
         val shortBody = normalizedBody.length < 4
         return when {
             inTranscript && composerEmpty && composerStillFocused -> true
-            inTranscript && !shortBody -> true
-            composerEmpty && composerStillFocused -> true
+            inTranscript && composerEmpty && !shortBody -> true
             else -> false
         }
     }
