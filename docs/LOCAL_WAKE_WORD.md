@@ -1,22 +1,28 @@
 # EMA local wake-word architecture
 
-EMA will own the wake-word pipeline: no Picovoice key, no cloud audio, and no AI request while idle.
+EMA owns this wake-word pipeline. It requires no Picovoice key, third-party wake-word SDK, cloud audio upload, or AI request while idle.
 
-## Current implementation milestone
+## Implemented in this branch
 
-- `EmaWakeWordEngine` is a dependency-free Kotlin DSP baseline: mono PCM16/16 kHz input, log-spaced Goertzel band features, normalized frame vectors, and subsequence DTW matching.
-- The engine accepts a local enrolled phrase template and returns a distance/match result. Audio and templates can remain on-device.
-- JVM tests cover input validation, template creation, and deterministic self-match.
-- This is **not yet an always-listening feature**. It is not connected to a microphone service, enrollment screen, persisted templates, or assistant-session activation. Do not expose an "always listening" toggle as working until those pieces and device tests are complete.
+- `EmaWakeWordEngine`: dependency-free Kotlin DSP baseline for mono PCM16 at 16 kHz, using log-spaced Goertzel band features and dynamic time warping.
+- `EmaWakeWordSetupActivity`: guided capture of three local “Hey EMA” samples, local persistence, and explicit start/stop controls.
+- `EmaWakeWordService`: visible microphone foreground service with a rolling audio window, local template matching, cooldown, and service status stored on-device.
+- `EmaVoiceInteractionService`: opens EMA's voice session after the in-app wake event, subject to Android's restrictions and keyguard.
+- JVM tests cover engine input validation, template creation, and deterministic self-match.
 
-## Build sequence
+## Setup and use
 
-1. Add guided enrollment: capture several user-spoken "Hey EMA" samples, trim silence, reject clipped/noisy samples, and store templates locally.
-2. Add a microphone capture component with explicit user opt-in, visible persistent microphone notification, pause/stop controls, audio focus and lifecycle handling. Never start microphone foreground work silently from boot.
-3. Run bounded rolling-window matching and calibrate thresholds against negative speech/noise. Multiple enrolled samples should be combined; rate-limit triggers and require a cooldown.
-4. On a match, ask Android to show EMA's voice session; do not bypass keyguard. If the device/OEM denies background microphone access, surface a diagnostic and fall back to tap/assistant gesture.
-5. Add diagnostics for permission, selected assistant, microphone service state, last match distance, false triggers, battery restrictions and session launch failures.
+1. Install a build containing this branch and open EMA.
+2. Grant microphone permission.
+3. Choose **Set up Hey EMA (local wake word)**.
+4. In a quiet room, record “Hey EMA” three times, then save enrollment.
+5. Tap **Start Hey EMA listening**. Keep the persistent notification visible. Use **Stop listening** to turn it off.
+6. Make EMA the selected Android digital assistant if you want its voice-interaction session to be launched.
 
-## Important constraints
+The service starts only after a user action; it does not silently turn on the microphone at boot. Enrollment samples remain local. The microphone is released before the assistant session attempts to listen for a command.
 
-This first matcher is an engineering baseline, not a production-grade trained acoustic model. Spectral template matching can confuse similar phrases and environmental sounds. It needs a proper negative-audio evaluation and target-device calibration before enabling unattended wake-up. The selected Android `VoiceInteractionService` is useful infrastructure but does not grant ordinary apps unrestricted access to privileged hardware hotword DSP APIs.
+## Important limitations before calling this production-ready
+
+This is an engineering prototype, not a trained neural wake-word model. The distance threshold is provisional and has not yet been calibrated against hours of negative speech/noise or tested on physical devices. It can miss “Hey EMA” or false-trigger on similar sounds. Do not rely on it for safety-critical commands or claim production-grade accuracy until a recorded evaluation suite and target-device calibration pass.
+
+Android and OEM power/microphone policies can stop background capture even when a foreground service is used. Starting the listener requires the app to be in a permitted foreground state and microphone permission to be granted. A wake event does not unlock the phone or bypass keyguard. Hardware-assisted hotword APIs remain restricted to privileged/system integrations.
