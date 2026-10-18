@@ -111,6 +111,27 @@ sealed class EmaCommand {
     data class OpenSmsComposer(val recipient: String, val body: String) : EmaCommand() {
         override fun toCanonical(): String = "text $recipient"
     }
+
+    /**
+     * Act on one item of a result list that is (or was just) on screen:
+     * "play the third result", "choose the longest one instead",
+     * "find another one". Produced by [EmaSemanticParser]; the selection is
+     * resolved against what the accessibility layer can really observe.
+     *
+     * @param play the user wants playback (verified), not just to open it.
+     * @param replacesPrevious "instead": go back to the list before choosing.
+     */
+    data class SelectResult(
+        val selection: EmaSelection,
+        val app: String?,
+        val play: Boolean,
+        val replacesPrevious: Boolean = false
+    ) : EmaCommand() {
+        override fun toCanonical(): String = buildString {
+            append(if (play) "play " else "open ").append(selection.phrase())
+            if (!app.isNullOrBlank()) append(" on ").append(app)
+        }
+    }
 }
 
 object EmaCommandGrammar {

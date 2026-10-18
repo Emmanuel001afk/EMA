@@ -1,0 +1,71 @@
+# EMA understanding corpus: one request per line, expected frame asserted by EmaUnderstandingCorpusTest.
+# Columns (tab separated): context <TAB> utterance <TAB> expected
+#   context : -                      no earlier task
+#             task:App:query[:play]  an active result-list task from an earlier request
+#   expected: steps joined with " | ", each one of
+#             MSG[app|recipient|body]  SEARCH[app|query]  SELECT[app|selection|play/open|cont?]
+#             OPEN[app]  SECTION[app|section]  PLAY[app|query]  LEGACY[text]  MEDIA[action]
+#             CLARIFY[ROLE] / CLARIFY[APP|opt1,opt2]   NOT_HANDLED   ("-" = no app named)
+# To add a failing real-world request: append it here with the frame it SHOULD produce,
+# watch the test fail, then fix the understanding logic (not by adding this exact phrase).
+#
+# --- the five acceptance formulations: all must produce the same frame
+-	Message Daniel on WhatsApp that I am coming home.	MSG[WhatsApp|Daniel|I am coming home]
+-	Open WhatsApp, find Daniel, and tell him I am coming home.	MSG[WhatsApp|Daniel|I am coming home]
+-	On WhatsApp, send Daniel a message saying I am coming home.	MSG[WhatsApp|Daniel|I am coming home]
+-	Daniel on WhatsApp, message him that I am coming home.	MSG[WhatsApp|Daniel|I am coming home]
+-	I need to tell Daniel on WhatsApp that I am coming home.	MSG[WhatsApp|Daniel|I am coming home]
+# --- more word orders and phrasings of the same goal
+-	Send a WhatsApp message to Daniel saying I am coming home	MSG[WhatsApp|Daniel|I am coming home]
+-	send a message saying I am coming home to Daniel on WhatsApp	MSG[WhatsApp|Daniel|I am coming home]
+-	Let Daniel know on WhatsApp that I'm on my way	MSG[WhatsApp|Daniel|I'm on my way]
+-	on whatsapp message Daniel saying hi	MSG[WhatsApp|Daniel|hi]
+-	Daniel on WhatsApp message him that I'm here	MSG[WhatsApp|Daniel|I'm here]
+-	hey ema can you text Daniel on whatsapp im coming home lol	MSG[WhatsApp|Daniel|im coming home lol]
+-	please could you whatsapp Daniel that dinner is ready	MSG[WhatsApp|Daniel|dinner is ready]
+-	Open WhatsApp and tell Daniel I am coming home	MSG[WhatsApp|Daniel|I am coming home]
+# --- private / unknown apps are grounded against what is installed, not a fixed list
+-	message Daniel Smith on Acme Staff Chat that the report is ready	MSG[Acme Staff Chat|Daniel Smith|the report is ready]
+-	tell Daniel on Acme Staff Chat that the build passed	MSG[Acme Staff Chat|Daniel|the build passed]
+# --- content words inside the body are NOT instructions
+-	text Daniel on WhatsApp saying play the new song and call me	MSG[WhatsApp|Daniel|play the new song and call me]
+-	tell Daniel on WhatsApp that I'll call him on Telegram later	MSG[WhatsApp|Daniel|I'll call him on Telegram later]
+-	message Daniel on WhatsApp saying open YouTube and search for the match	MSG[WhatsApp|Daniel|open YouTube and search for the match]
+-	text Daniel on WhatsApp: "Meet me at 5 p.m."	MSG[WhatsApp|Daniel|Meet me at 5 p.m.]
+-	tell Daniel on WhatsApp are you coming?	MSG[WhatsApp|Daniel|are you coming?]
+-	text Daniel saying what's up	MSG[-|Daniel|what's up]
+-	message Daniel on what's up that I'm outside	MSG[WhatsApp|Daniel|I'm outside]
+# --- corrections
+-	Message Daniel, no, David that I'm late	MSG[-|David|I'm late]
+-	play adele, no wait, play coldplay on spotify	PLAY[Spotify|coldplay]
+# --- omissions: no app named means no app guessed (never a stale one)
+-	text mum good morning	MSG[-|mum|good morning]
+-	tell my wife I'll be late	MSG[-|wife|I'll be late]
+# --- unresolved pronoun asks instead of guessing
+-	tell him I am coming home	CLARIFY[RECIPIENT]
+# --- compositions with unrelated steps stay separate
+-	turn on wifi and message Daniel saying I'm home	LEGACY[turn on wifi] | MSG[-|Daniel|I'm home]
+-	play Simon and Garfunkel on Spotify and then open WhatsApp	PLAY[Spotify|Simon and Garfunkel] | OPEN[WhatsApp]
+# --- search and selection
+-	Open YouTube and search for football.	SEARCH[YouTube|football]
+-	search for salt and pepper on YouTube	SEARCH[YouTube|salt and pepper]
+-	Search YouTube for football and play the first video.	SEARCH[YouTube|football] | SELECT[YouTube|Ordinal(1)|play]
+-	Open YouTube, search for football, and play the last result.	SEARCH[YouTube|football] | SELECT[YouTube|Last|play]
+-	Open YouTube, search for football, and play the third result.	SEARCH[YouTube|football] | SELECT[YouTube|Ordinal(3)|play]
+-	Find the longest video about football and play it.	SEARCH[YouTube|football] | SELECT[YouTube|Longest|play]
+-	open My Portal and search for invoices	SEARCH[My Portal|invoices]
+-	open My Portal, go to Reports and tap Export	OPEN[My Portal] | SECTION[My Portal|Reports] | LEGACY[tap Export]
+# --- follow-ups continue an active task only when one exists
+task:YouTube:football	Play the first result.	SELECT[YouTube|Ordinal(1)|play|cont]
+task:YouTube:football	Choose the longest one instead.	SELECT[YouTube|Longest|open|cont]
+task:YouTube:football:play	Choose the longest one instead.	SELECT[YouTube|Longest|play|cont]
+task:YouTube:football	now find another one	SELECT[YouTube|Another|open|cont]
+-	Play the first result.	SELECT[-|Ordinal(1)|play]
+# --- a new request is not glued onto the old task
+task:YouTube:football	message Daniel on WhatsApp that I'm home	MSG[WhatsApp|Daniel|I'm home]
+task:YouTube:football	play Despacito on Spotify	PLAY[Spotify|Despacito]
+# --- single simple commands stay with the established layers
+-	open youtube	NOT_HANDLED
+-	tell me a joke	NOT_HANDLED
+-	what is 15% of 2400	NOT_HANDLED
+-	set an alarm for 7 am	NOT_HANDLED

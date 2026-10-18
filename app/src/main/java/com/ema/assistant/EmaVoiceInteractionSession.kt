@@ -109,6 +109,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private lateinit var status: TextView
     private lateinit var transcript: TextView
     private lateinit var response: TextView
+    private lateinit var steps: TextView
+    private var stepLines: MutableList<String> = mutableListOf()
     private lateinit var pulse: View
     private lateinit var input: EditText
 
@@ -194,6 +196,29 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             visibility = View.GONE
         }
         panel.addView(response)
+
+        // Live plan progress from the router; hidden for single-step requests.
+        steps = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(200, 200, 215))
+            setPadding(0, 6, 0, 6)
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        panel.addView(steps)
+        commandRouter.progressListener = object : EmaProgressListener {
+            override fun onPlan(steps: List<String>) { handler.post { showSteps(steps) } }
+            override fun onStepStarted(index: Int) { handler.post { markStep(index, "◐"); setState("Working", "Step ${index + 1} of ${stepLines.size}") } }
+            override fun onStepFinished(index: Int, outcome: EmaStepOutcome) {
+                handler.post {
+                    markStep(index, when (outcome.status) {
+                        EmaOutcomeStatus.SUCCESS -> "✓"; EmaOutcomeStatus.UNVERIFIED -> "!"; EmaOutcomeStatus.SKIPPED -> "–"
+                        EmaOutcomeStatus.NEEDS_INPUT, EmaOutcomeStatus.NEEDS_PERMISSION -> "?"; else -> "✕"
+                    })
+                }
+            }
+            override fun onClarification(question: String, options: List<String>) { handler.post { setState("Needs your answer", question) } }
+        }
 
         input = EditText(context).apply {
             hint = "Type to EMA"
@@ -317,9 +342,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         if (tts != null) return
         tts = TextToSpeech(context) { code ->
             if (code == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.getDefault()
-                val saved = prefs.getString("voice_name", null)
-                tts?.voices?.firstOrNull { it.name == saved }?.let { tts?.voice = it }
+                tts?.let { EmaVoiceSetup.apply(context, it) }
                 tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         handler.post { speakingResponse = true }
@@ -394,7 +417,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         scheduleSessionTimeout()
         transcript.text = "“$trimmed”"
         response.visibility = View.GONE
-        setState("Thinking", "Working on it…")
+        stepLines.clear()
+        if (::steps.isInitialized) steps.visibility = View.GONE
+        setState("Understanding", "Working on it…")
 
         commandRouter.execute(trimmed) { result ->
             handler.post {
@@ -404,7 +429,13 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 commandWatchdog = null
                 response.text = result
                 response.visibility = View.VISIBLE
-                setState("Speaking", "Reading the answer…")
+                val outcome = EmaOutcomeClassifier.classify(result).status
+                val color = when (outcome) {
+                    EmaOutcomeStatus.SUCCESS, EmaOutcomeStatus.BLOCKED -> Color.rgb(120, 220, 160)
+                    EmaOutcomeStatus.UNVERIFIED, EmaOutcomeStatus.NEEDS_INPUT, EmaOutcomeStatus.NEEDS_PERMISSION -> Color.rgb(255, 205, 110)
+                    else -> Color.rgb(255, 140, 140)
+                }
+                setState(EmaConversationView.stateFor(outcome).label, "Reading the answer…", color)
                 speakingResponse = true
                 val speechStatus = runCatching {
                     tts?.speak(result, TextToSpeech.QUEUE_FLUSH, null, "ema-result")
@@ -547,11 +578,25 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         if (timeout > 0L) handler.postDelayed(sessionTimeoutRunnable, timeout)
     }
 
-    private fun setState(title: String, detail: String) {
+    private fun setState(title: String, detail: String, color: Int = Color.WHITE) {
         if (!::status.isInitialized) return
         status.text = title
+        status.setTextColor(color)
         transcript.text = detail
         status.contentDescription = title
+    }
+
+    private fun showSteps(list: List<String>) {
+        if (!::steps.isInitialized || list.size < 2) return
+        stepLines = list.map { "○  $it" }.toMutableList()
+        steps.text = stepLines.joinToString("\n")
+        steps.visibility = View.VISIBLE
+    }
+
+    private fun markStep(index: Int, mark: String) {
+        if (!::steps.isInitialized || index !in stepLines.indices) return
+        stepLines[index] = mark + stepLines[index].drop(1)
+        steps.text = stepLines.joinToString("\n")
     }
 
     private fun startPulse() {

@@ -177,6 +177,26 @@ first if a change breaks:
   through the same grammar, so a command whose canonical form cannot be read back
   would be silently dropped.
 
+Natural-language understanding, multi-step planning and result selection have
+their own suites:
+
+- **`EmaUnderstandingCorpusTest`** reads `app/src/test/resources/ema_understanding_corpus.tsv`.
+  Each line is a request and the meaning frame it must produce. It covers the
+  five equivalent "message Daniel" formulations, word order, corrections,
+  pronouns, content words inside message bodies, private apps and follow-ups.
+  To improve understanding, add a failing line, then fix the logic (see
+  [docs/UNDERSTANDING_AND_EXECUTION.md](docs/UNDERSTANDING_AND_EXECUTION.md)).
+- **`EmaPlanExecutorTest`** covers ordering, dependent-step skipping, bounded
+  retries, timeouts with late callbacks ignored, cancellation, and
+  duplicate-send protection.
+- **`EmaResultExtractorTest` / `EmaResultSelectionFlowTest`** use recorded
+  result screens (`EmaResultScreens`) and a fake device. They cover ads,
+  first/third/last, scrolling for more, going back from a player to the list,
+  refusing "longest" when no lengths are shown, and playback verified by the
+  media-session title.
+- Knowledge, memory, the capability registry, the wake detector and audio gate
+  ([docs/WAKE_WORD.md](docs/WAKE_WORD.md)), and TTS voice selection.
+
 Device-dependent behaviour — whether a specific app's accessibility tree exposes
 its Send button — cannot be unit tested and is deliberately isolated in
 `EmaSendControlResolver`, which is pure and scored against recorded node
@@ -191,6 +211,16 @@ snapshots.
 - The torch requires camera permission on some OEM builds; without it EMA says so.
 - Screenshots use the accessibility global action and need Android 9+.
 - Reminders are one-shot. Recurring work is handled by routines.
+- Understanding is rule-based English. It covers families of phrasings, not all
+  of English. Unknown phrasings get an honest "I didn't understand" and can be
+  collected locally (opt-in) for the corpus.
+- "Longest / newest / most viewed" work only when the app shows that metadata on
+  screen. Playback can be verified only with notification access.
+- Screen-off "Hey EMA" costs battery (continuous microphone and a partial wake
+  lock). See [docs/WAKE_WORD.md](docs/WAKE_WORD.md).
+- Voice quality is limited to the TTS voices installed on the phone. EMA picks
+  the best installed one and links to Android's voice downloads. No neural voice
+  is bundled.
 
 ---
 

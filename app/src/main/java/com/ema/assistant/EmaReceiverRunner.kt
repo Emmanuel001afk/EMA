@@ -78,7 +78,7 @@ object EmaReceiverRunner {
 
         tts = TextToSpeech(app) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                runCatching { tts?.language = Locale.getDefault() }
+                runCatching { tts?.let { EmaVoiceSetup.apply(app, it) } }
             } else {
                 android.util.Log.w("EMA", "TTS init failed with status $status")
             }

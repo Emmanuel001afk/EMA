@@ -188,6 +188,56 @@ class EmaAccessibilityService : AccessibilityService() {
                 ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
         }
 
+        /** Package of the top application window, or "" when unknown. */
+        fun foregroundPackage(): String {
+            val service = instance ?: return ""
+            return runCatching {
+                service.windows.orEmpty().filter {
+                    it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+                }.maxByOrNull { it.layer }?.root?.packageName?.toString()
+                    ?: service.rootInActiveWindow?.packageName?.toString()
+            }.getOrNull().orEmpty()
+        }
+
+        /** Result rows currently visible in [packageName]'s top window (generic, see EmaResultExtractor). */
+        fun resultItems(packageName: String, query: String?): List<EmaResultItem> {
+            val service = instance ?: return emptyList()
+            val snapshot = service.screenModelInternal(RESULT_NODE_LIMIT, packageName).snapshot
+            return EmaResultExtractor.extract(snapshot, query)
+        }
+
+        /**
+         * Click a previously observed result row. The screen is read again and
+         * the row is matched by title (and roughly by position) first, so a
+         * list that moved or changed between observing and acting can never
+         * cause a different item to be tapped.
+         */
+        fun clickResult(packageName: String, item: EmaResultItem, query: String?): Boolean {
+            val service = instance ?: return false
+            if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
+            val model = service.screenModelInternal(RESULT_NODE_LIMIT, packageName)
+            val items = EmaResultExtractor.extract(model.snapshot, query)
+            val wanted = EmaResultExtractor.normalizeTitle(item.title)
+            val same = items.filter { EmaResultExtractor.normalizeTitle(it.title) == wanted }
+                .minByOrNull { kotlin.math.abs(it.top - item.top) } ?: return false
+            val node = model.nodes.getOrNull(same.clickIndex) ?: return false
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            // Some lists only respond to a real gesture on the row.
+            return service.tapCoordinatesInternal((same.left + same.right) / 2f, (same.top + same.bottom) / 2f)
+        }
+
+        /** Scroll the largest scrollable container of [packageName] forward (loads more results). */
+        fun scrollResultsForward(packageName: String): Boolean {
+            val service = instance ?: return false
+            val model = service.screenModelInternal(RESULT_NODE_LIMIT, packageName)
+            val list = model.snapshot.nodes.filter { it.scrollable && it.visible }
+                .maxByOrNull { it.width.toLong() * it.height } ?: return service.scrollInternal("down")
+            return model.nodes.getOrNull(list.index)?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) == true ||
+                service.scrollInternal("down")
+        }
+
+        private const val RESULT_NODE_LIMIT = 1200
+
         fun targetSnapshot(packageName: String): EmaScreenSnapshot =
             instance?.screenModelInternal(500, packageName)?.snapshot ?: EmaScreenSnapshot("", emptyList())
 

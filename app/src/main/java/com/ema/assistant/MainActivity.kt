@@ -40,6 +40,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var hubStatus: TextView
     private lateinit var hubAddress: EditText
     private lateinit var wakeStatus: TextView
+    private lateinit var conversation: EmaConversationView
+    private lateinit var voiceSection: LinearLayout
+    private lateinit var modeChip: TextView
+    private var ttsReady = false
     private val wakeUiHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val refreshWake = object : Runnable {
         override fun run() {
@@ -70,24 +74,49 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setPadding(dp(18), dp(24), dp(18), dp(16))
         }
 
-        root.addView(TextView(this).apply {
+        // Identity: who EMA is and how it is running right now.
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        header.addView(TextView(this).apply {
+            text = "E"
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = android.view.Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.rgb(98, 84, 199)) }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val titles = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        titles.addView(TextView(this).apply {
             text = "EMA"
-            textSize = 36f
+            textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.rgb(27, 34, 56))
         })
-
-        root.addView(TextView(this).apply {
-            text = "Your phone. One request."
-            textSize = 16f
-        })
-
-        root.addView(TextView(this).apply {
-            text = "Open apps, send messages, play music and plan your day. Native actions first."
-            textSize = 15f
+        modeChip = TextView(this).apply {
+            textSize = 13f
             setTextColor(Color.rgb(82, 91, 114))
-            setPadding(0, dp(12), 0, dp(24))
-        })
+        }
+        titles.addView(modeChip)
+        header.addView(titles)
+        root.addView(header)
+        refreshModeChip()
+
+        conversation = EmaConversationView(this) { option -> runRequest(option) }
+        root.addView(conversation.root)
+        router.progressListener = object : EmaProgressListener {
+            override fun onPlan(steps: List<String>) = runOnUiThread { conversation.showPlan(steps) }
+            override fun onStepStarted(index: Int) = runOnUiThread { conversation.stepStarted(index) }
+            override fun onStepFinished(index: Int, outcome: EmaStepOutcome) = runOnUiThread { conversation.stepFinished(index, outcome) }
+            override fun onClarification(question: String, options: List<String>) = runOnUiThread { conversation.showOptions(options) }
+        }
+
         commandInput = EditText(this).apply {
             hint = "Tell EMA what to do…"
             setPadding(dp(18), dp(16), dp(18), dp(16))
@@ -103,22 +132,24 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         actions.addView(Button(this).apply {
-            text = "Run request"
+            text = "Send"
+            contentDescription = "Send request to EMA"
             setOnClickListener { executeTypedCommand() }
         })
         actions.addView(Button(this).apply {
-            text = "Voice"
+            text = "Speak"
+            contentDescription = "Speak a request"
             setOnClickListener { listenOnce() }
         })
         root.addView(actions)
 
+        // Setup and system notices (permissions, assistant role). Replies go to the conversation.
         status = TextView(this).apply {
             text = "Ready when you are."
-            textSize = 16f
+            textSize = 14f
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
-            setTextColor(Color.rgb(56, 68, 99))
-            setPadding(dp(18), dp(18), dp(18), dp(18))
-            background = roundedSurface(Color.WHITE)
+            setTextColor(Color.rgb(82, 91, 114))
+            setPadding(dp(4), dp(10), dp(4), dp(4))
         }
         root.addView(status)
         root.addView(TextView(this).apply {
@@ -127,8 +158,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             letterSpacing = 0.12f
             setPadding(0, dp(24), 0, dp(8))
         })
-        listOf("Open Spotify and play Arcade", "Message Daniel on WhatsApp saying I am coming home",
-            "Search for cooking ideas on YouTube", "Remind me to drink water in 30 minutes").forEach { example ->
+        listOf("Message Daniel on WhatsApp that I am coming home", "Open YouTube, search for football and play the first result",
+            "What is 15% of 2400?", "Remind me to drink water in 30 minutes", "What can you do?").forEach { example ->
             root.addView(Button(this).apply {
                 text = example
                 isAllCaps = false
@@ -224,6 +255,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 assistantPrefs.edit().putString("assistant_mode", selected.key).apply()
                 modeExplanation.text = selected.explanation
                 refreshHubStatus()
+                refreshModeChip()
             }
         })
         root.addView(modeSpinner)
@@ -318,31 +350,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         })
         root.addView(timeoutSpinner)
 
-        root.addView(TextView(this).apply {
-            text = "Voice"
-            textSize = 16f
-            setPadding(0, 24, 0, 4)
-        })
-        val voiceSpinner = Spinner(this)
-        root.addView(voiceSpinner)
-        tts.setOnUtteranceProgressListener(null)
-        if (tts.engines.isNotEmpty()) {
-            val voices = tts.voices.orEmpty()
-                .filter { it.locale.language == Locale.getDefault().language }
-                .sortedBy { it.name }
-                .take(30)
-            val labels = if (voices.isEmpty()) listOf("Default voice") else voices.map { it.name }
-            voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-            voiceSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
-                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
-                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                    voices.getOrNull(position)?.let {
-                        tts.voice = it
-                        getSharedPreferences("ema", MODE_PRIVATE).edit().putString("voice_name", it.name).apply()
-                    }
-                }
-            })
-        }
+        voiceSection = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(voiceSection)
+        refreshVoiceUi()
+
+        addMemorySection(root)
+
         root.addView(TextView(this).apply {
             text = "System assistant: " + when {
                 !isAssistantRoleHeld() -> "not enabled"
@@ -395,10 +408,176 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             status.text = "Type a command first."
             return
         }
-        status.text = "Working…"
+        commandInput.setText("")
+        runRequest(command)
+    }
+
+    /** One path for typed, spoken and tapped requests, so the UI always reflects the router. */
+    private fun runRequest(command: String) {
+        conversation.addUser(command)
+        conversation.setState(EmaConversationView.State.UNDERSTANDING)
         router.execute(command) { result ->
-            runOnUiThread { status.text = result }
+            runOnUiThread {
+                val outcome = EmaOutcomeClassifier.classify(result)
+                conversation.addAssistant(result, outcome.status)
+            }
         }
+    }
+
+    private fun refreshModeChip() {
+        if (!::modeChip.isInitialized) return
+        val mode = EmaAssistantMode.fromKey(getSharedPreferences("ema", MODE_PRIVATE).getString("assistant_mode", EmaAssistantMode.DEFAULT_KEY))
+        modeChip.text = when (mode) {
+            EmaAssistantMode.NATIVE_ONLY -> "On-device assistant · AI off · works offline"
+            EmaAssistantMode.NATIVE_FIRST -> "On-device assistant · works offline · optional AI for questions"
+            EmaAssistantMode.AI_ASSIST -> "On-device actions · AI helps with wording"
+        }
+    }
+
+    /**
+     * Voice settings, built only after the TTS engine is ready so the list
+     * reflects voices that are really installed. Spinners ignore the callback
+     * Android fires while they are being set up: it used to silently save the
+     * alphabetically first voice over the user's choice.
+     */
+    private fun refreshVoiceUi() {
+        if (!::voiceSection.isInitialized) return
+        voiceSection.removeAllViews()
+        val prefs = getSharedPreferences("ema", MODE_PRIVATE)
+        voiceSection.addView(TextView(this).apply {
+            text = "Voice"
+            textSize = 16f
+            setPadding(0, dp(16), 0, dp(2))
+        })
+        if (!ttsReady) {
+            voiceSection.addView(TextView(this).apply { text = "Loading the phone's voices…"; textSize = 14f })
+            return
+        }
+        voiceSection.addView(TextView(this).apply {
+            text = prefs.getString("voice_status", "Voice: the phone's default voice")
+            textSize = 14f
+        })
+        val styles = EmaVoiceSelector.Style.values().toList()
+        val currentStyle = EmaVoiceSelector.Style.fromKey(prefs.getString(EmaVoiceSetup.PREF_STYLE, null))
+        val styleSpinner = Spinner(this)
+        styleSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, styles.map { it.label })
+        styleSpinner.setSelection(styles.indexOf(currentStyle))
+        styleSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val chosen = styles[position]
+                if (chosen == currentStyle) return
+                prefs.edit().putString(EmaVoiceSetup.PREF_STYLE, chosen.key).remove(EmaVoiceSetup.PREF_VOICE).apply()
+                EmaVoiceSetup.apply(this@MainActivity, tts)
+                refreshVoiceUi()
+            }
+        })
+        voiceSection.addView(styleSpinner)
+
+        val allowNetwork = prefs.getBoolean(EmaVoiceSetup.PREF_ALLOW_NETWORK, false)
+        val voices = EmaVoiceSetup.voices(tts)
+        val ranked = EmaVoiceSelector.ranked(voices.map { EmaVoiceSetup.info(it) }, currentStyle, Locale.getDefault().toLanguageTag(), allowNetwork).take(25)
+        val saved = prefs.getString(EmaVoiceSetup.PREF_VOICE, null)
+        val labels = listOf("Automatic (best installed voice for this style)") + ranked.map { "${it.name} — ${EmaVoiceSelector.describe(it)}" }
+        val voiceSpinner = Spinner(this)
+        voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        val currentIndex = ranked.indexOfFirst { it.name == saved }.let { if (it < 0) 0 else it + 1 }
+        voiceSpinner.setSelection(currentIndex)
+        voiceSpinner.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (position == currentIndex) return
+                val edit = prefs.edit()
+                if (position == 0) edit.remove(EmaVoiceSetup.PREF_VOICE) else edit.putString(EmaVoiceSetup.PREF_VOICE, ranked[position - 1].name)
+                edit.apply()
+                EmaVoiceSetup.apply(this@MainActivity, tts)
+                refreshVoiceUi()
+            }
+        })
+        voiceSection.addView(voiceSpinner)
+        if (ranked.isEmpty()) {
+            voiceSection.addView(TextView(this).apply {
+                text = "No installed offline voices were reported by the speech engine, so EMA uses its default voice."
+                textSize = 13f
+            })
+        }
+        voiceSection.addView(Switch(this).apply {
+            text = "Also offer online voices (need internet)"
+            isChecked = allowNetwork
+            setOnCheckedChangeListener { _, on ->
+                prefs.edit().putBoolean(EmaVoiceSetup.PREF_ALLOW_NETWORK, on).apply()
+                EmaVoiceSetup.apply(this@MainActivity, tts)
+                refreshVoiceUi()
+            }
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(Button(this).apply {
+            text = "Preview"
+            setOnClickListener {
+                tts.speak("Hi, I'm EMA. This is how I'll sound when I answer you.", TextToSpeech.QUEUE_FLUSH, null, "ema-preview")
+            }
+        })
+        row.addView(Button(this).apply {
+            text = "Get more voices"
+            isAllCaps = false
+            setOnClickListener {
+                runCatching { startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
+                    .onFailure { runCatching { startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)) } }
+            }
+        })
+        voiceSection.addView(row)
+        voiceSection.addView(TextView(this).apply {
+            text = "Higher-quality voices can be downloaded for free in Android's text-to-speech settings (Install voice data). EMA only lists voices the engine reports as installed."
+            textSize = 13f
+        })
+    }
+
+    /** What EMA remembers and the opt-in "not understood" list, both fully under the user's control. */
+    private fun addMemorySection(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "Memory & privacy"
+            textSize = 16f
+            setPadding(0, dp(16), 0, dp(2))
+        })
+        val memoryText = TextView(this).apply { textSize = 14f }
+        fun refresh() { memoryText.text = EmaMemoryStore.load(this).describe() }
+        refresh()
+        root.addView(memoryText)
+        root.addView(TextView(this).apply {
+            text = "EMA only remembers what you explicitly ask it to (\"remember that…\", \"when I say… I mean…\", \"use Telegram for messages\"). It never stores passwords, PINs or card details. Recent results lists are forgotten after 10 minutes."
+            textSize = 13f
+        })
+        root.addView(Button(this).apply {
+            text = "Forget everything EMA remembers"
+            isAllCaps = false
+            setOnClickListener { EmaMemoryStore.clear(this@MainActivity); EmaConversationContext.clear(); refresh() }
+        })
+        root.addView(Switch(this).apply {
+            text = "Keep requests EMA didn't understand (on this phone only)"
+            isChecked = EmaLearningLog.isEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, on -> EmaLearningLog.setEnabled(this@MainActivity, on) }
+        })
+        root.addView(TextView(this).apply {
+            text = "EMA does not retrain itself. If you turn this on, you can copy the list into a bug report so the understanding rules can be improved and tested."
+            textSize = 13f
+        })
+        val learnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        learnRow.addView(Button(this).apply {
+            text = "Copy list"
+            isAllCaps = false
+            setOnClickListener {
+                val items = EmaLearningLog.entries(this@MainActivity)
+                val clip = android.content.ClipData.newPlainText("EMA requests", items.joinToString("\n"))
+                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+                status.text = if (items.isEmpty()) "The list is empty." else "Copied ${items.size} request(s)."
+            }
+        })
+        learnRow.addView(Button(this).apply {
+            text = "Clear list"
+            isAllCaps = false
+            setOnClickListener { EmaLearningLog.clear(this@MainActivity); status.text = "Cleared." }
+        })
+        root.addView(learnRow)
     }
 
     /**
@@ -582,16 +761,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onResults(b: Bundle?) {
                     val command = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                     if (command.isNullOrBlank()) {
+                        conversation.setState(EmaConversationView.State.READY)
                         status.text = "I couldn't hear that. Try again."
                     } else {
-                        commandInput.setText(command)
-                        status.text = "Working…"
                         // Must reuse the activity's router: a fresh instance would
                         // drop any pending follow-up question ("What time should I
                         // remind you?") that the previous turn asked.
-                        router.execute(command) { result ->
-                            runOnUiThread { status.text = result }
-                        }
+                        runRequest(command)
                     }
                     recognizer?.destroy()
                     recognizer = null
@@ -599,13 +775,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onError(e: Int) {
+                    conversation.setState(EmaConversationView.State.READY)
                     status.text = "I couldn't hear that. Try again."
                     recognizer?.destroy()
                     recognizer = null
                     EmaWakeWordService.resumeAfterSession()
                 }
 
-                override fun onReadyForSpeech(p: Bundle?) {}
+                override fun onReadyForSpeech(p: Bundle?) { conversation.setState(EmaConversationView.State.LISTENING) }
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(v: Float) {}
                 override fun onBufferReceived(b: ByteArray?) {}
@@ -641,10 +818,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     override fun onInit(code: Int) {
         if (code == TextToSpeech.SUCCESS) {
-            tts.language = Locale.getDefault()
-            val saved = getSharedPreferences("ema", MODE_PRIVATE).getString("voice_name", null)
-            tts.voices?.firstOrNull { it.name == saved }?.let { tts.voice = it }
+            EmaVoiceSetup.apply(this, tts)
+            ttsReady = true
         }
+        runOnUiThread { refreshVoiceUi() }
     }
 
     override fun onDestroy() {

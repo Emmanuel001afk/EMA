@@ -38,8 +38,33 @@ class EmaWakeAudioGateTest {
         val gate = EmaWakeAudioGate()
         assertFalse(gate.accept(frame(-2000), 1600).audio.isEmpty())
         var resets = 0
-        repeat(400) { if (gate.accept(frame(2000), 1600).resetDecoderAfter) resets++ }
-        assertEquals(2, resets)
+        var deliveredInLastFiveSeconds = 0
+        repeat(400) { i ->
+            val out = gate.accept(frame(2000), 1600)
+            if (out.resetDecoderAfter) resets++
+            if (i >= 300) deliveredInLastFiveSeconds += out.audio.size
+        }
+        // Steady noise must not keep the decoder running: the window is closed
+        // at least once and, once the level is learned as background, no more
+        // audio is decoded at all (this was the battery/[unk] root cause).
+        assertTrue(resets >= 1)
+        assertEquals(0, deliveredInLastFiveSeconds)
+        assertTrue(gate.backgroundLevel > 2000 / 3.0)
+    }
+
+    @Test fun speechAboveLearnedNoiseStillOpensGate() {
+        val gate = EmaWakeAudioGate()
+        repeat(400) { gate.accept(frame(2000), 1600) }
+        assertTrue(gate.accept(frame(2000), 1600).audio.isEmpty())
+        assertFalse(gate.accept(frame(9000), 1600).audio.isEmpty())
+    }
+
+    @Test fun shortSpeechDoesNotRaiseBackground() {
+        val gate = EmaWakeAudioGate()
+        repeat(20) { gate.accept(frame(0), 1600) }
+        val before = gate.backgroundLevel
+        repeat(40) { gate.accept(frame(3000), 1600) } // two seconds of speech
+        assertEquals(before, gate.backgroundLevel, 0.0001)
     }
 
     @Test fun invalidPcmIsRejected() {
