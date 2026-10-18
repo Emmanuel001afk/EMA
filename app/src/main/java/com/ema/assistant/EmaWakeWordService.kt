@@ -20,7 +20,6 @@ import kotlin.math.max
  * It never uploads audio. Android/OEM restrictions can still stop background capture.
  */
 class EmaWakeWordService : Service() {
-    private val lock = Any()
     @Volatile private var running = false
     private var worker: Thread? = null
     private val engine = EmaWakeWordEngine()
@@ -70,6 +69,7 @@ class EmaWakeWordService : Service() {
             }
             var recorder: AudioRecord? = null
             var wakeDetected = false
+            var failed = false
             try {
                 recorder = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate,
@@ -78,6 +78,7 @@ class EmaWakeWordService : Service() {
                 )
                 if (recorder.state != AudioRecord.STATE_INITIALIZED) {
                     setStatus("microphone_unavailable")
+                    failed = true
                     return@Thread
                 }
                 val chunk = ShortArray(8_000)
@@ -112,14 +113,19 @@ class EmaWakeWordService : Service() {
                 }
             } catch (_: SecurityException) {
                 setStatus("microphone_permission_denied")
+                failed = true
             } catch (_: IllegalStateException) {
                 setStatus("microphone_interrupted")
+                failed = true
             } finally {
                 try { recorder?.stop() } catch (_: Exception) {}
                 recorder?.release()
                 if (wakeDetected) {
                     setStatus("wake_detected")
                     sendBroadcast(Intent(ACTION_WAKE_DETECTED).setPackage(packageName))
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                } else if (failed) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 } else if (running) setStatus("stopped")
@@ -161,7 +167,7 @@ class EmaWakeWordService : Service() {
             else @Suppress("DEPRECATION") Notification.Builder(this)
         return builder.setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("EMA wake-word detection")
-            .setContentText("Listening locally for Hey EMA • tap Stop in EMA to disable")
+            .setContentText("EMA is listening locally for Hey EMA")
             .setOngoing(true).build()
     }
 
