@@ -9,6 +9,10 @@ package com.ema.assistant
  *  - aliases   "when I say portal I mean Acme Staff Portal": a bounded,
  *              explicit way to teach EMA the names of private apps and people
  *  - defaults  "use Telegram for messages", "use YouTube for videos"
+ *  - shortcuts "when I say for me it means open Phormi": a trigger phrase mapped
+ *              either to an installed app (package name + label) or to a whole
+ *              command. Shortcuts are applied by every routing layer; they are
+ *              never substituted inside message bodies, queries or reminders.
  *
  * This is the only on-device adaptation EMA performs, and it happens only when
  * the user explicitly asks. Short-term state (the active result list) lives in
@@ -18,7 +22,9 @@ package com.ema.assistant
 data class EmaMemory(
     val facts: Map<String, String> = emptyMap(),
     val aliases: Map<String, String> = emptyMap(),
-    val defaults: Map<String, String> = emptyMap()
+    val defaults: Map<String, String> = emptyMap(),
+    /** Normalised trigger -> target. See [EmaShortcuts]. */
+    val shortcuts: Map<String, EmaShortcuts.Target> = emptyMap()
 ) {
     sealed class Op {
         data class Remember(val key: String, val value: String, val display: String) : Op()
@@ -27,13 +33,21 @@ data class EmaMemory(
         object ForgetAll : Op()
         object ListAll : Op()
         data class Alias(val spoken: String, val meaning: String) : Op()
+        /** A spoken definition; resolved against installed apps by [apply]. */
+        data class Shortcut(val definition: EmaShortcuts.Definition) : Op()
         data class SetDefault(val kind: String, val app: String) : Op()
         data class Refused(val reason: String) : Op()
     }
 
-    data class Applied(val memory: EmaMemory, val reply: String)
+    data class Applied(
+        val memory: EmaMemory,
+        val reply: String,
+        /** Set when the definition matched several apps and needs an answer. */
+        val pendingShortcut: EmaShortcuts.Definition? = null,
+        val candidateApps: List<String> = emptyList()
+    )
 
-    fun apply(op: Op): Applied? = when (op) {
+    fun apply(op: Op, installedApps: List<EmaAppResolver.App> = emptyList()): Applied? = when (op) {
         is Op.Remember -> {
             if (facts.size >= MAX_FACTS && op.key !in facts) Applied(this, "My memory is full ($MAX_FACTS items). Ask me to forget something first.")
             else Applied(copy(facts = facts + (op.key to op.value)), "OK, I'll remember that ${op.display}.")
@@ -44,23 +58,113 @@ data class EmaMemory(
             when {
                 k in facts -> Applied(copy(facts = facts - k), "I've forgotten ${possessive(k).replaceFirstChar { it.lowercase() }}.")
                 k in aliases -> Applied(copy(aliases = aliases - k), "I've forgotten what \"$k\" means.")
+                k in shortcuts -> Applied(copy(shortcuts = shortcuts - k), "I've forgotten the shortcut \"$k\".")
                 else -> Applied(this, "I don't have anything saved about $k.")
             }
         }
-        Op.ForgetAll -> Applied(EmaMemory(), "I've cleared everything you asked me to remember, including names you taught me and default apps.")
+        Op.ForgetAll -> Applied(EmaMemory(), "I've cleared everything you asked me to remember, including shortcuts, names you taught me and default apps.")
         Op.ListAll -> Applied(this, describe())
         is Op.Alias -> {
             if (aliases.size >= MAX_ALIASES && op.spoken !in aliases) Applied(this, "I already know $MAX_ALIASES names. Ask me to forget one first.")
             else Applied(copy(aliases = aliases + (op.spoken to op.meaning)), "OK. When you say \"${op.spoken}\", I'll use ${op.meaning}.")
         }
         is Op.SetDefault -> Applied(copy(defaults = defaults + (op.kind to op.app)), "OK. I'll use ${op.app} for ${kindName(op.kind)} when you don't name an app.")
+        is Op.Shortcut -> applyShortcut(op.definition, installedApps)
         is Op.Refused -> Applied(this, op.reason)
     }
 
+    private fun applyShortcut(
+        definition: EmaShortcuts.Definition,
+        installedApps: List<EmaAppResolver.App>
+    ): Applied {
+        val displayTriggers = definition.triggers.filter { it.isNotBlank() }
+        if (displayTriggers.isEmpty()) return Applied(this, "I didn't catch the phrase to remember.")
+        if (SECRET.containsMatchIn(displayTriggers.joinToString(" ")) || SECRET.containsMatchIn(definition.meaning)) {
+            return Applied(this, "I don't store passwords, PINs, codes or card and bank details. Please keep those in a password manager.")
+        }
+        val triggers = displayTriggers.map { EmaShortcuts.normalizeTrigger(it) }.filter { it.isNotBlank() }.distinct()
+        if (triggers.isEmpty()) return Applied(this, "I didn't catch the phrase to remember.")
+        val newKeys = triggers.filter { it !in shortcuts }
+        if (shortcuts.size + newKeys.size > MAX_SHORTCUTS) {
+            return Applied(this, "I already know $MAX_SHORTCUTS shortcuts. Ask me to forget one first.")
+        }
+        return when (val resolution = EmaShortcuts.resolve(definition.meaning, definition.packageSpelling, installedApps)) {
+            is EmaShortcuts.Resolution.Ambiguous -> Applied(
+                this,
+                "More than one installed app matches \"${definition.meaning}\": " +
+                    resolution.apps.joinToString(" or ") { it.label } + ". Which one do you mean?",
+                pendingShortcut = definition,
+                candidateApps = resolution.apps.map { it.label }
+            )
+            is EmaShortcuts.Resolution.App -> withShortcut(
+                displayTriggers,
+                EmaShortcuts.Target.App(resolution.app.packageName, resolution.app.label)
+            )
+            is EmaShortcuts.Resolution.Command ->
+                withShortcut(displayTriggers, EmaShortcuts.Target.Command(resolution.text))
+            is EmaShortcuts.Resolution.Alias -> {
+                var updated = this
+                var reply = ""
+                for (trigger in triggers) {
+                    val applied = updated.apply(Op.Alias(normKey(trigger), resolution.meaning))
+                    if (applied != null) { updated = applied.memory; reply = applied.reply }
+                }
+                Applied(updated, reply)
+            }
+            EmaShortcuts.Resolution.Unresolved -> Applied(
+                this,
+                "I couldn't match \"${definition.meaning}\" to an installed app or a command. " +
+                    "Name the app, for example: it means open Phormi."
+            )
+        }
+    }
+
+    /** Store an already-resolved target. Used after the user answers an ambiguity. */
+    fun withShortcut(triggers: List<String>, target: EmaShortcuts.Target): Applied {
+        val display = triggers.filter { it.isNotBlank() }
+        val keys = display.map { EmaShortcuts.normalizeTrigger(it) }.filter { it.isNotBlank() }.distinct()
+        if (keys.isEmpty()) return Applied(this, "I didn't catch the phrase to remember.")
+        val added = keys.count { it !in shortcuts }
+        if (shortcuts.size + added > MAX_SHORTCUTS) return Applied(this, "I already know $MAX_SHORTCUTS shortcuts. Ask me to forget one first.")
+        return Applied(copy(shortcuts = shortcuts + keys.associateWith { target }), EmaShortcuts.confirmation(display, target))
+    }
+
+    /** The app shortcut for a spoken phrase, if one is stored. */
+    fun appShortcut(phrase: String): EmaShortcuts.Target.App? {
+        val key = EmaShortcuts.normalizeTrigger(phrase)
+        if (key.isBlank()) return null
+        (shortcuts[key] as? EmaShortcuts.Target.App)?.let { return it }
+        val stripped = key.replace(Regex("^(?:my|our|the)\\s+"), "")
+        (shortcuts[stripped] as? EmaShortcuts.Target.App)?.let { return it }
+        // A trigger saved as "my portal" is also reachable by "portal".
+        return shortcuts.entries.firstOrNull { (trigger, target) ->
+            target is EmaShortcuts.Target.App &&
+                trigger.replace(Regex("^(?:my|our|the)\\s+"), "") == stripped
+        }?.value as? EmaShortcuts.Target.App
+    }
+
+    /** Any shortcut (app or command) for this exact phrase. */
+    fun shortcut(phrase: String): EmaShortcuts.Target? {
+        val key = EmaShortcuts.normalizeTrigger(phrase)
+        if (key.isBlank()) return null
+        shortcuts[key]?.let { return it }
+        val stripped = key.replace(Regex("^(?:my|our|the)\\s+"), "")
+        shortcuts[stripped]?.let { return it }
+        return shortcuts.entries.firstOrNull { (trigger, _) ->
+            trigger.replace(Regex("^(?:my|our|the)\\s+"), "") == stripped
+        }?.value
+    }
+
     fun describe(): String {
-        if (facts.isEmpty() && aliases.isEmpty() && defaults.isEmpty()) return "You haven't asked me to remember anything."
+        if (facts.isEmpty() && aliases.isEmpty() && defaults.isEmpty() && shortcuts.isEmpty()) return "You haven't asked me to remember anything."
         val parts = mutableListOf<String>()
         if (facts.isNotEmpty()) parts += "Facts: " + facts.entries.joinToString("; ") { "${it.key}: ${it.value}" } + "."
+        if (shortcuts.isNotEmpty()) parts += "Shortcuts: " + shortcuts.entries.joinToString("; ") { (trigger, target) ->
+            when (target) {
+                is EmaShortcuts.Target.App -> "\"$trigger\" opens ${target.label}"
+                is EmaShortcuts.Target.Command -> "\"$trigger\" runs ${target.text}"
+            }
+        } + "."
         if (aliases.isNotEmpty()) parts += "Names: " + aliases.entries.joinToString("; ") { "\"${it.key}\" means ${it.value}" } + "."
         if (defaults.isNotEmpty()) parts += "Default apps: " + defaults.entries.joinToString("; ") { "${kindName(it.key)}: ${it.value}" } + "."
         return parts.joinToString(" ")
@@ -69,6 +173,9 @@ data class EmaMemory(
     companion object {
         const val MAX_FACTS = 50
         const val MAX_ALIASES = 50
+        const val MAX_SHORTCUTS = 50
+        /** Encoding version stored with the memory. Older payloads still decode. */
+        const val SCHEMA_VERSION = 2
 
         private val SECRET = Regex("\\b(password|passcode|passwd|pin|otp|one[- ]time|cvv|cvc|card number|credit card|debit card|bank account|account number|seed phrase|recovery phrase|private key|security code|bvn|nin|ssn|social security)\\b", RegexOption.IGNORE_CASE)
 
@@ -89,6 +196,11 @@ data class EmaMemory(
             val l = text.lowercase()
             if (Regex("^(?:forget everything|clear (?:your |my )?memory|forget all(?: of)? (?:that|it|my data)?|wipe (?:your |my )?memory|forget what i told you)$").matches(l)) return Op.ForgetAll
             if (Regex("^(?:what do you (?:remember|know)(?: about me)?|show (?:me )?(?:my |your )?memory|what have i (?:asked|told) you to remember)$").matches(l)) return Op.ListAll
+
+            // Spoken definitions, with or without quote marks. Handles
+            // "remember (that) whenever/when/if I say X (or Y) it means ...",
+            // "remember that X means Y" and "when I say X, open Y".
+            EmaShortcuts.parseDefinition(text)?.let { return Op.Shortcut(it) }
 
             Regex("^(?:when i say|if i say)\\s+[\"']?(.+?)[\"']?,?\\s+i mean\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
                 return Op.Alias(normKey(m.groupValues[1]), m.groupValues[2].trim().trim('"', '\''))
@@ -136,22 +248,49 @@ data class EmaMemory(
 
         // --------------------------------------------- simple persistence
 
-        /** Line-based encoding, stable and inspectable; values are escaped. */
+        /**
+         * Line-based encoding, stable and inspectable; values are escaped.
+         *
+         * The first line carries the schema version. Shortcut lines hold the
+         * trigger, the target kind, and the app package + label or the command
+         * text, so a restart cannot lose what the user taught EMA.
+         */
         fun encode(memory: EmaMemory): String = buildString {
+            append("V\t").append(SCHEMA_VERSION).append('\n')
             fun section(tag: String, map: Map<String, String>) = map.forEach { (k, v) -> append(tag).append('\t').append(esc(k)).append('\t').append(esc(v)).append('\n') }
             section("F", memory.facts); section("A", memory.aliases); section("D", memory.defaults)
+            memory.shortcuts.forEach { (trigger, target) ->
+                when (target) {
+                    is EmaShortcuts.Target.App -> append("S\t").append(esc(trigger)).append("\tapp\t")
+                        .append(esc(target.packageName)).append('\t').append(esc(target.label)).append('\n')
+                    is EmaShortcuts.Target.Command -> append("S\t").append(esc(trigger)).append("\tcmd\t")
+                        .append(esc(target.text)).append("\t-\n")
+                }
+            }
         }
 
         fun decode(text: String?): EmaMemory {
             if (text.isNullOrBlank()) return EmaMemory()
             val f = linkedMapOf<String, String>(); val a = linkedMapOf<String, String>(); val d = linkedMapOf<String, String>()
+            val s = linkedMapOf<String, EmaShortcuts.Target>()
             text.lineSequence().forEach { line ->
+                if (line.isBlank()) return@forEach
                 val p = line.split('\t')
+                if (p[0] == "V") return@forEach
+                if (p[0] == "S") {
+                    if (p.size < 5) return@forEach
+                    val trigger = unesc(p[1])
+                    when (p[2]) {
+                        "app" -> s[trigger] = EmaShortcuts.Target.App(unesc(p[3]), unesc(p[4]))
+                        "cmd" -> s[trigger] = EmaShortcuts.Target.Command(unesc(p[3]))
+                    }
+                    return@forEach
+                }
                 if (p.size != 3) return@forEach
                 val k = unesc(p[1]); val v = unesc(p[2])
                 when (p[0]) { "F" -> f[k] = v; "A" -> a[k] = v; "D" -> d[k] = v }
             }
-            return EmaMemory(f, a, d)
+            return EmaMemory(f, a, d, s)
         }
 
         private fun esc(s: String) = s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")

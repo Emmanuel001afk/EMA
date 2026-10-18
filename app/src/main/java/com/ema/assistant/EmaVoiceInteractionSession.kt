@@ -217,7 +217,14 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                     })
                 }
             }
-            override fun onClarification(question: String, options: List<String>) { handler.post { setState("Needs your answer", question) } }
+            override fun onClarification(question: String, options: List<String>) {
+                handler.post {
+                    setState("Needs your answer", question)
+                    // A question the plan is waiting on must be audible, not
+                    // only displayed: "Step 2 done — continue?"
+                    tts?.speak(question, TextToSpeech.QUEUE_FLUSH, null, "ema-question")
+                }
+            }
         }
 
         input = EditText(context).apply {
@@ -492,7 +499,13 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { sr ->
+        val vocabulary = EmaSpeechRecognition.vocabulary(context)
+        val created = EmaSpeechRecognition.createRecognizer(context)
+        if (created == null) {
+            setState("Ready", "No speech recognizer other than EMA is available on this phone.")
+            return
+        }
+        recognizer = created.also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     android.util.Log.i("EMA", "SpeechRecognizer ready; mic session active")
@@ -507,9 +520,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onResults(results: Bundle?) {
-                    val command = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
+                    val command = EmaSpeechRecognition.chooseHypothesis(
+                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
+                        vocabulary
+                    )
                     recognizer?.destroy()
                     recognizer = null
                     if (command.isNullOrBlank()) {
@@ -558,11 +572,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             })
         }
 
-        recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        })
+        recognizer?.startListening(
+            EmaSpeechRecognition.intent(vocabulary, partialResults = true, language = Locale.getDefault())
+        )
     }
 
     private fun restartListeningIfNeeded() {

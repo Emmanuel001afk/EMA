@@ -41,7 +41,9 @@ object EmaSemanticParser {
         /** User-taught names: spoken phrase -> what it means (app label or contact). */
         val aliases: Map<String, String> = emptyMap(),
         /** Preferred app per kind ("video", "music", "messaging"), already validated by the caller. */
-        val defaultApps: Map<String, String> = emptyMap()
+        val defaultApps: Map<String, String> = emptyMap(),
+        /** User-taught triggers -> app or command. Only app targets ground here. */
+        val shortcuts: Map<String, EmaShortcuts.Target> = emptyMap()
     )
 
     enum class Role { RECIPIENT, BODY, APP, LIST }
@@ -192,6 +194,8 @@ object EmaSemanticParser {
         var person: String? = null
         var target: String? = null
         var continuationCue = false
+        /** This frame began a new, explicitly linked clause ("and"/"then"/punct). */
+        var chained = false
         var confidence = 0.9
         val evidence = mutableListOf<String>()
     }
@@ -218,7 +222,15 @@ object EmaSemanticParser {
         val toks = tokenize(corrected)
         if (toks.none { it.isWord }) return Result.NotHandled("no words")
         val ctx = Ctx(corrected, toks, env)
-        val frames = segment(ctx).mapNotNull { range -> parseClause(ctx, range) }
+        val frames = mutableListOf<Frame>()
+        segment(ctx).forEachIndexed { index, range ->
+            parseClause(ctx, range)?.let { frame ->
+                // A separate clause is an explicit step, not a decoration of the
+                // previous one: "open Spotify AND play X" has an open step.
+                frame.chained = index > 0
+                frames += frame
+            }
+        }
         if (frames.isEmpty()) return Result.NotHandled("no clauses")
         return compose(frames, env)
     }
@@ -372,6 +384,12 @@ object EmaSemanticParser {
 
     private fun groundPhrase(phrase: String, env: Env): AppSpan? {
         val key = EmaAppResolver.normalize(phrase)
+        // A user-taught app shortcut is stronger evidence than a fuzzy label.
+        (env.shortcuts[key] as? EmaShortcuts.Target.App)?.let { target ->
+            env.installedApps.firstOrNull { it.packageName == target.packageName }?.let { app ->
+                return AppSpan(app.label, 0)
+            }
+        }
         env.aliases[key]?.let { mapped ->
             val g = EmaAppResolver.ground(mapped, env.installedApps)
             if (g is EmaAppResolver.Grounding.One) return AppSpan(g.app.label, 0)
@@ -936,7 +954,12 @@ object EmaSemanticParser {
                 Act.OPEN -> {
                     if (f.app != null) {
                         currentApp = f.app
-                        val absorbedByNext = f.target == null && next != null && next.act in setOf(Act.SEARCH, Act.FIND, Act.PLAY) &&
+                        // "open YouTube and search X" is one search goal: the
+                        // search step itself opens YouTube. An explicit "open X
+                        // and play Y" keeps its own open step, so the PLAN
+                        // shows the real order and the open is verified first.
+                        val absorbedByNext = f.target == null && next != null &&
+                            next.act in setOf(Act.SEARCH, Act.FIND) &&
                             (next.app == null || next.app.equals(f.app, true)) && !next.pronounObject
                         if (!absorbedByNext) {
                             steps += if (f.target != null) Step(EmaCommand.OpenAppSection(f.app!!, f.target!!))
