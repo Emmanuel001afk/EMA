@@ -765,16 +765,35 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         EmaWakeWordService.pauseForSpeech()
         recognizer?.destroy()
+        recognizer = null
         val vocabulary = EmaSpeechRecognition.vocabulary(this)
-        val created = EmaSpeechRecognition.createRecognizer(this)
+        val created = EmaSpeechRecognition.create(this)
         if (created == null) {
             status.text = "No speech recognizer other than EMA is available on this phone."
             EmaWakeWordService.resumeAfterSession()
             return
         }
-        recognizer = created.also { sr ->
+        startRecognizer(created, vocabulary, retried = false)
+    }
+
+    /**
+     * Listen with one recogniser.
+     *
+     * When the recogniser fails (the language is not available, the service
+     * returns a server error, anything at all), EMA retries the SAME listening
+     * session once with another installed recogniser, so the user does not
+     * have to repeat the request. The kind that worked is remembered and
+     * tried first next time.
+     */
+    private fun startRecognizer(
+        created: EmaSpeechRecognition.Recognizer,
+        vocabulary: ArrayList<String>,
+        retried: Boolean
+    ) {
+        recognizer = created.recognizer.also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onResults(b: Bundle?) {
+                    EmaSpeechRecognition.rememberKind(this@MainActivity, created.kind)
                     val command = EmaSpeechRecognition.chooseHypothesis(
                         b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
                         vocabulary
@@ -794,6 +813,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onError(e: Int) {
+                    val next = EmaRecognizerFallback.next(created.kind, retried)
+                    if (next != null) {
+                        val retry = EmaSpeechRecognition.create(this@MainActivity, next)
+                        if (retry != null) {
+                            android.util.Log.w(
+                                "EMA",
+                                "Speech recogniser ${created.kind} failed (error=$e); retrying the same session with ${retry.kind}"
+                            )
+                            recognizer?.destroy()
+                            recognizer = null
+                            startRecognizer(retry, vocabulary, retried = true)
+                            return
+                        }
+                    }
                     conversation.setState(EmaConversationView.State.READY)
                     status.text = "I couldn't hear that. Try again."
                     recognizer?.destroy()

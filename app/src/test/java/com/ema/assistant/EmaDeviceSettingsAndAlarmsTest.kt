@@ -150,9 +150,62 @@ class EmaAlarmRulesTest {
     }
 
     @Test
-    fun aNamedDayIsARepeatAndADateIsNot() {
+    fun theOwnersAlarmPhrasesAreUnderstood() {
+        // "set an alarm next Monday at 8 pm": one alarm, on that date.
+        val nextMonday = EmaAlarmRequest.parse("set an alarm next Monday at 8 pm", at(10, 10))!!
+        assertNull(nextMonday.days)
+        assertTrue(nextMonday.explicitDate)
+        assertEquals(1, nextMonday.times.size)
+        assertEquals(20, hour(nextMonday.times.single().millis))
+        val weekday = Calendar.getInstance().apply { timeInMillis = nextMonday.times.single().millis }
+            .get(Calendar.DAY_OF_WEEK)
+        assertEquals(Calendar.MONDAY, weekday)
+
+        // "set alarms for 6, 6:30 and 7 am": three alarms, all reported.
+        val three = EmaAlarmRequest.parse("set alarms for 6, 6:30 and 7 am", at(10, 10))!!
+        assertEquals(3, three.times.size)
+        assertEquals(listOf(6, 6, 7), three.times.map { hour(it.millis) })
+
+        // "alarm at 7 am on weekdays": repeats Monday to Friday.
+        val weekdays = EmaAlarmRequest.parse("alarm at 7 am on weekdays", at(10, 10))!!
+        assertEquals(
+            listOf(Calendar.MONDAY, Calendar.TUESDAY, Calendar.WEDNESDAY, Calendar.THURSDAY, Calendar.FRIDAY),
+            weekdays.days
+        )
+        assertFalse(weekdays.explicitDate)
+    }
+
+    @Test
+    fun onceAndOnlyMeanASingleAlarm() {
+        val once = EmaAlarmRequest.parse("set an alarm once at 7 pm", at(10, 10))!!
+        assertNull(once.days)
+        assertFalse(once.explicitDate)
+        assertEquals(1, once.times.size)
+        assertEquals(19, hour(once.times.single().millis))
+
+        val only = EmaAlarmRequest.parse("alarm only at 6 am", at(10, 10))!!
+        assertNull(only.days)
+        assertEquals(6, hour(only.times.single().millis))
+
+        val onceOnly = EmaAlarmRequest.parse("set an alarm once only at 6 am", at(10, 10))!!
+        assertNull(onceOnly.days)
+        assertEquals(1, onceOnly.times.size)
+    }
+
+    @Test
+    fun aNamedDayIsOneTimeAndAnExplicitRepeatIsNot() {
+        // "monday at 7 am" names one date. The clock app has no date field, so
+        // EMA schedules its own exact alarm for that day instead of asking the
+        // clock app to repeat every Monday.
         val monday = EmaAlarmRequest.parse("monday at 7 am", at(10, 10))!!
-        assertEquals(listOf(Calendar.MONDAY), monday.days)
+        assertNull(monday.days)
+        assertTrue(monday.explicitDate)
+        assertEquals(7, hour(monday.times.single().millis))
+
+        // "every monday" is a real repeat and stays with the clock app.
+        val everyMonday = EmaAlarmRequest.parse("every monday at 7 am", at(10, 10))!!
+        assertEquals(listOf(Calendar.MONDAY), everyMonday.days)
+        assertFalse(everyMonday.explicitDate)
 
         val tomorrow = EmaAlarmRequest.parse("tomorrow at 7", at(10, 10))!!
         assertNull(tomorrow.days)

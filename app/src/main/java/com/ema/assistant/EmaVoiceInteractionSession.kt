@@ -499,13 +499,31 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         recognizer?.destroy()
+        recognizer = null
         val vocabulary = EmaSpeechRecognition.vocabulary(context)
-        val created = EmaSpeechRecognition.createRecognizer(context)
+        val created = EmaSpeechRecognition.create(context)
         if (created == null) {
             setState("Ready", "No speech recognizer other than EMA is available on this phone.")
             return
         }
-        recognizer = created.also { sr ->
+        startRecognizer(created, vocabulary, retried = false)
+    }
+
+    /**
+     * Listen with one recogniser.
+     *
+     * When it fails - the language is not available, the service returns a
+     * server or network error, anything at all - EMA retries the SAME
+     * listening session once with another installed recogniser, so the user
+     * does not have to say the request again. The kind that worked is
+     * remembered and tried first next time.
+     */
+    private fun startRecognizer(
+        created: EmaSpeechRecognition.Recognizer,
+        vocabulary: ArrayList<String>,
+        retried: Boolean
+    ) {
+        recognizer = created.recognizer.also { sr ->
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     android.util.Log.i("EMA", "SpeechRecognizer ready; mic session active")
@@ -520,6 +538,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 }
 
                 override fun onResults(results: Bundle?) {
+                    EmaSpeechRecognition.rememberKind(context, created.kind)
                     val command = EmaSpeechRecognition.chooseHypothesis(
                         results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
                         vocabulary
@@ -549,6 +568,20 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
                 override fun onError(error: Int) {
                     android.util.Log.w("EMA", "SpeechRecognizer error=$error")
+                    val next = EmaRecognizerFallback.next(created.kind, retried)
+                    if (next != null) {
+                        val retry = EmaSpeechRecognition.create(context, next)
+                        if (retry != null) {
+                            android.util.Log.w(
+                                "EMA",
+                                "Speech recogniser ${created.kind} failed (error=$error); retrying the same session with ${retry.kind}"
+                            )
+                            recognizer?.destroy()
+                            recognizer = null
+                            startRecognizer(retry, vocabulary, retried = true)
+                            return
+                        }
+                    }
                     recognizer?.destroy()
                     recognizer = null
                     if (sessionVisible) {

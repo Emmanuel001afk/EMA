@@ -98,13 +98,22 @@ object EmaShortcuts {
         }
     }
 
-    /** Remove a trailing "package spelling ..." clause from a definition. */
+    /**
+     * Remove a trailing "package spelling ..." clause from a definition.
+     *
+     * The clause arrives in many shapes - "package spelling: P H O R M I",
+     * "(package spelling: P H O R M I)", "and the package name is com.phormi" -
+     * so brackets, colons and commas are all accepted. The rest of the
+     * meaning is kept as it was, because that is what says *what* the shortcut
+     * does ("open the Phormi app").
+     */
     fun splitPackageClause(meaning: String): Pair<String, String?> {
         val match = Regex(
-            "(?i)(?:[,;]\\s*(?:and\\s+)?(?:the\\s+)?package\\s*(?:name)?\\s*|\\s+package\\s+(?:name\\s+)?(?:spelling|spelt|spelled|is)\\s*)(?:is|spelling|spelt|spelled|called)?\\s*[:\\-]?\\s*(.+)$"
+            "(?i)(?:[,;]\\s*|\\s+|[(\\[{]\\s*)?(?:and\\s+)?(?:the\\s+)?\\bpackage\\s*(?:name)?\\s*" +
+                "(?:spelling|spelt|spelled|is|called)?\\s*[:\\-]?\\s*(.+?)\\s*[)\\]}]?\\s*$"
         ).find(meaning) ?: return meaning.trim() to null
-        val prefix = meaning.substring(0, match.range.first).trim().trimEnd(',', ';', ':')
-        val spelling = spelledPackage(match.groupValues[1])
+        val prefix = meaning.substring(0, match.range.first).trim().trimEnd(',', ';', ':', '(', '[', '{')
+        val spelling = spelledPackage(match.groupValues[1].trim())
         return prefix to spelling
     }
 

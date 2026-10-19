@@ -69,3 +69,8 @@ task:YouTube:football	play Despacito on Spotify	PLAY[Spotify|Despacito]
 -	tell me a joke	NOT_HANDLED
 -	what is 15% of 2400	NOT_HANDLED
 -	set an alarm for 7 am	NOT_HANDLED
+# --- the owner's own acceptance phrases (verbatim), guarded from now on
+-	open Spotify and play Calm Down	OPEN[Spotify] | PLAY[Spotify|Calm Down]
+-	open WhatsApp and send hi to John	OPEN[WhatsApp] | LEGACY[send hi to John]
+-	send John a message saying increase the brightness	MSG[-|John|increase the brightness]
+-	open Spotify and play the Offline Backup playlist	OPEN[Spotify] | PLAY[Spotify|the Offline Backup playlist]

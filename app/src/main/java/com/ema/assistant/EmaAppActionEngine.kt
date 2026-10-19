@@ -138,6 +138,26 @@ class EmaAppActionEngine(private val context: Context) {
         return AppTarget(app.label, app.packageName)
     }
 
+    /**
+     * Launch an installed application by its exact package name.
+     *
+     * Stored shortcuts identify an app by package, not by label: two apps can
+     * share a label ("Browser"), and re-resolving a label can open the wrong
+     * one. The package is the identity the user taught EMA.
+     */
+    fun openPackage(packageName: String): AppTarget? {
+        val installed = installedApps().firstOrNull { it.packageName == packageName } ?: return null
+        val launch = pm.getLaunchIntentForPackage(packageName) ?: return null
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching {
+            context.startActivity(launch)
+            AppTarget(installed.label, installed.packageName)
+        }.getOrElse {
+            android.util.Log.e("EMA", "Could not launch " + installed.label, it)
+            null
+        }
+    }
+
     fun openApp(name: String): AppTarget? {
         val wanted = name.trim()
         if (EmaAppResolver.normalize(wanted) in setOf("browser", "default browser", "web browser", "default web browser", "internet")) {
@@ -166,37 +186,31 @@ class EmaAppActionEngine(private val context: Context) {
     }
 
     /**
-     * Evidence that a launched package really reached the foreground and the
-     * screen stopped changing (about 600 ms stable), bounded at 8 s.
+     * Wait for a launched package to reach the foreground.
      *
      * "startActivity returned" is not evidence: the next plan step used to run
-     * while the app was still on its cold-start splash. When accessibility is
-     * unavailable this returns false, and callers must report the action as
-     * unverified rather than claiming it opened.
+     * while the app was still on its cold-start splash. But the opposite
+     * mistake is just as bad: requiring the screen to stop changing made
+     * working tasks fail on phones whose screen never settles (a chat list, a
+     * feed, a progress bar). Arrival in the foreground is what counts; the
+     * screen settling is best effort.
+     *
+     * The result is therefore a three-way answer, not a boolean:
+     *  - [EmaAppArrival.ARRIVED_SETTLED] the app is in front and calm,
+     *  - [EmaAppArrival.ARRIVED_BUSY] the app is in front but still moving, or
+     *    EMA cannot watch the screen because screen control is off,
+     *  - [EmaAppArrival.NOT_ARRIVED] the app never came to the foreground.
      */
-    fun awaitForeground(target: AppTarget, timeoutMs: Long = 8_000L, done: (Boolean) -> Unit) {
-        if (!EmaAccessibilityService.isConnected()) {
-            done(false)
-            return
-        }
-        val stabilityBudget = 1_500L
-        val foregroundBudget = (timeoutMs - stabilityBudget).coerceAtLeast(1_000L)
-        waiter.until(
-            timeoutMs = foregroundBudget,
-            pollMs = 150L,
-            probe = { EmaAccessibilityService.foregroundPackage() == target.packageName }
-        ) { arrived ->
-            if (!arrived) {
-                done(false)
-                return@until
-            }
-            waiter.untilStable(
-                timeoutMs = stabilityBudget,
-                pollMs = 150L,
-                stableMs = 600L,
-                sample = { EmaAccessibilityService.currentScreenText(1200) }
-            ) { stable -> done(stable) }
-        }
+    fun awaitForeground(target: AppTarget, done: (EmaAppArrival) -> Unit) {
+        EmaForegroundWait.await(
+            waiter = waiter,
+            targetPackage = target.packageName,
+            foregroundPackage = {
+                if (EmaAccessibilityService.isConnected()) EmaAccessibilityService.foregroundPackage() else null
+            },
+            screenText = { EmaAccessibilityService.currentScreenText(1200) },
+            done = done
+        )
     }
 
     // ----------------------------------------------------------------- media
@@ -249,7 +263,16 @@ class EmaAppActionEngine(private val context: Context) {
                     // that the intent was accepted.
                     waiter.until(4_000, pollMs = 300, probe = { playbackConfirmed(target, query) }) { playing ->
                         if (playing) done(true, "Playing $query in $appName.")
-                        else searchAndPlay(target, appName, query, unavailable, done)
+                        else if (unavailable != null) {
+                            // The app was opened and asked to play. EMA cannot
+                            // watch the screen or the media session, so it says
+                            // exactly that instead of calling the whole thing a
+                            // failure.
+                            done(
+                                false,
+                                "I opened $appName and asked it to play $query, but I could not confirm it started because EMA screen control is off."
+                            )
+                        } else searchAndPlay(target, appName, query, unavailable, done)
                     }
                     return
                 }
@@ -274,7 +297,7 @@ class EmaAppActionEngine(private val context: Context) {
             val opened = openApp(target.label) != null
             done(
                 false,
-                if (opened) "I opened $appName, but $unavailable"
+                if (opened) "I opened $appName, but $unavailable, so I did not start \"$query\"."
                 else "I couldn't open $appName. $unavailable"
             )
             return
@@ -288,8 +311,9 @@ class EmaAppActionEngine(private val context: Context) {
 
         // Wait for the app to be in front of the user before touching its UI;
         // fixed sleeps raced Spotify's cold start and typed into the launcher.
-        awaitForeground(target) { inFront ->
-            if (!inFront) {
+        // A screen that never settles is fine: the search itself is the proof.
+        awaitForeground(target) { arrival ->
+            if (arrival == EmaAppArrival.NOT_ARRIVED) {
                 done(false, "I opened $appName, but it did not come to the foreground in time.")
                 return@awaitForeground
             }
@@ -434,8 +458,9 @@ class EmaAppActionEngine(private val context: Context) {
 
         // Patience: wait for the app to actually be in front of the user before
         // touching its UI. A fixed 800 ms was a guess and broke cold starts.
-        awaitForeground(target) { `inFront` ->
-            if (!`inFront`) {
+        // A screen that keeps moving is not a failure: the search is the proof.
+        awaitForeground(target) { arrival ->
+            if (arrival == EmaAppArrival.NOT_ARRIVED) {
                 done(false, "I opened " + target.label + ", but it did not come to the foreground in time.")
                 return@awaitForeground
             }

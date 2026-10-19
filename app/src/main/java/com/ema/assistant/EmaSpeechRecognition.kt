@@ -72,16 +72,48 @@ object EmaSpeechRecognition {
      * An explicit-component recogniser, or null when the phone has no
      * recognition service other than EMA. Never falls back to the default.
      */
-    fun createRecognizer(context: Context): SpeechRecognizer? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val onDevice = runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
-                .getOrDefault(false)
-            if (onDevice) {
-                runCatching {
-                    SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                }.getOrNull()?.let { return it }
-            }
+    fun createRecognizer(context: Context): SpeechRecognizer? = create(context)?.recognizer
+
+    /** A recogniser together with the kind it is, so EMA can fall back. */
+    data class Recognizer(val recognizer: SpeechRecognizer, val kind: EmaRecognizerKind)
+
+    /**
+     * Create a recogniser, preferring the kind that worked last time.
+     *
+     * The on-device recogniser is tried first unless a previous session proved
+     * that another one works better on this phone. When the preferred kind
+     * cannot even be created, the other one is used: a recogniser that does
+     * not exist must not stop the user from speaking to EMA.
+     */
+    fun create(context: Context, preferred: EmaRecognizerKind? = preferredKind(context)): Recognizer? {
+        val order = when (preferred) {
+            EmaRecognizerKind.EXTERNAL -> listOf(EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.ON_DEVICE)
+            else -> listOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL)
         }
+        for (kind in order) {
+            val recognizer = when (kind) {
+                EmaRecognizerKind.ON_DEVICE -> onDeviceRecognizer(context)
+                EmaRecognizerKind.EXTERNAL -> externalRecognizer(context)
+            }
+            if (recognizer != null) return Recognizer(recognizer, kind)
+        }
+        return null
+    }
+
+    /** The on-device recogniser, or null when this phone has none. */
+    fun onDeviceRecognizer(context: Context): SpeechRecognizer? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        val available = runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }
+            .getOrDefault(false)
+        if (!available) return null
+        return runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }.getOrNull()
+    }
+
+    /**
+     * Another installed recognition service, addressed by its explicit
+     * component name. EMA's own service is never one of them.
+     */
+    fun externalRecognizer(context: Context): SpeechRecognizer? {
         val candidates = runCatching {
             context.packageManager.queryIntentServices(
                 Intent(android.speech.RecognitionService.SERVICE_INTERFACE), 0
@@ -100,4 +132,23 @@ object EmaSpeechRecognition {
         }
         return null
     }
+
+    /** The kind of recogniser that worked last time on this phone. */
+    fun preferredKind(context: Context): EmaRecognizerKind? {
+        val stored = runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECOGNIZER, null)
+        }.getOrNull() ?: return null
+        return runCatching { EmaRecognizerKind.valueOf(stored) }.getOrNull()
+    }
+
+    /** Remember the kind that worked, so the next request starts with it. */
+    fun rememberKind(context: Context, kind: EmaRecognizerKind) {
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_RECOGNIZER, kind.name).apply()
+        }
+    }
+
+    private const val PREFS = "ema_speech"
+    private const val KEY_RECOGNIZER = "recognizer_kind"
 }
