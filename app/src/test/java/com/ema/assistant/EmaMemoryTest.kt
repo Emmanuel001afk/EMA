@@ -43,6 +43,26 @@ class EmaMemoryTest {
         assertEquals(EmaMemory(), run(m, "forget everything")!!.memory)
     }
 
+    @Test fun teachesAndAppliesSurfaceFormEquivalenceSafely() {
+        val operation = EmaMemory.parse("mommy is the same as mummy")
+        assertTrue(operation is EmaMemory.Op.Synonym)
+        val memory = EmaMemory().apply(operation!!)!!.memory
+        assertEquals("call mummy", EmaLexicon.applyLearnedAliases("call mommy", memory.aliases))
+        assertEquals("call mummy", EmaLexicon.applyLearnedAliases("call mummy", memory.aliases))
+        val message = "send Ada a message saying mommy is coming"
+        assertEquals(message, EmaLexicon.applyLearnedAliases(message, memory.aliases))
+    }
+
+    @Test fun forgetWhatITaughtAboutAnAliasParsesToItsKey() {
+        assertEquals(EmaMemory.Op.Forget("mommy"), EmaMemory.parse("forget what you taught me about mommy"))
+    }
+
+    @Test fun appCategoriesIncludeCommonSurfaceForms() {
+        assertEquals("browser", EmaLexicon.appKindFor("for me browser"))
+        assertEquals("camera", EmaLexicon.appKindFor("photo gallery"))
+        assertEquals("files", EmaLexicon.appKindFor("file manager"))
+    }
+
     @Test fun boundedSize() {
         var m = EmaMemory()
         for (i in 1..EmaMemory.MAX_FACTS) m = run(m, "remember my item$i is thing$i")!!.memory

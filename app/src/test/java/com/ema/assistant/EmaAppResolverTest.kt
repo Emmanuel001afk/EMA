@@ -23,6 +23,7 @@ class EmaAppResolverTest {
         EmaAppResolver.App("Messenger", "com.facebook.orca"),
         EmaAppResolver.App("Telegram", "org.telegram.messenger"),
         EmaAppResolver.App("Chrome", "com.android.chrome"),
+        EmaAppResolver.App("Opera Browser", "com.opera.browser"),
         EmaAppResolver.App("Gmail", "com.google.android.gm"),
         EmaAppResolver.App("Messages", "com.google.android.apps.messaging"),
         EmaAppResolver.App("Phone", "com.google.android.dialer"),
@@ -84,8 +85,14 @@ class EmaAppResolverTest {
     }
 
     @Test
-    fun browserAliasPrefersAnInstalledBrowser() {
-        assertEquals("com.android.chrome", resolve("browser")?.app?.packageName)
+    fun browserCategoryPrefersAnInstalledBrowserLabelOverChrome() {
+        assertEquals("com.opera.browser", resolve("browser")?.app?.packageName)
+    }
+
+    @Test
+    fun browserDoesNotAssumeChromeWhenNoBrowserLabelMatches() {
+        val nonBrowserApps = installed.filterNot { it.packageName == "com.opera.browser" }
+        assertNull(EmaAppResolver.resolve("browser", nonBrowserApps))
     }
 
     @Test

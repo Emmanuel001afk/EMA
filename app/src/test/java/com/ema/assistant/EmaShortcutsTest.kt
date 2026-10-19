@@ -142,6 +142,20 @@ class EmaShortcutsTest {
     }
 
     @Test
+    fun taughtAppCategoryAlsoBecomesItsOwnerPreferredGenericTarget() {
+        val applied = remember("remember that when I say for me browser it means open Phormi")
+        assertEquals("com.phormi.app", (applied.memory.shortcuts["for me browser"] as EmaShortcuts.Target.App).packageName)
+        assertEquals("Phormi", applied.memory.defaults["browser"])
+    }
+
+    @Test
+    fun forgettingAnAppCategoryShortcutClearsItsDerivedDefault() {
+        val saved = remember("remember that when I say for me browser it means open Phormi").memory
+        val forgotten = saved.apply(EmaMemory.Op.Forget("for me browser"))!!.memory
+        assertEquals(emptyMap<String, String>(), forgotten.defaults)
+    }
+
+    @Test
     fun appShortcutIsFoundByTriggerAndWithoutLeadingMy() {
         val memory = remember("remember that my portal means open the Phormi app").memory
         assertEquals("com.phormi.app", memory.appShortcut("my portal")?.packageName)

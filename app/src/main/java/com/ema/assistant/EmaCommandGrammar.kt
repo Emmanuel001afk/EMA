@@ -531,8 +531,12 @@ object EmaCommandGrammar {
         if (rest.isBlank()) return null
 
         var sim: Int? = null
-        Regex("""(?i)\s+(?:with|on|using)\s+(?:sim|slot|line)\s*([12])\s*$""").find(rest)?.let { m ->
-            sim = m.groupValues[1].toIntOrNull()
+        Regex("""(?i)\s+(?:with|on|using)\s+(?:(?:sim|slot|line)\s*([12])|(?:the\s+)?(first|1st|second|2nd)\s+sim)\s*$""").find(rest)?.let { m ->
+            sim = m.groupValues[1].toIntOrNull() ?: when (m.groupValues[2].lowercase()) {
+                "first", "1st" -> 1
+                "second", "2nd" -> 2
+                else -> null
+            }
             rest = rest.substring(0, m.range.first).trim()
         }
         rest = rest

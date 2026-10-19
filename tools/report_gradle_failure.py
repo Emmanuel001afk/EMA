@@ -3,6 +3,7 @@
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -24,8 +25,26 @@ def failure_excerpt(text: str) -> str:
     return "\n".join(dict.fromkeys(selected))[:12000]
 
 
+def test_failure_excerpt(results_dir: Path = Path("app/build/test-results/testDebugUnitTest")) -> str:
+    failures = []
+    for report in results_dir.glob("TEST-*.xml"):
+        try:
+            suite = ET.parse(report).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for case in suite.iter("testcase"):
+            failure = next((node for node in case if node.tag in {"failure", "error"}), None)
+            if failure is not None:
+                detail = (failure.attrib.get("message") or failure.text or "").strip()
+                failures.append(f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}: {detail}")
+    return "\n".join(failures)[:8000]
+
+
 def report(path: Path) -> None:
     excerpt = failure_excerpt(path.read_text(errors="replace"))
+    tests = test_failure_excerpt()
+    if tests:
+        excerpt += "\nFailed unit tests:\n" + tests
     escaped = excerpt.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
     # One annotation preserves the useful cause under GitHub's per-step limit.
     print(f"::error title=Gradle build failure::{escaped}")

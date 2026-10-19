@@ -44,6 +44,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private var micMode = "automatic"
     private var processingCommand = false
     private var speakingResponse = false
+    private var bargeInInterrupted = false
+    private var bargeInMonitor: EmaBargeInMonitor? = null
     private var commandGeneration = 0L
     private var commandWatchdog: Runnable? = null
     private val commandRouter: EmaCommandRouter by lazy { EmaCommandRouter(context) { tts } }
@@ -63,6 +65,16 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
         fun currentScreenScreenshotCopy(): Bitmap? =
             activeSession?.screenScreenshot?.copy(Bitmap.Config.ARGB_8888, false)
+
+        /** Consume the current assist screenshot for one OCR pass, then discard the retained copies. */
+        fun consumeScreenScreenshot(): Bitmap? {
+            val session = activeSession ?: return null
+            val result = session.screenScreenshot?.copy(Bitmap.Config.ARGB_8888, false)
+            session.screenScreenshot?.recycle()
+            session.screenScreenshot = null
+            EmaAccessibilityService.updateAssistantScreenshot(null)
+            return result
+        }
 
         fun currentAssistText(): String =
             activeSession?.screenText.orEmpty()
@@ -352,10 +364,16 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 tts?.let { EmaVoiceSetup.apply(context, it) }
                 tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
-                        handler.post { speakingResponse = true }
+                        handler.post {
+                            bargeInInterrupted = false
+                            speakingResponse = true
+                            startBargeInMonitor()
+                        }
                     }
                     override fun onDone(utteranceId: String?) {
                         handler.post {
+                            stopBargeInMonitor()
+                            if (bargeInInterrupted) { bargeInInterrupted = false; return@post }
                             if (!sessionVisible) return@post
                             speakingResponse = false
                             if (wakeInvocation) {
@@ -375,6 +393,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                     }
                     override fun onError(utteranceId: String?) {
                         handler.post {
+                            stopBargeInMonitor()
+                            if (bargeInInterrupted) { bargeInInterrupted = false; return@post }
                             if (!sessionVisible) return@post
                             speakingResponse = false
                             if (wakeInvocation) {
@@ -389,6 +409,30 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 })
             }
         }
+    }
+
+    private fun startBargeInMonitor() {
+        stopBargeInMonitor()
+        val monitor = EmaBargeInMonitor(context) {
+            handler.post {
+                if (!sessionVisible || !speakingResponse) return@post
+                android.util.Log.i("EMA", "Enrolled owner speech detected during TTS; interrupting")
+                bargeInInterrupted = true
+                tts?.stop()
+                stopBargeInMonitor()
+                speakingResponse = false
+                setState("Listening", "I'm listening…")
+                // Let AudioRecord release its mic before SpeechRecognizer opens it.
+                handler.postDelayed({ if (sessionVisible) startListening(force = true) }, 150L)
+            }
+        }
+        bargeInMonitor = monitor
+        monitor.start()
+    }
+
+    private fun stopBargeInMonitor() {
+        bargeInMonitor?.stop()
+        bargeInMonitor = null
     }
 
     private fun execute(command: String, guesses: List<String> = emptyList()) {
@@ -484,16 +528,16 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         scheduleSessionTimeout()
     }
 
-    private fun startListening() {
+    private fun startListening(force: Boolean = false) {
         if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
             setState("Phone locked", "Tap Unlock securely to continue. EMA cannot bypass your lock.")
             return
         }
         if (EmaWakeWordService.isRunning() && EmaWakeWordService.isCapturing()) {
-            handler.postDelayed({ if (sessionVisible) startListening() }, 100)
+            handler.postDelayed({ if (sessionVisible) startListening(force) }, 100)
             return
         }
-        if (!sessionVisible || (micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
+        if (!sessionVisible || (!force && micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED) {
             setState("Ready", "Microphone permission is required for voice.")
@@ -572,19 +616,21 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
                 override fun onError(error: Int) {
                     android.util.Log.w("EMA", "SpeechRecognizer error=$error")
-                    val next = EmaRecognizerFallback.next(created.kind, retried)
-                    if (next != null) {
-                        val retry = EmaSpeechRecognition.create(context, next)
-                        if (retry != null) {
-                            android.util.Log.w(
-                                "EMA",
-                                "Speech recogniser ${created.kind} failed (error=$error); retrying the same session with ${retry.kind}"
-                            )
-                            recognizer?.destroy()
-                            recognizer = null
-                            startRecognizer(retry, vocabulary, retried = true)
-                            return
-                        }
+                    val retry = when {
+                        retried && created.kind == EmaRecognizerKind.EXTERNAL -> EmaSpeechRecognition.offlineRecognizer(context)
+                            ?.let { EmaSpeechRecognition.Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
+                        !retried -> EmaSpeechRecognition.nextAfterFailure(context, created.kind)
+                        else -> null
+                    }
+                    if (retry != null) {
+                        android.util.Log.w(
+                            "EMA",
+                            "Speech recogniser ${created.kind} failed (error=$error); retrying the same session with ${retry.kind}"
+                        )
+                        recognizer?.destroy()
+                        recognizer = null
+                        startRecognizer(retry, vocabulary, retried = true)
+                        return
                     }
                     recognizer?.destroy()
                     recognizer = null
@@ -610,7 +656,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         recognizer?.startListening(
-            EmaSpeechRecognition.intent(vocabulary, partialResults = true, language = Locale.getDefault())
+            EmaSpeechRecognition.intent(vocabulary, partialResults = true, language = Locale.getDefault(), kind = created.kind)
         )
     }
 
@@ -725,6 +771,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
     override fun onHide() {
         sessionVisible = false
+        stopBargeInMonitor()
         recognizer?.destroy()
         recognizer = null
         tts?.stop()
@@ -734,6 +781,9 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         commandGeneration++
         speakingResponse = false
         processingCommand = false
+        screenScreenshot?.recycle()
+        screenScreenshot = null
+        EmaAccessibilityService.updateAssistantScreenshot(null)
         if (activeSession === this) activeSession = null
         EmaWakeWordService.resumeAfterSession()
         super.onHide()
@@ -741,6 +791,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
     override fun onDestroy() {
         sessionVisible = false
+        stopBargeInMonitor()
         recognizer?.destroy()
         recognizer = null
         tts?.shutdown()

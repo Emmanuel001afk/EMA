@@ -95,7 +95,7 @@ object EmaKnowledge {
         if (!expr.any { it.isDigit() } || !expr.any { it in "+-*/^√!" } && !expr.contains("sqrt")) return null
         val value = runCatching { Parser(expr).parse() }.getOrNull() ?: return null
         if (value.isNaN()) return "That calculation has no real answer."
-        if (value.isInfinite()) return "That is undefined, for example a division by zero."
+        if (value.isInfinite()) return "That result is undefined."
         return "${pretty(s)} = ${fmt(value)}."
     }
 

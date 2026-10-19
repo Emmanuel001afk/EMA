@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import java.util.Locale
 
 /**
  * Speech input that is aware of what the user has taught EMA.
@@ -57,10 +58,15 @@ object EmaSpeechRecognition {
     }
 
     /** Recognition intent with several results, and biasing where Android supports it. */
-    fun intent(vocabulary: List<String>, partialResults: Boolean, language: java.util.Locale): Intent =
-        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    fun intent(
+        vocabulary: List<String>,
+        partialResults: Boolean,
+        language: java.util.Locale,
+        kind: EmaRecognizerKind? = null
+    ): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            if (kind == EmaRecognizerKind.VOSK_OFFLINE) putExtra(EmaRecognitionService.EXTRA_FORCE_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             if (partialResults) putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             if (Build.VERSION.SDK_INT >= 33 && vocabulary.isNotEmpty()) {
@@ -72,7 +78,8 @@ object EmaSpeechRecognition {
      * An explicit-component recogniser, or null when the phone has no
      * recognition service other than EMA. Never falls back to the default.
      */
-    fun createRecognizer(context: Context): SpeechRecognizer? = create(context)?.recognizer
+    fun createRecognizer(context: Context): SpeechRecognizer? =
+        onDeviceRecognizer(context) ?: externalRecognizer(context)
 
     /** A recogniser together with the kind it is, so EMA can fall back. */
     data class Recognizer(val recognizer: SpeechRecognizer, val kind: EmaRecognizerKind)
@@ -87,13 +94,15 @@ object EmaSpeechRecognition {
      */
     fun create(context: Context, preferred: EmaRecognizerKind? = preferredKind(context)): Recognizer? {
         val order = when (preferred) {
-            EmaRecognizerKind.EXTERNAL -> listOf(EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.ON_DEVICE)
-            else -> listOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL)
+            EmaRecognizerKind.EXTERNAL -> listOf(EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.VOSK_OFFLINE)
+            EmaRecognizerKind.VOSK_OFFLINE -> listOf(EmaRecognizerKind.VOSK_OFFLINE, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL)
+            else -> listOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.VOSK_OFFLINE)
         }
         for (kind in order) {
             val recognizer = when (kind) {
                 EmaRecognizerKind.ON_DEVICE -> onDeviceRecognizer(context)
                 EmaRecognizerKind.EXTERNAL -> externalRecognizer(context)
+                EmaRecognizerKind.VOSK_OFFLINE -> offlineRecognizer(context)
             }
             if (recognizer != null) return Recognizer(recognizer, kind)
         }
@@ -133,16 +142,59 @@ object EmaSpeechRecognition {
         return null
     }
 
+    /**
+     * The optional Vosk command backend. It is English-only, user-enabled, and
+     * refused on low-memory phones or while the background Vosk wake service
+     * owns a model, avoiding a second large model load.
+     */
+    fun offlineRecognizer(context: Context): SpeechRecognizer? {
+        if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_OFFLINE_ENABLED, false)) return null
+        if (!Locale.getDefault().language.equals("en", ignoreCase = true)) return null
+        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) return null
+        if (EmaWakeWordService.isRunning()) return null
+        val manager = context.getSystemService(android.app.ActivityManager::class.java) ?: return null
+        if (manager.isLowRamDevice) return null
+        val memory = android.app.ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memory)
+        if (memory.availMem < MIN_OFFLINE_MEMORY_BYTES) return null
+        val component = ComponentName(context, EmaRecognitionService::class.java)
+        return runCatching { SpeechRecognizer.createSpeechRecognizer(context, component) }.getOrNull()
+    }
+
+    fun isOfflineEnabled(context: Context): Boolean = runCatching {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_OFFLINE_ENABLED, false)
+    }.getOrDefault(false)
+
+    fun setOfflineEnabled(context: Context, enabled: Boolean) {
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_OFFLINE_ENABLED, enabled).apply()
+        }
+    }
+
+    /** The next distinct backend after a failure; never returns the same backend. */
+    fun nextAfterFailure(context: Context, current: EmaRecognizerKind): Recognizer? {
+        val next = when (current) {
+            EmaRecognizerKind.ON_DEVICE -> externalRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.EXTERNAL) }
+                ?: offlineRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
+            EmaRecognizerKind.EXTERNAL -> offlineRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
+            EmaRecognizerKind.VOSK_OFFLINE -> null
+        }
+        return next
+    }
+
     /** The kind of recogniser that worked last time on this phone. */
     fun preferredKind(context: Context): EmaRecognizerKind? {
         val stored = runCatching {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECOGNIZER, null)
         }.getOrNull() ?: return null
-        return runCatching { EmaRecognizerKind.valueOf(stored) }.getOrNull()
+        return runCatching { EmaRecognizerKind.valueOf(stored) }
+            .getOrNull()?.takeUnless { it == EmaRecognizerKind.VOSK_OFFLINE }
     }
 
     /** Remember the kind that worked, so the next request starts with it. */
     fun rememberKind(context: Context, kind: EmaRecognizerKind) {
+        if (kind == EmaRecognizerKind.VOSK_OFFLINE) return
         runCatching {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_RECOGNIZER, kind.name).apply()
@@ -151,4 +203,6 @@ object EmaSpeechRecognition {
 
     private const val PREFS = "ema_speech"
     private const val KEY_RECOGNIZER = "recognizer_kind"
+    private const val KEY_OFFLINE_ENABLED = "offline_command_stt_enabled"
+    private const val MIN_OFFLINE_MEMORY_BYTES = 220L * 1024L * 1024L
 }

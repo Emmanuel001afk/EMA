@@ -58,7 +58,11 @@ object ContactLookup {
     }
 
     private fun collapse(value: String): String =
-        value.trim().lowercase().replace(Regex("\\s+"), " ")
+        value.trim().lowercase()
+            // Small built-in family-name equivalences help before any owner
+            // teaching; installed contact names are still the only candidates.
+            .replace(Regex("\\bmommy\\b"), "mummy")
+            .replace(Regex("\\s+"), " ")
 
     /** Contacts with any data row (phone or email), used for messaging. */
     fun find(context: Context, query: String): List<Contact> {
@@ -157,6 +161,14 @@ object ContactLookup {
         val bestRank = candidates.minOf { it.rank }
         return candidates.filter { it.rank == bestRank }
             .distinctBy { it.displayName.lowercase() to (it.phone ?: it.email) }
+    }
+
+    /** Select a unique phone match by trailing digits; ambiguity remains null. */
+    fun endingWith(candidates: List<Contact>, digits: String): Contact? {
+        val wanted = digits.filter(Char::isDigit)
+        if (wanted.isBlank()) return null
+        return candidates.filter { it.phone.orEmpty().filter(Char::isDigit).endsWith(wanted) }
+            .singleOrNull()
     }
 
     /**

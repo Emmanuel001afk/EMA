@@ -54,6 +54,33 @@ class EmaLexiconTest {
     }
 
     @Test
+    fun builtInSynonymsAreAppliedOnlyOutsideFreeText() {
+        assertEquals("call mummy", EmaLexicon.applyMishearings("call mommy"))
+        assertEquals("open browser", EmaLexicon.applyMishearings("open web browser"))
+        assertEquals("search for mommy blogs", EmaLexicon.applyMishearings("search for mommy blogs"))
+        val compoundMessage = "on WhatsApp, message Daniel saying what's up"
+        assertEquals(compoundMessage, EmaLexicon.applyMishearings(compoundMessage))
+        assertEquals(compoundMessage, EmaLexicon.applyLearnedAliases(compoundMessage, mapOf("what's up" to "whatsapp")))
+    }
+
+    @Test
+    fun taughtPhraseMappingsChainBeforeParsingWithoutChangingContent() {
+        assertEquals("open PHORMI", EmaLexicon.applyLearnedAliases(
+            "open for me browser",
+            linkedMapOf("for me browser" to "PHORMI", "phormi" to "Phormi")
+        ))
+        val message = "send Ada a message saying mommy is home"
+        assertEquals(message, EmaLexicon.applyLearnedAliases(message, mapOf("mommy" to "mummy")))
+        assertEquals("open WhatsApp and message Ada saying mommy is home", EmaLexicon.applyLearnedAliases(
+            "open whats app and message Ada saying mommy is home",
+            mapOf("whats app" to "WhatsApp", "mommy" to "mummy")
+        ))
+        assertEquals("search for mommy blogs", EmaLexicon.applyLearnedAliases(
+            "search for mommy blogs", mapOf("mommy" to "mummy")
+        ))
+    }
+
+    @Test
     fun aMishearingIsNeverCorrectedInsideFreeText() {
         val body = "send John a message saying spot if i is my favourite song"
         assertEquals(body, EmaLexicon.applyMishearings(body, inFreeText = true))
@@ -62,8 +89,8 @@ class EmaLexiconTest {
     @Test
     fun anUnknownRequestGetsTheClosestThingEmaCanDo() {
         val suggestions = EmaLexicon.suggestionsFor("play some music on my phone")
-        assertTrue("expected a suggestion, got $suggestions", suggestions.isNotEmpty())
-        assertTrue(suggestions.first().contains("play", ignoreCase = true))
+        assertTrue("expected a concise capability hint, got $suggestions", suggestions.isNotEmpty())
+        assertTrue(suggestions.first().contains("installed apps", ignoreCase = true))
     }
 
     @Test

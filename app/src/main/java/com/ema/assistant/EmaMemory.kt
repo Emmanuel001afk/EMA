@@ -33,6 +33,8 @@ data class EmaMemory(
         object ForgetAll : Op()
         object ListAll : Op()
         data class Alias(val spoken: String, val meaning: String) : Op()
+        /** A surface-form equivalence ("X is the same as Y"), stored toward Y as its canonical form. */
+        data class Synonym(val first: String, val second: String) : Op()
         /** A spoken definition; resolved against installed apps by [apply]. */
         data class Shortcut(val definition: EmaShortcuts.Definition) : Op()
         data class SetDefault(val kind: String, val app: String) : Op()
@@ -58,7 +60,16 @@ data class EmaMemory(
             when {
                 k in facts -> Applied(copy(facts = facts - k), "I've forgotten ${possessive(k).replaceFirstChar { it.lowercase() }}.")
                 k in aliases -> Applied(copy(aliases = aliases - k), "I've forgotten what \"$k\" means.")
-                k in shortcuts -> Applied(copy(shortcuts = shortcuts - k), "I've forgotten the shortcut \"$k\".")
+                k in shortcuts -> {
+                    val shortcut = shortcuts[k]
+                    val category = EmaLexicon.appKindIn(k)
+                    val anotherTrigger = category != null && shortcuts.any { (trigger, target) ->
+                        trigger != k && EmaLexicon.appKindIn(trigger) == category && target == shortcut
+                    }
+                    val removeDefault = shortcut is EmaShortcuts.Target.App && category != null &&
+                        defaults[category] == shortcut.label && !anotherTrigger
+                    Applied(copy(shortcuts = shortcuts - k, defaults = if (removeDefault) defaults - category!! else defaults), "I've forgotten the shortcut \"$k\".")
+                }
                 else -> Applied(this, "I don't have anything saved about $k.")
             }
         }
@@ -67,6 +78,14 @@ data class EmaMemory(
         is Op.Alias -> {
             if (aliases.size >= MAX_ALIASES && op.spoken !in aliases) Applied(this, "I already know $MAX_ALIASES names. Ask me to forget one first.")
             else Applied(copy(aliases = aliases + (op.spoken to op.meaning)), "OK. When you say \"${op.spoken}\", I'll use ${op.meaning}.")
+        }
+        is Op.Synonym -> {
+            val left = normKey(op.first)
+            val right = normKey(op.second)
+            if (left.isBlank() || right.isBlank()) Applied(this, "I didn't catch both words to link.")
+            else if (SECRET.containsMatchIn(left) || SECRET.containsMatchIn(right)) Applied(this, "I don't store passwords, PINs, codes or card and bank details. Please keep those in a password manager.")
+            else if (aliases.size + (if (left !in aliases) 1 else 0) > MAX_ALIASES) Applied(this, "I already know $MAX_ALIASES names. Ask me to forget one first.")
+            else Applied(copy(aliases = aliases + (left to right)), "OK. I'll treat \"${op.first.trim()}\" as another way to say \"${op.second.trim()}\".")
         }
         is Op.SetDefault -> Applied(copy(defaults = defaults + (op.kind to op.app)), "OK. I'll use ${op.app} for ${kindName(op.kind)} when you don't name an app.")
         is Op.Shortcut -> applyShortcut(op.definition, installedApps)
@@ -96,10 +115,17 @@ data class EmaMemory(
                 pendingShortcut = definition,
                 candidateApps = resolution.apps.map { it.label }
             )
-            is EmaShortcuts.Resolution.App -> withShortcut(
-                displayTriggers,
-                EmaShortcuts.Target.App(resolution.app.packageName, resolution.app.label)
-            )
+            is EmaShortcuts.Resolution.App -> {
+                val applied = withShortcut(
+                    displayTriggers,
+                    EmaShortcuts.Target.App(resolution.app.packageName, resolution.app.label)
+                )
+                val category = displayTriggers.firstNotNullOfOrNull(EmaLexicon::appKindIn)
+                if (category == null) applied else applied.copy(
+                    memory = applied.memory.copy(defaults = applied.memory.defaults + (category to resolution.app.label)),
+                    reply = applied.reply + " I will prefer it for $category requests too."
+                )
+            }
             is EmaShortcuts.Resolution.Command ->
                 withShortcut(displayTriggers, EmaShortcuts.Target.Command(resolution.text))
             is EmaShortcuts.Resolution.Alias -> {
@@ -114,7 +140,7 @@ data class EmaMemory(
             EmaShortcuts.Resolution.Unresolved -> Applied(
                 this,
                 "I couldn't match \"${definition.meaning}\" to an installed app or a command. " +
-                    "Name the app, for example: it means open Phormi."
+                    "Name the installed app or describe the action you want this phrase to mean."
             )
         }
     }
@@ -202,6 +228,13 @@ data class EmaMemory(
             // "remember that X means Y" and "when I say X, open Y".
             EmaShortcuts.parseDefinition(text)?.let { return Op.Shortcut(it) }
 
+            Regex("^(?:remember\\s+(?:that\\s+)?)?(.+?)\\s+is the same as\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
+                return Op.Synonym(m.groupValues[1].trim().trim('"', '\''), m.groupValues[2].trim().trim('"', '\''))
+            }
+            Regex("^(?:remember\\s+(?:that\\s+)?)?(.+?)\\s+and\\s+(.+?)\\s+are the same(?: thing)?$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
+                return Op.Synonym(m.groupValues[1].trim().trim('"', '\''), m.groupValues[2].trim().trim('"', '\''))
+            }
+
             Regex("^(?:when i say|if i say)\\s+[\"']?(.+?)[\"']?,?\\s+i mean\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
                 return Op.Alias(normKey(m.groupValues[1]), m.groupValues[2].trim().trim('"', '\''))
             }
@@ -230,6 +263,9 @@ data class EmaMemory(
             }
             Regex("^(?:what(?:'s| is| are)|who(?:'s| is| are)|where(?:'s| is)|when(?:'s| is)|do you remember|tell me)\\s+my\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
                 return Op.Recall(normKey(m.groupValues[1]))
+            }
+            Regex("^forget\\s+what\\s+(?:i taught you|you taught me)\\s+about\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
+                return Op.Forget(normKey(m.groupValues[1]))
             }
             Regex("^forget\\s+(?:about\\s+)?(?:my\\s+|that\\s+|what\\s+)?[\"']?(.+?)[\"']?(?:\\s+means)?$", RegexOption.IGNORE_CASE).find(text)?.let { m ->
                 val key = normKey(m.groupValues[1])

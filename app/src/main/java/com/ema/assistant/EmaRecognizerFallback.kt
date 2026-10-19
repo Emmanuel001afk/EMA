@@ -6,23 +6,19 @@ enum class EmaRecognizerKind {
     ON_DEVICE,
 
     /** Another installed recognition service, addressed by component name. */
-    EXTERNAL
+    EXTERNAL,
+
+    /** Optional EMA-managed Vosk engine using the bundled local English model. */
+    VOSK_OFFLINE
 }
 
 /**
- * The recogniser fallback rule.
+ * Legacy pure-platform fallback rule kept for unit tests and older call sites.
+ * The runtime chooser in [EmaSpeechRecognition] additionally considers the
+ * optional EMA-managed local Vosk backend, which is user-enabled and separately
+ * guarded by locale, permissions and memory checks.
  *
- * The on-device recogniser is preferred because it works without a network,
- * but it fails in ways the phone never explains well: the language is not
- * available, the model is not supported, the service returns a server or
- * network error. When that happens EMA retries the *same* listening session
- * once with another installed recogniser, addressed by its explicit component
- * name, so the user does not have to speak again.
- *
- * EMA's own recognition service is never used: it would make EMA talk to
- * itself.
- *
- * Pure Kotlin, so the rule is unit tested without a phone.
+ * Pure Kotlin, so this platform-only rule is unit tested without a phone.
  */
 object EmaRecognizerFallback {
 
@@ -38,7 +34,7 @@ object EmaRecognizerFallback {
             EmaRecognizerKind.ON_DEVICE -> EmaRecognizerKind.EXTERNAL
             // An external recogniser that failed is the end of the line: the
             // user is told, and the next request starts a fresh session.
-            EmaRecognizerKind.EXTERNAL -> null
+            EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.VOSK_OFFLINE -> null
         }
     }
 }

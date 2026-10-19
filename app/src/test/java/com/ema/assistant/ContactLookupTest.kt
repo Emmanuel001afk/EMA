@@ -29,6 +29,12 @@ class ContactLookupTest {
     }
 
     @Test
+    fun commonMommyAndMummyFormsAreEquivalent() {
+        assertEquals(0, rank("Mummy", "mommy"))
+        assertEquals(0, rank("Mommy", "mummy"))
+    }
+
+    @Test
     fun singleNameMatchesAWordOfTheContact() {
         assertEquals(1, rank("Ada Lovelace", "ada"))
         assertEquals(1, rank("Ada Lovelace", "lovelace"))
@@ -111,6 +117,18 @@ class ContactLookupTest {
             contact("ada lovelace", phone = "111", r = 0)
         )
         assertEquals(1, ContactLookup.best(candidates).size)
+    }
+
+    @Test
+    fun lastDigitsSelectOneContactAndNeverGuessOnATie() {
+        val options = listOf(
+            contact("Mummy", phone = "+234 801 234 5670", r = 0),
+            contact("Mummy", phone = "+234 802 111 1170", r = 0),
+            contact("Mummy", phone = "+234 803 222 1234", r = 0)
+        )
+        assertEquals("+234 803 222 1234", ContactLookup.endingWith(options, "1234")?.phone)
+        assertEquals(null, ContactLookup.endingWith(options, "70"))
+        assertEquals(null, ContactLookup.endingWith(options, ""))
     }
 
     @Test

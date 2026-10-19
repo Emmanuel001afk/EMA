@@ -91,18 +91,31 @@ class EmaAppActionEngine(private val context: Context) {
         // "for me" must open the app the user mapped to it, without replacing
         // the same words inside a message body or a query (only name slots
         // reach this function).
-        EmaMemoryStore.load(context).appShortcut(wanted)?.let { shortcut ->
+        val memory = EmaMemoryStore.load(context)
+        memory.appShortcut(wanted)?.let { shortcut ->
             val installed = installedApps().firstOrNull { it.packageName == shortcut.packageName }
                 ?: return null // Uninstalled: never silently open a different app.
             return AppTarget(installed.label, installed.packageName)
         }
 
-        // Browsers are addressed by role, not by label, on every device.
-        if (EmaAppResolver.normalize(wanted) in setOf("browser", "default browser", "web browser", "default web browser", "internet")) {
-            defaultBrowserTarget()?.let { return it }
+        val kind = EmaLexicon.appKindFor(wanted)
+        val apps = installedApps()
+        if (kind != null) {
+            // Priority: explicit owner teaching, recent/frequent owner usage,
+            // then actual installed app matches. A stale preference is ignored
+            // rather than redirected to a different package.
+            val explicit = memory.defaults[kind] ?: when (kind) {
+                "message" -> memory.defaults["messaging"] ?: memory.defaults["text"]
+                "media" -> memory.defaults["music"] ?: memory.defaults["video"]
+                else -> null
+            }
+            resolveInstalledPreference(explicit, apps)?.let { return it }
+            val learned = runCatching { EmaLearningStore.model(context).preferredApp(kind) }.getOrNull()
+            resolveInstalledPreference(learned, apps)?.let { return it }
         }
 
-        val match = EmaAppResolver.resolve(wanted, installedApps())
+        val match = EmaAppResolver.resolve(wanted, apps)
+            ?: kind?.let { EmaAppResolver.resolve(categoryReference(it), apps) }
         if (match != null) return AppTarget(match.app.label, match.app.packageName)
 
         // Last resort: the legacy substring scan, kept so an unusual launcher
@@ -117,12 +130,43 @@ class EmaAppActionEngine(private val context: Context) {
         val fallback = candidates.firstOrNull {
             val label = it.activityInfo?.applicationInfo?.loadLabel(pm)?.toString().orEmpty()
             label.isNotBlank() && EmaAppResolver.normalize(label).contains(normalized)
-        } ?: return null
-        val activityInfo = fallback.activityInfo ?: return null
-        return AppTarget(
-            label = activityInfo.applicationInfo?.loadLabel(pm)?.toString().orEmpty(),
-            packageName = activityInfo.packageName
-        )
+        }
+        if (fallback != null) {
+            val activityInfo = fallback.activityInfo ?: return null
+            return AppTarget(
+                label = activityInfo.applicationInfo?.loadLabel(pm)?.toString().orEmpty(),
+                packageName = activityInfo.packageName
+            )
+        }
+
+        // System/default browser is intentionally last: installed and taught
+        // owner choices must not be displaced by a platform default.
+        if (kind == "browser" || EmaAppResolver.normalize(wanted) in setOf("browser", "web browser", "default browser", "default web browser", "internet")) {
+            return defaultBrowserTarget()
+        }
+        return null
+    }
+
+    private fun categoryReference(kind: String): String = when (kind) {
+        "media" -> "music"
+        "message" -> "messages"
+        "call" -> "phone"
+        "browser" -> "browser"
+        "camera" -> "gallery"
+        "files" -> "files"
+        "notes" -> "notes"
+        "maps" -> "maps"
+        else -> kind
+    }
+
+    private fun resolveInstalledPreference(reference: String?, apps: List<EmaAppResolver.App>): AppTarget? {
+        if (reference.isNullOrBlank()) return null
+        val exact = apps.firstOrNull {
+            it.packageName.equals(reference, ignoreCase = true) ||
+                EmaAppResolver.normalize(it.label) == EmaAppResolver.normalize(reference)
+        }
+        val app = exact ?: EmaAppResolver.resolve(reference, apps)?.app ?: return null
+        return AppTarget(app.label, app.packageName)
     }
 
     private fun defaultBrowserTarget(): AppTarget? {
