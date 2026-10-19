@@ -82,7 +82,7 @@ object EmaLexicon {
         Intent(
             "device-setting",
             setOf("turn", "switch", "enable", "disable", "activate", "deactivate", "increase",
-                "raise", "lower", "decrease", "dim", "brighten", "darken", "set", "put", "make", "boost"),
+                "raise", "lower", "decrease", "dim", "brighten", "darken", "set", "make", "boost"),
             "increase brightness to maximum"
         ),
         Intent(
@@ -107,9 +107,15 @@ object EmaLexicon {
         )
     )
 
-    /** The verb groups that lead a request, in the order they are matched. */
+    /**
+     * The verb groups that lead a request.
+     *
+     * A word that fits more than one group ("start" fits opening an app and
+     * playing media) belongs to the first group that claims it, and the groups
+     * are ordered from the most specific to the most general.
+     */
     private val VERB_TO_INTENT: Map<String, Intent> = buildMap {
-        for (intent in INTENTS) for (verb in intent.verbs) put(verb, intent)
+        for (intent in INTENTS) for (verb in intent.verbs) putIfAbsent(verb, intent)
     }
 
     fun intentForVerb(verb: String): Intent? = VERB_TO_INTENT[verb.lowercase()]
@@ -132,9 +138,28 @@ object EmaLexicon {
         "wifi" to setOf("wifi", "wi fi", "wi-fi", "wireless", "wireless network", "internet"),
         "bluetooth" to setOf("bluetooth", "bt"),
         "flashlight" to setOf("flashlight", "torch", "light"),
-        "screen" to setOf("screen", "display"),
-        "dnd-silent" to setOf("silent")
+        "screen" to setOf("screen", "display")
     )
+
+    /**
+     * The kinds of app a request can point at, with the words that name the
+     * kind instead of an app. "play my playlist" names a kind, not an app.
+     */
+    val APP_KINDS: Map<String, Set<String>> = linkedMapOf(
+        "media" to setOf("music", "song", "songs", "playlist", "playlists", "podcast", "podcasts", "audio", "album"),
+        "message" to setOf("message", "messages", "chat", "chats", "text", "texts", "sms"),
+        "call" to setOf("call", "calls", "phone", "dialer", "contacts"),
+        "browser" to setOf("browser", "web", "internet", "google"),
+        "camera" to setOf("camera", "photo", "photos"),
+        "maps" to setOf("maps", "map", "navigation", "directions")
+    )
+
+    /** The kind a word names, or null. */
+    fun appKindFor(word: String): String? {
+        val clean = word.trim().lowercase()
+        for ((kind, words) in APP_KINDS) if (clean in words) return kind
+        return null
+    }
 
     /** The canonical id for a phrase, or null when it names nothing known. */
     fun canonicalTarget(phrase: String): String? {
@@ -167,10 +192,10 @@ object EmaLexicon {
     val MIN_WORDS = setOf("minimum", "min", "lowest", "dimmest", "all the way down")
 
     /** Verbs that raise a value. */
-    val INCREASE_WORDS = setOf("increase", "raise", "turn up", "bump up", "brighter", "higher", "up")
+    val INCREASE_WORDS = setOf("increase", "raise", "turn up", "bump up", "brighter", "louder", "higher", "up", "boost")
 
     /** Verbs that lower a value. */
-    val DECREASE_WORDS = setOf("decrease", "lower", "turn down", "dim", "darker", "down")
+    val DECREASE_WORDS = setOf("decrease", "lower", "turn down", "dim", "darker", "quieter", "down")
 
     /** Verbs that switch something on. */
     val ON_WORDS = setOf("turn on", "switch on", "enable", "activate", "on")
@@ -268,19 +293,58 @@ object EmaLexicon {
         "play spot" to "play spotify"
     )
 
+    /** The words that open the content of a message, a search or a reminder. */
+    private val CONTENT_MARKER = Regex("(?i)\\b(?:that says|saying|to say|which says|that reads)\\b")
+
+    /**
+     * True when the request carries content the owner wrote: the body of a
+     * message, a search or a reminder.
+     *
+     * Content is never a command. A setting, a shortcut or a learned link
+     * must not fire inside it.
+     */
+    fun isContentCommand(command: String): Boolean {
+        val verb = firstVerb(command) ?: return false
+        return intentForVerb(verb)?.id in setOf("send-message", "search", "reminder")
+    }
+
+    /**
+     * The content of a request: the body of a message, a search or a
+     * reminder. Null when the request has none.
+     */
+    fun contentOf(command: String): String? {
+        if (!isContentCommand(command)) return null
+        val match = CONTENT_MARKER.find(command) ?: return null
+        return command.substring(match.range.last + 1).trim().ifBlank { null }
+    }
+
+    /**
+     * The command without the content body.
+     *
+     * "send John a message saying hi" becomes "send John a message saying",
+     * so a parser can work on the command and never on the content.
+     */
+    fun withoutContent(command: String): String {
+        if (!isContentCommand(command)) return command
+        val match = CONTENT_MARKER.find(command) ?: return command
+        return command.substring(0, match.range.last + 1).trim()
+    }
+
     /**
      * Replace a misheard phrase with the word EMA meant. Only whole phrases
      * are replaced, and never inside a message body, a query or a reminder.
      */
     fun applyMishearings(text: String, inFreeText: Boolean = false): String {
         if (inFreeText) return text
-        var out = text
+        val head = withoutContent(text)
+        val content = text.substring(head.length)
+        var out = head
         for ((heard, meant) in MISHEARINGS) {
             if (out.lowercase().contains(heard)) {
                 out = out.replace(Regex("(?i)\\b" + Regex.escape(heard) + "\\b"), meant)
             }
         }
-        return out
+        return out + content
     }
 
     // -------------------------------------------------------- suggestions

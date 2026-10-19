@@ -366,6 +366,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(voiceSection)
         refreshVoiceUi()
 
+        addVoiceProfileSection(root)
+
         addMemorySection(root)
 
         val registration = EmaAssistantRegistration.current(
@@ -549,6 +551,67 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             text = "Higher-quality voices can be downloaded for free in Android's text-to-speech settings (Install voice data). EMA only lists voices the engine reports as installed."
             textSize = 13f
         })
+    }
+
+    /**
+     * The personal voice check for the wake word.
+     *
+     * The owner says "Hey EMA" eight times and EMA keeps the shape of their
+     * own voice, so a television saying "Hey EMA" no longer wakes the phone.
+     * Everything stays on the phone.
+     */
+    private fun addVoiceProfileSection(root: LinearLayout) {
+        root.addView(TextView(this).apply {
+            text = "My voice for \"Hey EMA\""
+            textSize = 16f
+            setPadding(0, dp(16), 0, dp(2))
+        })
+        root.addView(TextView(this).apply {
+            text = "Teach EMA your voice and it will check the sound of a wake word against your own, " +
+                "so a television or a passer-by saying \"Hey EMA\" no longer wakes the phone. " +
+                "The samples stay on this phone. Without a profile EMA uses the decoder alone, exactly as before."
+            textSize = 13f
+        })
+        val profileStatus = TextView(this).apply { textSize = 13f }
+        root.addView(profileStatus)
+        fun refreshProfileStatus() {
+            profileStatus.text = EmaVoiceTemplateStore.statusText(this@MainActivity)
+        }
+        refreshProfileStatus()
+        val profileRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        profileRow.addView(Button(this).apply {
+            text = "Teach EMA my voice"
+            isAllCaps = false
+            setOnClickListener {
+                if (EmaVoiceEnrollmentEngine.isRunning()) {
+                    status.text = "I am already learning your voice."
+                    return@setOnClickListener
+                }
+                status.text = "Say \"Hey EMA\" eight times, starting now."
+                EmaVoiceEnrollmentEngine.start(this@MainActivity, { prompt ->
+                    runOnUiThread { status.text = prompt }
+                }, { stored ->
+                    runOnUiThread {
+                        status.text = if (stored) {
+                            "I have learned your voice."
+                        } else {
+                            "I could not finish learning your voice. Try again when the phone is quiet."
+                        }
+                        refreshProfileStatus()
+                    }
+                })
+            }
+        })
+        profileRow.addView(Button(this).apply {
+            text = "Forget my voice"
+            isAllCaps = false
+            setOnClickListener {
+                EmaVoiceTemplateStore.clear(this@MainActivity)
+                refreshProfileStatus()
+                status.text = "I have forgotten your voice."
+            }
+        })
+        root.addView(profileRow)
     }
 
     /** What EMA remembers and the opt-in "not understood" list, both fully under the user's control. */

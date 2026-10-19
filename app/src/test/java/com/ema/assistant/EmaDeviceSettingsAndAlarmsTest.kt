@@ -80,7 +80,12 @@ class EmaDeviceSettingParserTest {
     fun doesNotHijackUnrelatedCommands() {
         assertNull(parse("turn on the flashlight"))
         assertNull(parse("open wifi settings"))
-        assertNull(parse("increase the volume"))
+        // The volume is a device setting too, and it is handled by the same
+        // parser, so "increase the volume" is no longer a stranger.
+        assertEquals(
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.VOLUME,
+            parse("increase the volume")?.kind
+        )
         assertNull(parse("play silent night"))
         assertNull(parse("open settings"))
     }

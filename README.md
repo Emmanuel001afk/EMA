@@ -283,6 +283,22 @@ The repository's JVM regression tests cover shorthand planning, message evidence
 and wake-gate transitions; app UI behavior still requires the device checks above.
 
 
+## Diagnostics and learning (on the phone)
+
+- **Copy last runs** (Setup & preferences, next to the learning log) copies the
+  last 20 requests: what EMA heard, which layer answered, every plan step with
+  its outcome and message, the timings, the foreground package samples and
+  whether screen control was on. The recognised text is cut to 40 characters
+  and anything that looks like a secret is withheld. "EMA, why did that fail?"
+  reads the last failing step out loud.
+- EMA remembers what the owner teaches it: the "remember" shortcuts, and a
+  small learning layer on top (corrections such as "no, I meant X", a
+  rephrase after a failure, a misheard word, and which app the owner really
+  uses). A link is used only after a confirmation or a second sighting, never
+  inside the text of a message, a search or a reminder, and "Forget what you
+  learned" clears it without touching the remembered shortcuts. Everything
+  stays on the phone.
+
 ## Screen-off Hey EMA service
 
 **Implemented but not yet device-certified.** A dedicated microphone foreground
@@ -291,6 +307,26 @@ It is not Android SpeechRecognizer in a retry loop and sends no idle audio to a
 server. Once triggered, it releases AudioRecord before the assistant starts
 normal speech recognition and native command execution. The command recognizer
 may still use Android's configured network speech provider.
+
+### The personal voice check (optional, on the phone)
+
+EMA can learn the owner's own "Hey EMA" so that a television saying "Hey EMA"
+no longer wakes the phone. In Setup & preferences, **Teach EMA my voice** (or
+the voice command "EMA, learn my voice") asks for eight repetitions. The
+samples stay in the app's private storage; nothing is uploaded and no account
+is needed.
+
+- Without a profile, the wake word behaves exactly as before: the decoder
+  alone decides.
+- With a profile, the decoder only makes a **candidate** and a second stage
+  compares the sound with the owner's own recording (MFCC features, dynamic
+  time warping). A candidate that does not fit is thrown away.
+- The threshold is measured from the owner's own samples, not guessed. A
+  candidate that was thrown away, and a wake the owner rejects with "not you",
+  are learned as negative examples and raise the threshold.
+- `docs/WAKE_WORD.md` has the on-phone checklist: hits per 10 tries and false
+  wakes per hour of television, before and after the enrollment. **Those
+  numbers are not known yet** - they have to be measured on the phone.
 
 ### Setup — no extra app or model import
 

@@ -111,6 +111,52 @@ and cannot recurse, and it is never applied inside a message body, search query
 or reminder text. The store is written synchronously (`commit()`) after each
 change, and reopens with a schema version.
 
+## The local learning layer (on the phone, bounded, explainable)
+
+The shortcuts above are what the owner asks EMA to remember. On top of that
+there is a small learning layer (`EmaLearning`, `EmaLearningStore`) that
+changes what EMA does with what the owner says:
+
+- a **correction** ("no, I meant X") links what was said to what was meant;
+- a **rephrase** after a failure links the failed request to the way the owner
+  said it next;
+- a **mishearing** links a phrase the recogniser got wrong to the wording it
+  offered instead;
+- **usage preferences** remember which app the owner really uses for media,
+  messages, calls and searches, so "play my playlist" points at that app.
+
+The rules that keep this honest:
+
+- a link is used only after the owner confirmed it **once**, or after it was
+  seen **twice**. One guess never changes what EMA does.
+- a link is never used inside the content of a message, a search or a
+  reminder: what the owner wrote is content, not a command.
+- when two candidates are close, EMA **asks** ("Did you mean X or Y?") instead
+  of choosing.
+- nothing that looks like a secret (password, code, card number) is stored.
+- "Forget what you learned" clears these links and leaves the "remember"
+  shortcuts alone.
+- "What have you learned?" answers with a spoken summary.
+- the list is bounded (30 links) and everything stays on the phone.
+
+The order of the layers is fixed: **remember** (the taught shortcuts) first,
+then the **learned** links, then the **lexicon** (the built-in dictionary),
+then the **fuzzy** fallback that grounds a request against the apps that are
+really installed.
+
+## The run trace (what happened, on the phone)
+
+Every request leaves a short record (`EmaRunTrace`, `EmaRunTraceStore`): the
+text EMA heard and the other guesses the recogniser offered, which layer
+answered, the plan steps, the outcome and the message of every step, the
+timings, the foreground package samples and whether screen control was on.
+
+- At most 20 runs are kept, on the phone, in plain text.
+- The recognised text and every message are cut to 40 characters, and
+  anything that looks like a secret is withheld.
+- "Copy last runs" (Setup & preferences, next to the learning log) puts them
+  on the clipboard; "EMA, why did that fail?" reads the last one out loud.
+
 ## Multi-step requests and instruction clauses
 
 Instruction clauses are plan options, not steps:
@@ -196,8 +242,10 @@ These are implemented but cannot be proven in the repository's JVM tests:
 
 ## Improving understanding: the development-time loop
 
-EMA does **not** learn or retrain itself on the phone. Improvement is a
-deliberate, testable process:
+EMA does not retrain itself on the phone: it never rewrites its own
+understanding rules. What it can do is remember what the owner told it (the
+learning layer above), and the rules themselves are improved by a deliberate,
+testable process:
 
 1. **Collect.** In Settings, turn on "Keep requests EMA didn't understand". The
    list stays on the phone, holds at most 30 entries, is off by default and can

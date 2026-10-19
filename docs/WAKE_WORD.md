@@ -90,6 +90,63 @@ rejects longer words such as "Emmanuel" and "emailed".
 
 Test: `phraseGateAcceptsBothSpellingsAndStripsWakeWords`.
 
+## Two stages: the decoder makes a candidate, the owner decides
+
+The decoder answers *what* was said, never *who* said it. "Hey Emma" from a
+television is the same words as "Hey EMA" from the owner, so one stage can
+never be both sensitive enough and quiet enough. The wake word now has two
+stages:
+
+```
+AudioRecord (16 kHz mono, 50 ms frames)
+  -> EmaWakeAudioGate     cheap energy gate: only voice-like windows reach the decoder
+  -> Vosk Recognizer      restricted grammar (EmaWakeDetector.grammarJson())
+  -> EmaWakeDetector      stage 1: a lenient candidate
+  -> EmaVoiceFeatures     stage 2: MFCCs of the sound around the candidate
+  -> EmaVoiceVerifier     stage 2: DTW against the owner's own samples
+  -> activate()           opens the assistant session (or a notification fallback)
+```
+
+**Stage 1 (lenient).** When the owner has enrolled their voice, one partial
+result is enough to make a candidate. A missed wake word is worse than a false
+candidate, because stage 2 can throw the false one away. Without an enrolled
+voice the old rule applies unchanged (a partial must show the phrase twice), so
+a phone that never enrolled behaves exactly as before.
+
+**Stage 2 (the personal check).** The sound around the candidate is turned into
+MFCCs (`EmaVoiceFeatures`: pre-emphasis, framing, a mel filterbank, a DCT; the
+loudness coefficient is dropped so the same words at another volume still
+match). The candidate is compared with the owner's own recorded "Hey EMA" using
+dynamic time warping (`EmaDtw`), because two recordings of the same words never
+line up frame by frame.
+
+The threshold is **measured, not guessed**: the owner's own samples are
+compared with each other and the threshold is a little above that distance
+(`EmaVoiceVerifier.CALIBRATION_FACTOR`). A different voice is much further
+away, so it does not pass. Because the threshold is a factor of a measured
+distance, it works whatever the microphone and the room sound like.
+
+### Teaching EMA the owner's voice
+
+* In Setup & preferences: **Teach EMA my voice** (and **Forget my voice**).
+* By voice: "EMA, learn my voice" (or "teach EMA my voice").
+* The owner says "Hey EMA" eight times. Each round records until the sound has
+  stopped, so the template holds the words and not the room around them. Every
+  sample is kept (not only their average), because the threshold is measured
+  from how far the owner's own samples are from each other.
+* The samples stay in the app's private storage and never leave the phone.
+
+### Learning after the enrollment
+
+* A wake that was followed by a real command is a **positive** example.
+* A candidate that the personal check threw away, and a wake the owner
+  rejects with "not you", are **negative** examples.
+* A negative raises the threshold (`noteNegative`, bounded by
+  `EmaVoiceVerifier.MAX_OFFSET`).
+* The template list is bounded (`EmaVoiceVerifier.MAX_TEMPLATES`, 30). When it
+  is full, the template that fits the others least well is replaced: an
+  outlier teaches the verifier less than a typical sample does.
+
 ## Lifecycle (reviewed, unchanged)
 
 - The service starts only from a visible activity. That is required on Android
@@ -127,7 +184,48 @@ following still need a physical device:
 - detection rate;
 - false-trigger rate;
 - screen-off behaviour;
-- battery drain.
+- battery drain;
+- whether the measured threshold separates the owner from a television on a
+  real phone (the rules are unit tested with synthetic features, not with a
+  real voice).
+
+No claim is made here about how well this works on a phone. The numbers below
+are the ones to write down when the phone is in hand.
+
+## On-phone checklist (a phone is required)
+
+Run this on the phone that will be used. Write the numbers down: they are the
+only honest answer about the wake word.
+
+**Before the enrollment (the decoder alone)**
+
+1. Quiet room, 1 m: say "Hey EMA" ten times, counting how many wake the
+   phone. Write down *hits per 10 tries*.
+2. Quiet room, 3 m: the same ten times. Write down *hits per 10 tries*.
+3. TV or talk playing for one hour, phone on the table: count every wake.
+   Write down *false wakes per hour*.
+4. "Hey Gemma", "Hey Emmy", "Emily" must not wake the phone.
+
+**After the enrollment (the personal check)**
+
+5. Teach EMA the voice (Setup & preferences, or "EMA, learn my voice"), then
+   repeat steps 1 to 4. Write down the new numbers.
+6. The owner says "Hey EMA" ten times in a row: all ten must wake the phone.
+   If some do not, the voice was not learned properly - teach it again.
+7. The television says "Hey EMA" ten times: none of them may wake the phone.
+8. A different person says "Hey EMA" ten times: none of them may wake the
+   phone.
+9. "Not you" right after a wrong wake: the next attempt with the same sound
+   must not wake the phone.
+10. The phone must still wake the owner with the screen off, and the assistant
+    must still open.
+
+**What to report**
+
+- hits per 10 tries, at 1 m and 3 m, before and after the enrollment;
+- false wakes per hour of television and per hour of talk, before and after
+  the enrollment;
+- how long the enrollment took and whether all eight rounds were heard.
 
 The checklist in the README ("Acceptance checklist (physical device required)")
 still applies. In particular, test:

@@ -19,14 +19,24 @@ package com.ema.assistant
  *
  * Pure: the service feeds it decoder text; unit tests feed it strings.
  */
-class EmaWakeDetector {
+class EmaWakeDetector(
+    /**
+     * Lenient mode: one partial is enough to produce a candidate.
+     *
+     * It is only used when the owner has enrolled their voice, because then a
+     * second stage (the personal check) throws the false candidates away.
+     * Without a profile the old rule applies, so nothing changes for a phone
+     * that never enrolled.
+     */
+    private val lenient: Boolean = false
+) {
     private var partialStreak = 0
 
     /** Returns true when the wake phrase is detected. */
     fun onPartial(hypothesis: String): Boolean {
         if (containsWakePhrase(hypothesis)) {
             partialStreak++
-            if (partialStreak >= 2) { partialStreak = 0; return true }
+            if (lenient || partialStreak >= 2) { partialStreak = 0; return true }
         } else {
             partialStreak = 0
         }
