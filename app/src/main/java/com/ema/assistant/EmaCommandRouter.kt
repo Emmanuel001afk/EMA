@@ -160,7 +160,16 @@ class EmaCommandRouter(
         commandHandler.postDelayed(timeout, totalMs)
     }
 
-    fun execute(raw: String, done: (String) -> Unit) {
+    fun execute(raw: String, done: (String) -> Unit) = execute(raw, emptyList(), done)
+
+    /**
+     * Run a request.
+     *
+     * [guesses] are the other things the speech recogniser offered. They are
+     * only used for the on-device run trace, so the next fix can be based on
+     * what was actually heard.
+     */
+    fun execute(raw: String, guesses: List<String>, done: (String) -> Unit) {
         // "yes / no / stop" answers a paused plan; they are not new commands.
         if (pendingStepConfirmation != null && handleStepConfirmation(raw, done)) return
 
@@ -179,6 +188,7 @@ class EmaCommandRouter(
         pendingGoHome = false
         goHomeConsumedByPlan = false
         shortcutsSuppressedForCommand = false
+        startTrace(raw, guesses)
         val completed = AtomicBoolean(false)
         activeCompletion = completed
         val timeout = Runnable {
@@ -188,6 +198,7 @@ class EmaCommandRouter(
             activePlan = null
             suppressSpeech = false
             android.util.Log.e("EMA", "Command timed out at stage=$executionStage (${EmaPrivacy.describe(raw)})")
+            finishTrace("Timed out at $executionStage.")
             runCatching { done("I couldn't complete that command in time. The operation was stopped safely; I did not retry it automatically.") }
                 .onFailure { android.util.Log.e("EMA", "Assistant timeout result delivery failed", it) }
         }
@@ -200,6 +211,7 @@ class EmaCommandRouter(
             } else {
                 commandHandler.removeCallbacks(timeout)
                 activeTimeout = null
+                finishTrace(result)
                 Handler(Looper.getMainLooper()).post {
                     runCatching { done(result) }
                         .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
@@ -269,6 +281,7 @@ class EmaCommandRouter(
             }
 
             runCatching {
+                traceLayer("schedule")
                 if (handleScheduledAction(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Scheduled-action precheck failed; continuing", it)
@@ -281,6 +294,7 @@ class EmaCommandRouter(
             }
 
             runCatching {
+                traceLayer("routine")
                 if (handleRecurringRoutine(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Recurring-routine precheck failed; continuing", it)
@@ -288,6 +302,7 @@ class EmaCommandRouter(
 
             // Explicit, user-controlled memory ("remember that ...", "forget ...").
             runCatching {
+                traceLayer("memory")
                 if (handleMemory(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Memory handling failed; continuing", it)
@@ -300,6 +315,7 @@ class EmaCommandRouter(
                     val target = memory().shortcut(command)
                     if (target != null) {
                         android.util.Log.i("EMA", "shortcut expanded: ${target.javaClass.simpleName}")
+                        traceLayer("shortcut")
                         shortcutsSuppressedForCommand = true
                         when (target) {
                             is EmaShortcuts.Target.App -> openShortcutApp(target, done)
@@ -314,6 +330,7 @@ class EmaCommandRouter(
 
             // Offline knowledge: calculations, conversions, dates. Computed, never invented.
             runCatching {
+                traceLayer("knowledge")
                 EmaKnowledge.answer(command)?.let { answer ->
                     finishAssistantResponse(answer.text, done)
                     return
@@ -324,6 +341,7 @@ class EmaCommandRouter(
 
             // Semantic understanding: roles, references, multi-step goals.
             runCatching {
+                traceLayer("semantic")
                 if (handleSemantic(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Semantic layer failed; using established layers", it)
@@ -348,6 +366,7 @@ class EmaCommandRouter(
             } else plannedSteps
             executionStage = "executing"
             if (planned.size > 1) {
+                traceLayer("plan")
                 // One shared deadline for the whole request, scaled by the number
                 // of steps so a three-part command is not starved by a budget
                 // sized for one. Per-step work is still bounded by the execution
@@ -364,6 +383,7 @@ class EmaCommandRouter(
         }
         executionStage = "executing"
 
+        traceLayer("system")
         if (handleSystemCommand(lower, command, done)) return
 
         // LAYER 3: structured intents, understood deterministically.
@@ -372,6 +392,7 @@ class EmaCommandRouter(
             null
         }
         if (interpreted != null) {
+            traceLayer("grammar")
             android.util.Log.i("EMA", "native grammar resolved: ${interpreted.javaClass.simpleName}")
             dispatch(interpreted, done)
             return
@@ -382,6 +403,7 @@ class EmaCommandRouter(
         // LAYER 5 (only in AI-assisted wording mode): let the AI interpret
         // unusual phrasing before EMA falls back to app grounding.
         if (mode == EmaAssistantMode.AI_ASSIST && mode.allowsAi && CentralHubClient.isConfigured(context)) {
+            traceLayer("ai")
             askAi(command, done)
             return
         }
@@ -394,6 +416,7 @@ class EmaCommandRouter(
             null
         }
         if (fallback != null) {
+            traceLayer("fallback")
             android.util.Log.i("EMA", "native fallback resolved (${fallback.via}): ${fallback.command.javaClass.simpleName}")
             dispatch(fallback.command, done)
             return
@@ -406,12 +429,78 @@ class EmaCommandRouter(
         // answer and, if the user opted in, a local entry for improvement.
         val looksLikeCommand = hasExplicitDeviceActionIntent(command)
         if (mode.allowsAi && CentralHubClient.isConfigured(context) && (!looksLikeCommand || mode == EmaAssistantMode.AI_ASSIST)) {
+            traceLayer("ai")
             askAi(command, done)
             return
         }
 
         if (depth <= 1) runCatching { EmaLearningLog.recordNotUnderstood(context, command) }
+        traceLayer("none")
         finishAssistantResponse(nativeOnlyExplanation(command, mode), done)
+    }
+
+    // ------------------------------------------------------------ run trace
+
+    /**
+     * The run being recorded, if any. The trace is what makes the next fix
+     * factual: what was heard, which layer answered, which steps ran, what
+     * each of them said, how long it took and what was in the foreground.
+     */
+    private var activeTrace: EmaRunTraceBuilder? = null
+    private var traceStepDescriptions: List<String> = emptyList()
+
+    private fun startTrace(raw: String, guesses: List<String>) {
+        activeTrace = EmaRunTraceBuilder(System.currentTimeMillis()).apply {
+            text = raw
+            alternatives = guesses
+            screenControl = EmaAccessibilityService.isConnected()
+        }
+        traceStepDescriptions = emptyList()
+    }
+
+    private fun finishTrace(result: String) {
+        val trace = activeTrace ?: return
+        activeTrace = null
+        trace.result = result
+        trace.durationMs = System.currentTimeMillis() - trace.at
+        runCatching { EmaRunTraceStore.store(context, trace.build()) }
+            .onFailure { android.util.Log.w("EMA", "Could not store the run trace", it) }
+    }
+
+    /** Which layer answered the request. */
+    private fun traceLayer(layer: String) {
+        activeTrace?.layer = layer
+    }
+
+    /**
+     * Answer "EMA, why did that fail?" from the last run.
+     *
+     * The answer names the step that failed and what it reported, and points
+     * at the Setup area when there is nothing to report.
+     */
+    private fun explainLastRun(done: (String) -> Unit) {
+        val trace = EmaRunTraceStore.lastTrace(context)
+        val message = when {
+            trace == null ->
+                "I have no record of a previous request yet, so there is nothing to explain."
+            else -> {
+                val explanation = trace.explainFailure()
+                if (explanation != null) {
+                    "$explanation Open Setup and use Copy last runs to see the whole trace."
+                } else {
+                    "The last request did not fail in a step I can point at. " +
+                        "Open Setup and use Copy last runs to see the whole trace."
+                }
+            }
+        }
+        speak(message); done(message)
+    }
+
+    /** One plan step, with its outcome. */
+    private fun traceStep(index: Int, outcome: EmaStepOutcome, durationMs: Long) {
+        val description = traceStepDescriptions.getOrNull(index) ?: "step ${index + 1}"
+        activeTrace?.addStep(description, outcome.status.name, outcome.message, durationMs)
+        activeTrace?.addForeground(runCatching { EmaAccessibilityService.foregroundPackage() }.getOrNull())
     }
 
     /**
@@ -464,6 +553,7 @@ class EmaCommandRouter(
         // phrasings alike, without an entry per wording.
         runCatching { EmaSystemCommandVocabulary.parseDeviceSetting(command) }.getOrNull()?.let { setting ->
             executionStage = "device setting"
+            traceLayer("settings")
             executeDeviceSetting(setting, done)
             return true
         }
@@ -761,6 +851,13 @@ class EmaCommandRouter(
                 lower == "help" || lower == "what do you do" -> {
                 val message = capabilitiesDescription()
                 speak(message); done(message)
+            }
+
+            lower == "why did that fail" || lower == "why did it fail" ||
+                lower == "why did that not work" || lower == "why did it not work" ||
+                lower == "why didn't that work" || lower == "why didn't it work" ||
+                lower == "what went wrong" || lower == "what happened" -> {
+                explainLastRun(done)
             }
 
             lower == "what mode are you in" || lower == "is ai enabled" || lower == "are you using ai" -> {
@@ -1109,13 +1206,27 @@ class EmaCommandRouter(
         }
     }
 
+    /**
+     * The plan listener: it drives the visible PLAN display and records every
+     * step in the run trace, so a failure can be read afterwards instead of
+     * guessed at.
+     */
     private fun planProgressListener(listener: EmaProgressListener?) = object : EmaPlanExecutor.Listener {
-        override fun onPlanStarted(descriptions: List<String>) { listener?.onPlan(descriptions) }
+        private val startedAt = mutableMapOf<Int, Long>()
+        override fun onPlanStarted(descriptions: List<String>) {
+            traceStepDescriptions = descriptions
+            listener?.onPlan(descriptions)
+        }
         override fun onStepStarted(index: Int, attempt: Int) {
             executionStage = "step ${index + 1}"
+            startedAt[index] = System.currentTimeMillis()
             listener?.onStepStarted(index)
         }
-        override fun onStepFinished(index: Int, outcome: EmaStepOutcome) { listener?.onStepFinished(index, outcome) }
+        override fun onStepFinished(index: Int, outcome: EmaStepOutcome) {
+            val duration = startedAt.remove(index)?.let { System.currentTimeMillis() - it } ?: 0L
+            traceStep(index, outcome, duration)
+            listener?.onStepFinished(index, outcome)
+        }
     }
 
     /** Optional confirmation. Off by default; the plan waits for yes/no/stop. */
@@ -2748,11 +2859,7 @@ class EmaCommandRouter(
         extendDeadline(deadline + 15_000L)
         suppressSpeech = true
         val listener = progressListener
-        activePlan = planExecutor.execute(steps, deadline, object : EmaPlanExecutor.Listener {
-            override fun onPlanStarted(descriptions: List<String>) { listener?.onPlan(descriptions) }
-            override fun onStepStarted(index: Int, attempt: Int) { executionStage = "step ${index + 1}"; listener?.onStepStarted(index) }
-            override fun onStepFinished(index: Int, outcome: EmaStepOutcome) { listener?.onStepFinished(index, outcome) }
-        }) { report ->
+        activePlan = planExecutor.execute(steps, deadline, planProgressListener(listener)) { report ->
             activePlan = null
             suppressSpeech = false
             finishAssistantResponse(report.summary, done)

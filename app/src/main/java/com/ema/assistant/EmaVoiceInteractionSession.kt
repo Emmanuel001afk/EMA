@@ -391,7 +391,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
     }
 
-    private fun execute(command: String) {
+    private fun execute(command: String, guesses: List<String> = emptyList()) {
         if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
             setState("Phone locked", "Unlock securely before EMA can run commands.")
             return
@@ -428,7 +428,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         if (::steps.isInitialized) steps.visibility = View.GONE
         setState("Understanding", "Working on it…")
 
-        commandRouter.execute(trimmed) { result ->
+        commandRouter.execute(trimmed, guesses) { result ->
             handler.post {
                 if (!sessionVisible || generation != commandGeneration || !processingCommand) return@post
                 processingCommand = false
@@ -539,10 +539,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
                 override fun onResults(results: Bundle?) {
                     EmaSpeechRecognition.rememberKind(context, created.kind)
-                    val command = EmaSpeechRecognition.chooseHypothesis(
-                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
-                        vocabulary
-                    )
+                    val guesses = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+                    val command = EmaSpeechRecognition.chooseHypothesis(guesses, vocabulary)
                     recognizer?.destroy()
                     recognizer = null
                     if (command.isNullOrBlank()) {
@@ -561,7 +559,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                                 setState("Listening", "What would you like me to do?")
                                 restartListeningIfNeeded()
                             }
-                            else -> execute(request)
+                            else -> execute(request, guesses)
                         }
                     }
                 }

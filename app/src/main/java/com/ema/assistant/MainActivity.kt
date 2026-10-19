@@ -425,11 +425,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         runRequest(command)
     }
 
-    /** One path for typed, spoken and tapped requests, so the UI always reflects the router. */
-    private fun runRequest(command: String) {
+    /**
+     * One path for typed, spoken and tapped requests, so the UI always reflects
+     * the router.
+     *
+     * [guesses] are the other things the recogniser offered. They only reach
+     * the on-device run trace, so a mistake can be seen afterwards.
+     */
+    private fun runRequest(command: String, guesses: List<String> = emptyList()) {
         conversation.addUser(command)
         conversation.setState(EmaConversationView.State.UNDERSTANDING)
-        router.execute(command) { result ->
+        router.execute(command, guesses) { result ->
             runOnUiThread {
                 val outcome = EmaOutcomeClassifier.classify(result)
                 conversation.addAssistant(result, outcome.status)
@@ -587,6 +593,29 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setOnClickListener { EmaLearningLog.clear(this@MainActivity); status.text = "Cleared." }
         })
         root.addView(learnRow)
+        root.addView(TextView(this).apply {
+            text = "The last runs are a short on-device record of what EMA heard, which layer answered, " +
+                "which steps ran and what each step said. Nothing leaves the phone, and no message " +
+                "body is kept beyond the first words."
+            textSize = 13f
+        })
+        val runRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        runRow.addView(Button(this).apply {
+            text = "Copy last runs"
+            isAllCaps = false
+            setOnClickListener {
+                val runs = EmaRunTraceStore.runs(this@MainActivity)
+                val clip = android.content.ClipData.newPlainText("EMA runs", EmaRunTraceStore.asText(this@MainActivity))
+                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+                status.text = if (runs.isEmpty()) "There are no runs yet." else "Copied ${runs.size} run(s)."
+            }
+        })
+        runRow.addView(Button(this).apply {
+            text = "Clear runs"
+            isAllCaps = false
+            setOnClickListener { EmaRunTraceStore.clear(this@MainActivity); status.text = "Cleared the runs." }
+        })
+        root.addView(runRow)
     }
 
     /**
@@ -794,10 +823,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             sr.setRecognitionListener(object : RecognitionListener {
                 override fun onResults(b: Bundle?) {
                     EmaSpeechRecognition.rememberKind(this@MainActivity, created.kind)
-                    val command = EmaSpeechRecognition.chooseHypothesis(
-                        b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION),
-                        vocabulary
-                    )
+                    val guesses = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+                    val command = EmaSpeechRecognition.chooseHypothesis(guesses, vocabulary)
                     if (command.isNullOrBlank()) {
                         conversation.setState(EmaConversationView.State.READY)
                         status.text = "I couldn't hear that. Try again."
@@ -805,7 +832,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         // Must reuse the activity's router: a fresh instance would
                         // drop any pending follow-up question ("What time should I
                         // remind you?") that the previous turn asked.
-                        runRequest(command)
+                        runRequest(command, guesses)
                     }
                     recognizer?.destroy()
                     recognizer = null
