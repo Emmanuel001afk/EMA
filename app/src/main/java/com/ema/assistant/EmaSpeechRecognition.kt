@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import java.util.Locale
 
 /**
  * Speech input that is aware of what the user has taught EMA.
