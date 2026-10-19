@@ -297,7 +297,7 @@ class EmaWakeWordService : Service() {
     }
 
     /** Keep the last two seconds of sound. */
-    private fun rememberAudio(frame: ShortArray) {
+    private fun rememberAudio(frame: ByteArray) {
         val samples = ShortArray(frame.size / 2)
         for (i in samples.indices) {
             samples[i] = ((frame[i * 2].toInt() and 255) or (frame[i * 2 + 1].toInt() shl 8)).toShort()
