@@ -26,7 +26,16 @@ data class EmaStepOutcome(
     val status: EmaOutcomeStatus,
     val message: String,
     /** A non-consequential step may be retried when this is true. */
-    val retryable: Boolean = false
+    val retryable: Boolean = false,
+    /**
+     * True when the action really happened but only the proof is missing, so
+     * the next step must still run.
+     *
+     * A launched app whose screen never settled is the case that matters: EMA
+     * knows the app was started, it just could not watch it stop moving. The
+     * next step decides with its own evidence whether it worked.
+     */
+    val carriesOn: Boolean = false
 )
 
 /**
@@ -41,8 +50,14 @@ object EmaOutcomeClassifier {
     fun classify(message: String, ok: Boolean? = null): EmaStepOutcome {
         val text = message.trim()
         val l = text.lowercase()
+        // An app that was launched but whose screen never settled (or that EMA
+        // could not watch because screen control is off) is not a failure and
+        // must not stop the rest of a plan: the action happened, only the proof
+        // is missing, and the next step judges its own result.
+        val launchedUnconfirmed = LAUNCHED_UNCONFIRMED.containsMatchIn(l)
         val status = when {
             l.isBlank() -> EmaOutcomeStatus.FAILED
+            launchedUnconfirmed -> EmaOutcomeStatus.UNVERIFIED
             Regex("needs? (?:contacts|microphone|phone|calendar|notification|camera)? ?(?:access|permission)|grant it|" +
                 "turn on (?:ema'?s? )?(?:accessibility|screen control)|accessibility (?:service )?is (?:off|not enabled)|" +
                 "screen control is off|enable ema in accessibility|notification access").containsMatchIn(l) -> EmaOutcomeStatus.NEEDS_PERMISSION
@@ -57,8 +72,13 @@ object EmaOutcomeClassifier {
             else -> EmaOutcomeStatus.SUCCESS
         }
         val finalStatus = if (ok == false && status == EmaOutcomeStatus.SUCCESS) EmaOutcomeStatus.FAILED else status
-        return EmaStepOutcome(finalStatus, text, retryable = false)
+        return EmaStepOutcome(finalStatus, text, retryable = false, carriesOn = launchedUnconfirmed)
     }
+
+    /** "I launched X, but ... could not confirm ..." - the action happened. */
+    private val LAUNCHED_UNCONFIRMED = Regex(
+        "(?i)\\b(?:launched|opened|started)\\b[^.]*\\b(?:could not|couldn't|cannot|can't|unable to)\\s+(?:confirm|verify)"
+    )
 }
 
 /**
@@ -185,8 +205,11 @@ class EmaPlanExecutor(
             val step = steps[index]
             val previous = (index - 1 downTo 0).firstNotNullOfOrNull { outcomes[it] }
             if (index > 0 && step.dependsOnPrevious && previous != null) {
+                // A step that really happened but could not be proven (a
+                // launched app whose screen never settled) still lets the next
+                // step run: that step checks its own evidence.
                 val previousOk = previous.status == EmaOutcomeStatus.SUCCESS ||
-                    (previous.status == EmaOutcomeStatus.UNVERIFIED && !step.consequential)
+                    (previous.status == EmaOutcomeStatus.UNVERIFIED && (!step.consequential || previous.carriesOn))
                 if (!previousOk) {
                     outcomes[index] = EmaStepOutcome(EmaOutcomeStatus.SKIPPED, "Skipped: ${step.description}")
                     listener?.onStepFinished(index, outcomes[index]!!)

@@ -114,6 +114,13 @@ class EmaCommandRouter(
 
     private companion object {
         const val PREF_CONFIRM_STEPS = "confirm_plan_steps"
+
+        /**
+         * Gap between two alarm requests. Several clock apps drop a request
+         * that arrives too soon after the previous one, so EMA sends them one
+         * at a time.
+         */
+        const val ALARM_REQUEST_GAP_MS = 1_500L
     }
 
     private var executionStage = "routing"
@@ -295,7 +302,7 @@ class EmaCommandRouter(
                         android.util.Log.i("EMA", "shortcut expanded: ${target.javaClass.simpleName}")
                         shortcutsSuppressedForCommand = true
                         when (target) {
-                            is EmaShortcuts.Target.App -> executeInternal("open " + target.label, done, depth)
+                            is EmaShortcuts.Target.App -> openShortcutApp(target, done)
                             is EmaShortcuts.Target.Command -> executeInternal(target.text, done, depth)
                         }
                         return
@@ -432,10 +439,17 @@ class EmaCommandRouter(
         } else {
             "No AI service is configured, so I answered using only the on-device assistant."
         }
+        val suggestions = EmaLexicon.suggestionsFor(command)
+        val closest = if (suggestions.isEmpty()) {
+            "Try naming the app, for example: open Spotify and play Arcade."
+        } else {
+            "Closest thing I can do: " + suggestions.joinToString(" ") +
+                " Say it that way and I will do it."
+        }
         return "I could not turn \"$command\" into a phone action. $reason " +
             "I can open and control apps, play and search media, send messages, make calls, " +
             "set alarms, timers and reminders, navigate Settings, and read or control the screen. " +
-            "Try naming the app, for example: open Spotify and play Arcade."
+            closest
     }
 
     // ------------------------------------------------------- system commands
@@ -962,23 +976,57 @@ class EmaCommandRouter(
         openTarget(appPhrase, done)
     }
 
+    /**
+     * Open a stored shortcut's app by its exact package name.
+     *
+     * A shortcut stores the package the user pointed at, so EMA opens that
+     * package and not "whatever app has a similar name". When the package is
+     * no longer installed, EMA says so instead of opening something else.
+     */
+    private fun openShortcutApp(target: EmaShortcuts.Target.App, done: (String) -> Unit) {
+        val installed = appEngine.findAppByPackage(target.packageName)
+        if (installed == null) {
+            val message = "${target.label} is not installed on this phone any more, so I did not open anything."
+            speak(message); done(message); return
+        }
+        val opened = appEngine.openPackage(target.packageName)
+        if (opened == null) {
+            val message = "I couldn't open ${target.label} on this phone."
+            speak(message); done(message); return
+        }
+        announceOpened(opened, done)
+    }
+
     private fun openConfirmedApp(label: String, done: (String) -> Unit) {
         val target = appEngine.openApp(label)
         if (target == null) {
             val message = "I couldn't open $label on this phone."
             speak(message); done(message); return
         }
+        announceOpened(target, done)
+    }
+
+    /**
+     * Report what happened after a launch, in one place.
+     *
+     * "Opened" is only claimed when EMA saw the app in front and watched its
+     * screen settle. A screen that keeps moving (a chat list, a feed, a
+     * progress bar) is not a failure: the app is open, the proof is missing,
+     * and the next step of the plan still runs. Only an app that never came
+     * to the foreground is a failure.
+     */
+    private fun announceOpened(target: EmaAppActionEngine.AppTarget, done: (String) -> Unit) {
         lastAppName = target.label
-        // Do not claim "Opened" from startActivity alone. The step completes
-        // only when the target package is in the foreground and its screen has
-        // stopped changing; without screen control EMA says so honestly.
-        appEngine.awaitForeground(target) { confirmed ->
-            val message = when {
-                confirmed -> "Opened ${target.label}."
-                EmaAccessibilityService.isConnected() ->
-                    "I launched ${target.label}, but I could not confirm it reached the foreground."
-                else ->
-                    "I launched ${target.label}, but screen control is off, so I could not confirm it opened."
+        appEngine.awaitForeground(target) { arrival ->
+            val message = when (arrival) {
+                EmaAppArrival.ARRIVED_SETTLED -> "Opened ${target.label}."
+                EmaAppArrival.ARRIVED_BUSY ->
+                    if (EmaAccessibilityService.isConnected())
+                        "I opened ${target.label}, but its screen was still changing, so I could not confirm it finished loading. I carried on."
+                    else
+                        "I launched ${target.label}, but screen control is off, so I could not confirm it opened."
+                EmaAppArrival.NOT_ARRIVED ->
+                    "I launched ${target.label}, but it did not come to the foreground in time."
             }
             speak(message); done(message)
         }
@@ -1764,8 +1812,27 @@ class EmaCommandRouter(
         val now = System.currentTimeMillis()
         val descriptions = request.times.map { EmaTimeParser.describeRelative(it.millis, now) }
 
-        var sent = 0
-        request.times.forEachIndexed { index, moment ->
+        // One alarm at a time. Several clock apps drop a second request that
+        // arrives too soon after the first one, so EMA waits between them and
+        // then reports exactly how many were accepted.
+        val sent = mutableListOf<String>()
+
+        fun sendNext(index: Int) {
+            if (index >= request.times.size) {
+                val repeat = request.days?.let { " repeating " + describeDays(it) }.orEmpty()
+                val message = when {
+                    sent.size == request.times.size && request.times.size == 1 ->
+                        "I sent an alarm for ${sent.first()}$repeat to $clockLabel."
+                    sent.size == request.times.size ->
+                        "I sent ${sent.size} alarms to $clockLabel: ${sent.joinToString(", ")}."
+                    sent.isNotEmpty() ->
+                        "I sent ${sent.size} of ${request.times.size} alarms to $clockLabel: ${sent.joinToString(", ")}."
+                    else -> "I could not send the alarm request to the phone's alarm system."
+                }
+                speak(message); done(message)
+                return
+            }
+            val moment = request.times[index]
             val calendar = java.util.Calendar.getInstance().apply { timeInMillis = moment.millis }
             val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
                 putExtra(android.provider.AlarmClock.EXTRA_HOUR, calendar.get(java.util.Calendar.HOUR_OF_DAY))
@@ -1778,25 +1845,16 @@ class EmaCommandRouter(
                 }
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            commandHandler.postDelayed({
-                runCatching { context.startActivity(intent) }
-                    .onSuccess { sent++ }
-                    .onFailure { android.util.Log.e("EMA", "Alarm request $index failed", it) }
-                if (index == request.times.lastIndex) {
-                    val repeat = request.days?.let { " repeating " + describeDays(it) }.orEmpty()
-                    val message = when {
-                        sent == request.times.size && request.times.size == 1 ->
-                            "I sent an alarm for ${descriptions.first()}$repeat to $clockLabel."
-                        sent == request.times.size ->
-                            "I sent ${request.times.size} alarms to $clockLabel: ${descriptions.joinToString(", ")}."
-                        sent > 0 ->
-                            "I sent $sent of ${request.times.size} alarms to $clockLabel: ${descriptions.take(sent).joinToString(", ")}."
-                        else -> "I could not send the alarm request to the phone's alarm system."
-                    }
-                    speak(message); done(message)
-                }
-            }, index * 400L)
+            runCatching { context.startActivity(intent) }
+                .onSuccess { sent += descriptions[index] }
+                .onFailure { android.util.Log.e("EMA", "Alarm request $index failed", it) }
+            if (index + 1 < request.times.size) {
+                commandHandler.postDelayed({ sendNext(index + 1) }, ALARM_REQUEST_GAP_MS)
+            } else {
+                sendNext(index + 1)
+            }
         }
+        sendNext(0)
     }
 
     /** Exact alarms for a calendar day the clock app cannot represent. */

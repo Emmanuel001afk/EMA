@@ -93,15 +93,43 @@ object EmaSystemCommandVocabulary {
         }
     }
 
-    private val MAX_WORDS = listOf("maximum", "max", "full", "brightest", "highest", "all the way up")
-    private val MIN_WORDS = listOf("minimum", "min", "lowest", "dimmest", "all the way down")
-    private val INCREASE_WORDS = listOf("increase", "raise", "turn up", "bump up", "brighter", "higher", "up")
-    private val DECREASE_WORDS = listOf("decrease", "lower", "turn down", "dim", "darker", "down")
-    private val ON_WORDS = listOf("turn on", "switch on", "enable", "activate", "on")
-    private val OFF_WORDS = listOf("turn off", "switch off", "disable", "deactivate", "off")
+    private val MAX_WORDS = EmaLexicon.MAX_WORDS.toList()
+    private val MIN_WORDS = EmaLexicon.MIN_WORDS.toList()
+    private val INCREASE_WORDS = EmaLexicon.INCREASE_WORDS.toList()
+    private val DECREASE_WORDS = EmaLexicon.DECREASE_WORDS.toList()
+    private val ON_WORDS = EmaLexicon.ON_WORDS.toList()
+    private val OFF_WORDS = EmaLexicon.OFF_WORDS.toList()
+
+    /** The words that name a device setting, in the order they are recognised. */
+    private val TARGET_PATTERNS: List<Pair<Regex, DeviceSetting.Kind>> = listOf(
+        Regex("\\b(?:do not disturb|dnd|disturb|silent mode|silent)\\b") to DeviceSetting.Kind.DND,
+        Regex("\\bbrightness\\b|\\bdim\\b|\\bbrighter\\b|\\bdarker\\b") to DeviceSetting.Kind.BRIGHTNESS,
+        Regex("\\b(?:airplane|flight) mode\\b|\\bairplane\\b") to DeviceSetting.Kind.AIRPLANE,
+        Regex("\\b(?:wifi|wireless|wireless network)\\b") to DeviceSetting.Kind.WIFI,
+        Regex("\\bbluetooth\\b") to DeviceSetting.Kind.BLUETOOTH
+    )
+
+    /**
+     * Words that belong to another command. They may never appear before the
+     * setting itself, because then the utterance is a message, a search or a
+     * reminder that merely mentions a setting.
+     */
+    private val OTHER_COMMAND_WORDS: Set<String> = buildSet {
+        for (intent in EmaLexicon.INTENTS) {
+            if (intent.id == "device-setting") continue
+            addAll(intent.verbs)
+        }
+    }
 
     /**
      * Parse a device-setting command, or null when the utterance is not one.
+     *
+     * A setting command is the WHOLE utterance. It starts with a setting verb
+     * (after the wake word and politeness) and no word that belongs to
+     * another command may come before the setting itself. Without that rule
+     * "send John a message saying increase the brightness" changed the
+     * brightness instead of sending the message.
+     *
      * Pure and unit tested; the router only performs the resulting action.
      */
     fun parseDeviceSetting(command: String): DeviceSetting? {
@@ -113,14 +141,19 @@ object EmaSystemCommandVocabulary {
             .replace(Regex("\\s+"), " ")
             .trim() + " "
 
-        val kind = when {
-            Regex("\\b(?:do not disturb|dnd|disturb|silent mode|silent)\\b").containsMatchIn(text) -> DeviceSetting.Kind.DND
-            Regex("\\bbrightness\\b|\\bdim\\b|\\bbrighter\\b|\\bdarker\\b").containsMatchIn(text) -> DeviceSetting.Kind.BRIGHTNESS
-            Regex("\\b(?:airplane|flight) mode\\b|\\bairplane\\b").containsMatchIn(text) -> DeviceSetting.Kind.AIRPLANE
-            Regex("\\b(?:wifi|wireless|wireless network)\\b").containsMatchIn(text) -> DeviceSetting.Kind.WIFI
-            Regex("\\bbluetooth\\b").containsMatchIn(text) -> DeviceSetting.Kind.BLUETOOTH
-            else -> return null
-        }
+        // The utterance must start with a setting verb.
+        val leading = EmaLexicon.stripLeadings(text.trim())
+        val firstWord = leading.split(' ').firstOrNull { it.isNotBlank() } ?: return null
+        if (firstWord !in (EmaLexicon.intent("device-setting")?.verbs ?: emptySet())) return null
+
+        val target = TARGET_PATTERNS.firstNotNullOfOrNull { (pattern, kind) ->
+            pattern.find(text)?.let { kind to it }
+        } ?: return null
+        val kind = target.first
+
+        // Nothing that belongs to another command may come before the setting.
+        val prefix = text.substring(0, target.second.range.first).trim()
+        if (prefix.split(' ').any { it.isNotBlank() && it in OTHER_COMMAND_WORDS }) return null
 
         // Plain word/phrase membership. (Regex.escape emits \Q..\E, which
         // java.util.regex does not support, so multi-word phrases never matched.)
