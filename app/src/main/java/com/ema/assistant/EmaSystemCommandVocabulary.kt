@@ -82,7 +82,7 @@ object EmaSystemCommandVocabulary {
      * brightness to full" all work without an entry per wording.
      */
     data class DeviceSetting(val kind: Kind, val action: Action, val value: Int? = null) {
-        enum class Kind { DND, BRIGHTNESS, AIRPLANE, WIFI, BLUETOOTH }
+        enum class Kind { DND, BRIGHTNESS, VOLUME, AIRPLANE, WIFI, BLUETOOTH }
         enum class Action { ON, OFF, INCREASE, DECREASE, MAX, MIN, SET }
 
         /** For on/off toggles; null for brightness-style values. */
@@ -104,6 +104,7 @@ object EmaSystemCommandVocabulary {
     private val TARGET_PATTERNS: List<Pair<Regex, DeviceSetting.Kind>> = listOf(
         Regex("\\b(?:do not disturb|dnd|disturb|silent mode|silent)\\b") to DeviceSetting.Kind.DND,
         Regex("\\bbrightness\\b|\\bdim\\b|\\bbrighter\\b|\\bdarker\\b") to DeviceSetting.Kind.BRIGHTNESS,
+        Regex("\\b(?:volume|sound|speaker|ringtone)\\b") to DeviceSetting.Kind.VOLUME,
         Regex("\\b(?:airplane|flight) mode\\b|\\bairplane\\b") to DeviceSetting.Kind.AIRPLANE,
         Regex("\\b(?:wifi|wireless|wireless network)\\b") to DeviceSetting.Kind.WIFI,
         Regex("\\bbluetooth\\b") to DeviceSetting.Kind.BLUETOOTH
@@ -166,12 +167,13 @@ object EmaSystemCommandVocabulary {
         val action = when {
             has(MAX_WORDS) -> DeviceSetting.Action.MAX
             has(MIN_WORDS) -> DeviceSetting.Action.MIN
-            kind != DeviceSetting.Kind.BRIGHTNESS && has(ON_WORDS) -> DeviceSetting.Action.ON
-            kind != DeviceSetting.Kind.BRIGHTNESS && has(OFF_WORDS) -> DeviceSetting.Action.OFF
-            kind == DeviceSetting.Kind.BRIGHTNESS && percent != null -> DeviceSetting.Action.SET
+            kind != DeviceSetting.Kind.BRIGHTNESS && kind != DeviceSetting.Kind.VOLUME && has(ON_WORDS) -> DeviceSetting.Action.ON
+            kind != DeviceSetting.Kind.BRIGHTNESS && kind != DeviceSetting.Kind.VOLUME && has(OFF_WORDS) -> DeviceSetting.Action.OFF
+            (kind == DeviceSetting.Kind.BRIGHTNESS || kind == DeviceSetting.Kind.VOLUME) && percent != null -> DeviceSetting.Action.SET
             has(INCREASE_WORDS) -> DeviceSetting.Action.INCREASE
             has(DECREASE_WORDS) -> DeviceSetting.Action.DECREASE
-            kind == DeviceSetting.Kind.BRIGHTNESS && Regex("\\bset\\b").containsMatchIn(text) -> DeviceSetting.Action.SET
+            (kind == DeviceSetting.Kind.BRIGHTNESS || kind == DeviceSetting.Kind.VOLUME) &&
+                Regex("\\bset\\b").containsMatchIn(text) -> DeviceSetting.Action.SET
             else -> return null
         }
         val value = when (action) {

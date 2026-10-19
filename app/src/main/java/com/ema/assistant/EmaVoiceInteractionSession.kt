@@ -436,6 +436,12 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 commandWatchdog = null
                 response.text = result
                 response.visibility = View.VISIBLE
+                // A wake that was followed by a real command is the owner's own
+                // voice, so the personal check may learn it.
+                EmaWakeWordService.confirmLastWake(
+                    !result.contains("could not", ignoreCase = true) &&
+                        !result.contains("I did not", ignoreCase = true)
+                )
                 val outcome = EmaOutcomeClassifier.classify(result).status
                 val color = when (outcome) {
                     EmaOutcomeStatus.SUCCESS, EmaOutcomeStatus.BLOCKED -> Color.rgb(120, 220, 160)

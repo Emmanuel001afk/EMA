@@ -25,14 +25,48 @@ class EmaWakeWordService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val prefs by lazy { getSharedPreferences("ema", MODE_PRIVATE) }
 
+    /** The last two seconds of sound, so the personal check has something to compare. */
+    private val recent = ArrayDeque<ShortArray>()
+    private var recentSamples = 0
+
+    /** The sound of the wake that is waiting for a command to confirm it. */
+    @Volatile private var pendingWake: ShortArray? = null
+
     companion object {
         private const val CHANNEL = "ema_wake_word"
         private const val ID = 701
+
+        /** How much sound around the candidate is compared. */
+        private const val WAKE_AUDIO_MILLIS = 900
+
+        /** How much sound is kept for the comparison (two seconds). */
+        private const val MAX_RECENT_SAMPLES = 32_000
         @Volatile private var active: EmaWakeWordService? = null
         fun isRunning() = active?.running == true
         fun isCapturing() = active?.recorder != null
         fun pauseForSpeech() { active?.pauseCapture() }
         fun resumeAfterSession() { active?.let { it.paused = false } }
+
+        /**
+         * Tell the wake word that a command really ran after the wake.
+         *
+         * A wake that was followed by a real command is a positive example of
+         * the owner's own voice, so it is learned. A wake that was followed by
+         * nothing is not.
+         */
+        fun confirmLastWake(commandRan: Boolean) {
+            active?.confirmWake(commandRan)
+        }
+
+        /**
+         * The owner says the wake word was not them ("not you").
+         *
+         * The sound of that wake becomes a negative example, so the same sound
+         * is less likely to pass the personal check next time.
+         */
+        fun markNotYou() {
+            active?.markNotYou()
+        }
         fun startFromVisibleActivity(context: Context) {
             try {
                 val intent = Intent(context, EmaWakeWordService::class.java)
@@ -126,7 +160,13 @@ class EmaWakeWordService : Service() {
                             // Microphone capture remains active for screen-off wake;
                             // only bounded, voice-like windows reach Vosk.
                             val gate = EmaWakeAudioGate()
-                            val detector = EmaWakeDetector()
+                            // With an enrolled voice the decoder may be lenient:
+                            // one partial is enough to make a candidate, and the
+                            // personal check throws the false ones away. Without
+                            // an enrolled voice the old rule is kept.
+                            val detector = EmaWakeDetector(lenient = runCatching {
+                                EmaVoiceTemplateStore.isEnrolled(this@EmaWakeWordService)
+                            }.getOrDefault(false))
                             val buffer = ByteArray(1600) // 50 ms, PCM16 mono 16 kHz
                             var renewal = SystemClock.elapsedRealtime()
                             capture@ while (running && !paused && !EmaVoiceInteractionSession.isActiveVisible()) {
@@ -137,12 +177,21 @@ class EmaWakeWordService : Service() {
                                 }
                                 val window = gate.accept(buffer, count - count % 2)
                                 for (frame in window.audio) {
+                                    rememberAudio(frame)
                                     val final = decoder.acceptWaveForm(frame, frame.size)
                                     val result = JSONObject(if (final) decoder.result else decoder.partialResult)
                                     val words = result.optString(if (final) "text" else "partial").trim()
                                     // Token search, not string equality: "[unk] hey emma" counts.
                                     val heard = if (final) detector.onFinal(words) else detector.onPartial(words)
                                     if (heard) {
+                                        // Stage two: is that really the owner's
+                                        // own "Hey EMA"? Without a profile there
+                                        // is nothing to compare with, and the
+                                        // wake word behaves exactly as before.
+                                        if (!personalCheckAccepts()) {
+                                            detector.reset()
+                                            continue
+                                        }
                                         paused = true
                                         main.post { activate() }
                                         break@capture
@@ -172,6 +221,108 @@ class EmaWakeWordService : Service() {
                 main.post { stopSelf() }
             }
         }
+    }
+
+    /**
+     * The personal wake-word check.
+     *
+     * The decoder only says *what* was heard, so a television saying "Hey EMA"
+     * is the same words as the owner saying it. When the owner has enrolled
+     * their voice, the sound is compared with their own recorded "Hey EMA" and
+     * a candidate that does not fit is thrown away - and remembered as a
+     * negative example, so the same sound is less likely to pass next time.
+     *
+     * Returns true when the wake may go on.
+     */
+    private fun personalCheckAccepts(): Boolean {
+        val tail = recentTail(WAKE_AUDIO_MILLIS)
+        if (tail.isEmpty()) return true
+        val features = EmaVoiceFeatures.mfcc(tail)
+        if (features.isEmpty()) return true
+        val verifier = runCatching { EmaVoiceTemplateStore.verifier(this) }.getOrNull() ?: return true
+        if (!verifier.hasProfile()) return true
+        val verdict = verifier.verdict(features)
+        if (!verdict.accepted) {
+            android.util.Log.i("EMA", "Wake candidate rejected: ${verdict.reason} (${verdict.distance})")
+            learn(features, EmaVoiceVerifier.Template.Kind.NEGATIVE)
+            return false
+        }
+        pendingWake = tail
+        return true
+    }
+
+    /**
+     * Learn one sample of the owner's voice.
+     *
+     * The list is bounded and the sample that fits the others least well is
+     * replaced when it is full. A negative example also raises the threshold.
+     */
+    private fun learn(features: List<FloatArray>, kind: EmaVoiceVerifier.Template.Kind) {
+        runCatching {
+            val verifier = EmaVoiceTemplateStore.verifier(this)
+            val template = EmaVoiceVerifier.Template(
+                id = "${kind.name.lowercase()}-${System.currentTimeMillis()}",
+                kind = kind,
+                label = kind.name.lowercase(),
+                frames = EmaVoiceFeatures.resample(features),
+                addedAt = System.currentTimeMillis()
+            )
+            val dropped = verifier.add(template)
+            EmaVoiceTemplateStore.add(this, template)
+            if (dropped != null) EmaVoiceTemplateStore.remove(this, dropped.id)
+            if (kind == EmaVoiceVerifier.Template.Kind.NEGATIVE) {
+                verifier.noteNegative()
+                EmaVoiceTemplateStore.setOffset(this, verifier.offset)
+            }
+        }.onFailure { android.util.Log.w("EMA", "Could not learn the wake sample", it) }
+    }
+
+    /** The owner says the wake word was not them: learn it as a negative. */
+    private fun markNotYou() {
+        val pending = pendingWake ?: return
+        pendingWake = null
+        val features = EmaVoiceFeatures.mfcc(pending)
+        if (features.isEmpty()) return
+        learn(features, EmaVoiceVerifier.Template.Kind.NEGATIVE)
+    }
+
+    /** A wake that was followed by a real command is the owner's own voice. */
+    private fun confirmWake(commandRan: Boolean) {
+        val pending = pendingWake ?: return
+        pendingWake = null
+        if (!commandRan) return
+        val features = EmaVoiceFeatures.mfcc(pending)
+        if (features.isEmpty()) return
+        learn(features, EmaVoiceVerifier.Template.Kind.POSITIVE)
+    }
+
+    /** Keep the last two seconds of sound. */
+    private fun rememberAudio(frame: ByteArray) {
+        val samples = ShortArray(frame.size / 2)
+        for (i in samples.indices) {
+            samples[i] = ((frame[i * 2].toInt() and 255) or (frame[i * 2 + 1].toInt() shl 8)).toShort()
+        }
+        recent.addLast(samples)
+        recentSamples += samples.size
+        while (recentSamples > MAX_RECENT_SAMPLES && recent.isNotEmpty()) {
+            recentSamples -= recent.removeFirst().size
+        }
+    }
+
+    /** The last [millis] milliseconds of sound. */
+    private fun recentTail(millis: Int): ShortArray {
+        val wanted = (16000 * millis / 1000).coerceAtMost(recentSamples)
+        if (wanted <= 0) return ShortArray(0)
+        val out = ShortArray(wanted)
+        var written = wanted
+        for (i in recent.indices.reversed()) {
+            if (written <= 0) break
+            val frame = recent[recent.size - 1 - i]
+            val take = minOf(written, frame.size)
+            System.arraycopy(frame, frame.size - take, out, written - take, take)
+            written -= take
+        }
+        return out
     }
 
     private fun activate() {

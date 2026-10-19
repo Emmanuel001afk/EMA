@@ -189,6 +189,7 @@ class EmaCommandRouter(
         goHomeConsumedByPlan = false
         shortcutsSuppressedForCommand = false
         startTrace(raw, guesses)
+        currentGuesses = guesses
         val completed = AtomicBoolean(false)
         activeCompletion = completed
         val timeout = Runnable {
@@ -212,6 +213,11 @@ class EmaCommandRouter(
                 commandHandler.removeCallbacks(timeout)
                 activeTimeout = null
                 finishTrace(result)
+                if (EmaOutcomeClassifier.classify(result).status == EmaOutcomeStatus.FAILED) {
+                    lastFailedRequest = raw
+                    lastFailedAt = System.currentTimeMillis()
+                    learnMishearing(raw)
+                }
                 Handler(Looper.getMainLooper()).post {
                     runCatching { done(result) }
                         .onFailure { android.util.Log.e("EMA", "Assistant result delivery failed", it) }
@@ -287,6 +293,12 @@ class EmaCommandRouter(
                 android.util.Log.e("EMA", "Scheduled-action precheck failed; continuing", it)
             }
 
+            // Words the recogniser got wrong ("what's up" for "WhatsApp") are
+            // corrected here, but never inside the content of a message, a
+            // search or a reminder.
+            command = EmaLexicon.applyMishearings(command)
+            currentCommand = command
+
             runCatching {
                 EmaConversationStore.add(context, "user", command)
             }.onFailure {
@@ -326,6 +338,15 @@ class EmaCommandRouter(
                 }.onFailure {
                     android.util.Log.e("EMA", "Shortcut expansion failed; continuing", it)
                 }
+            }
+
+            // What EMA learned from the owner. The "remember" shortcuts have
+            // already been tried and always win; a learned link is only used
+            // when the owner confirmed it or said it twice.
+            runCatching {
+                if (handleLearned(command, done)) return
+            }.onFailure {
+                android.util.Log.e("EMA", "Learned links failed; continuing", it)
             }
 
             // Offline knowledge: calculations, conversions, dates. Computed, never invented.
@@ -439,6 +460,23 @@ class EmaCommandRouter(
         finishAssistantResponse(nativeOnlyExplanation(command, mode), done)
     }
 
+    // ------------------------------------------------------- learned links
+
+    /**
+     * The last request that did not work, and when it failed.
+     *
+     * A correction ("no, I meant X") refers to it, and it is only accepted
+     * shortly after the failure - not an hour later.
+     */
+    private var lastFailedRequest: String? = null
+    private var lastFailedAt: Long = 0L
+
+    /** The request being executed, so the usage preferences know the kind. */
+    private var currentCommand: String = ""
+
+    /** The other things the recogniser heard, for the learning layer. */
+    private var currentGuesses: List<String> = emptyList()
+
     // ------------------------------------------------------------ run trace
 
     /**
@@ -470,6 +508,150 @@ class EmaCommandRouter(
     /** Which layer answered the request. */
     private fun traceLayer(layer: String) {
         activeTrace?.layer = layer
+    }
+
+    /**
+     * Learn the owner's own "Hey EMA".
+     *
+     * The owner says "Hey EMA" eight times; the samples stay on the phone and
+     * the personal check uses them from then on.
+     */
+    private fun startVoiceEnrollment(done: (String) -> Unit) {
+        if (EmaVoiceEnrollmentEngine.isRunning()) {
+            val message = "I am already learning your voice."
+            speak(message); done(message); return
+        }
+        val message = "Let's teach me your voice. Say \"Hey EMA\" eight times."
+        speak(message)
+        EmaVoiceEnrollmentEngine.start(
+            context,
+            { prompt -> speak(prompt) },
+            { stored ->
+                val reply = if (stored) {
+                    "I have learned your voice. I will use it to tell your \"Hey EMA\" from the television."
+                } else {
+                    "I could not finish learning your voice. Try again when the phone is quiet."
+                }
+                speak(reply); done(reply)
+            }
+        )
+    }
+
+    /**
+     * Remember a word the recogniser got wrong.
+     *
+     * When a request failed and the recogniser had offered another wording
+     * that is close to it, that wording is stored as an unconfirmed link: it
+     * is used after it was seen twice, or after the owner confirms it with
+     * "no, I meant ...". A single guess never changes what EMA does.
+     */
+    private fun learnMishearing(request: String) {
+        val guesses = currentGuesses
+        if (guesses.isEmpty()) return
+        runCatching {
+            val model = EmaLearningStore.model(context)
+            val closest = model.closestAlternative(request, guesses) ?: return
+            if (model.normalise(closest) == model.normalise(request)) return
+            model.learn(request, closest, EmaLearnedLink.Kind.MISHEARING, confirmed = false, at = System.currentTimeMillis())
+            EmaLearningStore.save(context, model)
+        }
+    }
+
+    /**
+     * Remember which app the owner uses for which kind of request.
+     *
+     * "play my playlist" then points at the app the owner really uses.
+     */
+    private fun noteAppUsage(appLabel: String) {
+        val kind = usageKind(currentCommand) ?: return
+        runCatching {
+            val model = EmaLearningStore.model(context)
+            model.noteUsage(kind, appLabel)
+            EmaLearningStore.save(context, model)
+        }
+    }
+
+    /** The kind of request a command is, when it uses an app. */
+    private fun usageKind(command: String): String? {
+        val verb = EmaLexicon.firstVerb(command) ?: return null
+        return when (EmaLexicon.intentForVerb(verb)?.id) {
+            "play-media" -> "media"
+            "send-message" -> "message"
+            "call" -> "call"
+            "search" -> "browser"
+            else -> null
+        }
+    }
+
+    /**
+     * The app to use for a word that names a kind instead of an app
+     * ("my music app"), when the owner has shown which app they use.
+     */
+    private fun resolveGenericApp(label: String): String {
+        val kind = EmaLexicon.appKindFor(label) ?: return label
+        val preferred = runCatching { EmaLearningStore.model(context).preferredApp(kind) }.getOrNull()
+        return preferred ?: label
+    }
+
+    /**
+     * What EMA learned from the owner.
+     *
+     * The order matters and is fixed: the "remember" shortcuts have already
+     * been tried (they always win), then the learned links, then the normal
+     * layers. A learned link is only used when the owner confirmed it or said
+     * it twice, never inside the content of a message, a search or a
+     * reminder, and when two candidates are too close EMA asks instead of
+     * choosing.
+     */
+    private fun handleLearned(command: String, done: (String) -> Unit): Boolean {
+        val lower = command.trim().lowercase(Locale.getDefault())
+        val model = EmaLearningStore.model(context)
+
+        // "Forget what you learned": the remembered shortcuts stay.
+        if (lower.matches(Regex("^(please\\s+)?(forget|unlearn)\\s+(what you (learned|know)|everything you (learned|know)|my learned (links|words))\\??$"))) {
+            EmaLearningStore.forgetLinks(context)
+            val message = "I have forgotten what I learned. The things you told me to remember are still there."
+            speak(message); done(message); return true
+        }
+
+        // "What have you learned?"
+        if (lower.matches(Regex("^(what have you learned|what did you learn|what do you know about me|show me what you learned)\\??$"))) {
+            val message = model.summary()
+            speak(message); done(message); return true
+        }
+
+        // A correction: "no, I meant X".
+        val correction = Regex("^(?:no[,\\s]+)?(?:i|we) meant (.+)$").find(lower)
+        if (correction != null) {
+            val meaning = correction.groupValues[1].trim()
+            val failed = lastFailedRequest
+            if (failed != null && System.currentTimeMillis() - lastFailedAt <= EmaLearningModel.LINK_WINDOW_MS) {
+                model.learn(failed, meaning, EmaLearnedLink.Kind.CORRECTION, confirmed = true, at = System.currentTimeMillis())
+                EmaLearningStore.save(context, model)
+                val result = StringBuilder()
+                executeInternal(meaning, { reply ->
+                    result.append(reply)
+                    done(if (result.isBlank()) reply else "$reply I will remember that.")
+                }, 1)
+                return true
+            }
+        }
+
+        // A learned link for this request.
+        val candidates = model.candidates(command)
+        if (candidates.isNotEmpty()) {
+            if (model.ambiguous(candidates)) {
+                val options = candidates.take(2).joinToString(" or ") { "\"${it.meaning}\"" }
+                val message = "Did you mean $options?"
+                speak(message); done(message); return true
+            }
+            val link = model.applicable(command)
+            if (link != null && !EmaLexicon.isContentCommand(command)) {
+                executeInternal(link.meaning, done, 1)
+                return true
+            }
+        }
+        return false
     }
 
     /**
@@ -853,6 +1035,18 @@ class EmaCommandRouter(
                 speak(message); done(message)
             }
 
+            lower == "learn my voice" || lower == "learn my voice please" ||
+                lower == "teach ema my voice" || lower == "teach ema my voice please" ||
+                lower == "teach me your voice" -> {
+                startVoiceEnrollment(done)
+            }
+
+            lower == "not you" || lower == "that was not me" || lower == "that wasn't me" -> {
+                EmaWakeWordService.markNotYou()
+                val message = "Understood. I will not take that for your voice."
+                speak(message); done(message)
+            }
+
             lower == "why did that fail" || lower == "why did it fail" ||
                 lower == "why did that not work" || lower == "why did it not work" ||
                 lower == "why didn't that work" || lower == "why didn't it work" ||
@@ -1095,7 +1289,7 @@ class EmaCommandRouter(
     }
 
     private fun openConfirmedApp(label: String, done: (String) -> Unit) {
-        val target = appEngine.openApp(label)
+        val target = appEngine.openApp(resolveGenericApp(label))
         if (target == null) {
             val message = "I couldn't open $label on this phone."
             speak(message); done(message); return
@@ -1114,6 +1308,7 @@ class EmaCommandRouter(
      */
     private fun announceOpened(target: EmaAppActionEngine.AppTarget, done: (String) -> Unit) {
         lastAppName = target.label
+        noteAppUsage(target.label)
         appEngine.awaitForeground(target) { arrival ->
             val message = when (arrival) {
                 EmaAppArrival.ARRIVED_SETTLED -> "Opened ${target.label}."
@@ -2030,6 +2225,24 @@ class EmaCommandRouter(
                 }
             }
             EmaSystemCommandVocabulary.DeviceSetting.Kind.BRIGHTNESS -> changeBrightness(setting, done)
+            EmaSystemCommandVocabulary.DeviceSetting.Kind.VOLUME -> {
+                when (setting.action) {
+                    EmaSystemCommandVocabulary.DeviceSetting.Action.INCREASE ->
+                        adjustVolume(AudioManager.ADJUST_RAISE, "Volume increased.", done)
+                    EmaSystemCommandVocabulary.DeviceSetting.Action.DECREASE ->
+                        adjustVolume(AudioManager.ADJUST_LOWER, "Volume decreased.", done)
+                    EmaSystemCommandVocabulary.DeviceSetting.Action.MAX ->
+                        setVolumePercent(100, done)
+                    EmaSystemCommandVocabulary.DeviceSetting.Action.MIN ->
+                        setVolumePercent(0, done)
+                    EmaSystemCommandVocabulary.DeviceSetting.Action.SET ->
+                        setVolumePercent(setting.value ?: 50, done)
+                    else -> {
+                        val message = "Tell me whether to raise or lower the volume, or a percentage from 0 to 100."
+                        speak(message); done(message)
+                    }
+                }
+            }
             EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE,
             EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI,
             EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH -> {
