@@ -1,5 +1,7 @@
+import tempfile
 import unittest
-from tools.report_gradle_failure import failure_excerpt
+from pathlib import Path
+from tools.report_gradle_failure import failure_excerpt, test_failure_excerpt as extract_test_failure_excerpt
 
 
 class GradleDiagnosticsTest(unittest.TestCase):
@@ -20,3 +22,10 @@ class GradleDiagnosticsTest(unittest.TestCase):
         result = failure_excerpt("e: file:///app/build.gradle.kts:90: Unresolved reference\nFAILURE: Build failed\n* What went wrong:\nScript compilation errors\n* Try:\nHelp")
         self.assertIn("Unresolved reference", result)
         self.assertIn("Script compilation errors", result)
+
+    def test_unit_test_failures_are_extracted_from_gradle_xml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "TEST-suite.xml"
+            report.write_text('<testsuite><testcase classname="Example" name="bad"><failure message="expected 1"/></testcase></testsuite>')
+            result = extract_test_failure_excerpt(Path(directory))
+        self.assertIn("Example.bad: expected 1", result)
