@@ -101,7 +101,7 @@ class EmaLexiconSlotsTest {
     fun theSuggestionsNameSomethingThatWorks() {
         val suggestions = EmaLexicon.suggestionsFor("play something nice")
         assertTrue(suggestions.isNotEmpty())
-        assertTrue(suggestions.first().contains("play", ignoreCase = true))
+        assertTrue(suggestions.first().contains("media", ignoreCase = true))
     }
 
     @Test

@@ -89,8 +89,8 @@ class EmaLexiconTest {
     @Test
     fun anUnknownRequestGetsTheClosestThingEmaCanDo() {
         val suggestions = EmaLexicon.suggestionsFor("play some music on my phone")
-        assertTrue("expected a suggestion, got $suggestions", suggestions.isNotEmpty())
-        assertTrue(suggestions.first().contains("play", ignoreCase = true))
+        assertTrue("expected a concise capability hint, got $suggestions", suggestions.isNotEmpty())
+        assertTrue(suggestions.first().contains("installed apps", ignoreCase = true))
     }
 
     @Test
