@@ -221,6 +221,14 @@ class EmaCommandGrammarTest {
     }
 
     @Test
+    fun callAcceptsOrdinalSimSelection() {
+        val command = EmaCommandGrammar.interpret("call Daniel on the second SIM") as? EmaCommand.CallContact
+        assertNotNull(command)
+        assertEquals("Daniel", command!!.name)
+        assertEquals(2, command.sim)
+    }
+
+    @Test
     fun dialIsACall() {
         val command = EmaCommandGrammar.interpret("dial 08012345678") as? EmaCommand.CallContact
         assertNotNull(command)

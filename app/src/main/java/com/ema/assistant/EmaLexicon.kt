@@ -146,19 +146,35 @@ object EmaLexicon {
      * kind instead of an app. "play my playlist" names a kind, not an app.
      */
     val APP_KINDS: Map<String, Set<String>> = linkedMapOf(
-        "media" to setOf("music", "song", "songs", "playlist", "playlists", "podcast", "podcasts", "audio", "album"),
-        "message" to setOf("message", "messages", "chat", "chats", "text", "texts", "sms"),
+        "media" to setOf("music", "song", "songs", "playlist", "playlists", "podcast", "podcasts", "audio", "album", "music player"),
+        "message" to setOf("message", "messages", "chat", "chats", "text", "texts", "sms", "messaging"),
         "call" to setOf("call", "calls", "phone", "dialer", "contacts"),
-        "browser" to setOf("browser", "web", "internet", "google"),
-        "camera" to setOf("camera", "photo", "photos"),
+        "browser" to setOf("browser", "web", "internet", "web browser"),
+        "camera" to setOf("camera", "photo", "photos", "gallery", "image", "images"),
+        "files" to setOf("files", "file", "file manager", "documents"),
+        "notes" to setOf("notes", "note", "notepad"),
         "maps" to setOf("maps", "map", "navigation", "directions")
     )
 
-    /** The kind a word names, or null. */
+    /** The kind a word or phrase names, or null. Longer category phrases win. */
     fun appKindFor(word: String): String? {
-        val clean = word.trim().lowercase()
+        val clean = word.trim().lowercase().replace(Regex("\\s+"), " ")
         for ((kind, words) in APP_KINDS) if (clean in words) return kind
-        return null
+        val tokens = clean.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }.toSet()
+        for ((kind, words) in APP_KINDS) {
+            if (words.any { alias -> alias.contains(' ') && alias.split(' ').all { it in tokens } }) return kind
+        }
+        return appKindIn(clean)
+    }
+
+    /** Category mentioned anywhere in an utterance, for learned app usage. */
+    fun appKindIn(text: String): String? {
+        val normalized = text.lowercase().replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+        return APP_KINDS.entries
+            .flatMap { (kind, aliases) -> aliases.map { alias -> kind to alias } }
+            .sortedByDescending { it.second.length }
+            .firstOrNull { (_, alias) -> Regex("\\b" + Regex.escape(alias) + "\\b").containsMatchIn(normalized) }
+            ?.first
     }
 
     /** The canonical id for a phrase, or null when it names nothing known. */
@@ -271,6 +287,14 @@ object EmaLexicon {
 
     // ------------------------------------------------------- mishearings
 
+    /** Small on-device seed equivalences; user-taught aliases take precedence later. */
+    val BASE_SYNONYMS: Map<String, String> = linkedMapOf(
+        "mommy" to "mummy",
+        "web browser" to "browser",
+        "photo gallery" to "gallery",
+        "music player" to "music"
+    )
+
     /**
      * Words the speech recogniser produces when it heard something else.
      * The mapping is to the word EMA meant, not to a command: the request
@@ -308,6 +332,11 @@ object EmaLexicon {
         return intentForVerb(verb)?.id in setOf("send-message", "search", "reminder")
     }
 
+    /** Also catch a content action following an app clause or sequence connector. */
+    private fun hasContentIntent(command: String): Boolean = isContentCommand(command) ||
+        Regex("(?i)\\b(?:send|message|text|email|search|find|look\\s+up|remind(?:er)?)\\b")
+            .containsMatchIn(command)
+
     /**
      * The content of a request: the body of a message, a search or a
      * reminder. Null when the request has none.
@@ -336,15 +365,64 @@ object EmaLexicon {
      */
     fun applyMishearings(text: String, inFreeText: Boolean = false): String {
         if (inFreeText) return text
-        val head = withoutContent(text)
+        // Search and reminder tails are free text even when their query happens
+        // to contain a word such as "saying"; leave the entire utterance intact.
+        if (Regex("(?i)\\b(?:search|find|look\\s+up|remind(?:er)?)\\b").containsMatchIn(text)) return text
+        // When a message verb appears after an app clause, protect everything
+        // after the content marker as well (e.g. "on WhatsApp, message X saying Y").
+        val marker = CONTENT_MARKER.find(text)
+        if (hasContentIntent(text) && marker == null) return text
+        val head = if (hasContentIntent(text) && marker != null) text.substring(0, marker.range.last + 1) else withoutContent(text)
         val content = text.substring(head.length)
         var out = head
-        for ((heard, meant) in MISHEARINGS) {
+        for ((heard, meant) in BASE_SYNONYMS + MISHEARINGS) {
             if (out.lowercase().contains(heard)) {
                 out = out.replace(Regex("(?i)\\b" + Regex.escape(heard) + "\\b"), meant)
             }
         }
         return out + content
+    }
+
+    /**
+     * Apply explicitly taught surface forms to the command portion only.
+     * Multi-word phrases are replaced longest-first and mappings can chain,
+     * with cycle and depth guards. Message/search/reminder content is never
+     * rewritten here; contact aliases are resolved in their dedicated slot.
+     */
+    fun applyLearnedAliases(text: String, aliases: Map<String, String>): String {
+        if (aliases.isEmpty()) return text
+        val marker = CONTENT_MARKER.find(text)
+        // Search queries and reminder bodies have no universal boundary marker,
+        // so leave those utterances whole. For a message with a content marker,
+        // aliases may still normalize the command prefix, never the body.
+        val protectWhole = Regex("(?i)\\b(?:search|find|look\\s+up|remind(?:er)?)\\b").containsMatchIn(text) ||
+            (hasContentIntent(text) && marker == null)
+        if (protectWhole) return text
+        val splitAt = if (hasContentIntent(text)) marker?.range?.last?.plus(1) ?: text.length else text.length
+        val prefix = text.substring(0, splitAt)
+        val content = text.substring(splitAt)
+        var result = prefix
+        val seen = mutableSetOf<String>()
+        repeat(4) {
+            val key = result.lowercase().replace(Regex("[^\\p{L}\\p{N}' ]"), " ").replace(Regex("\\s+"), " ").trim()
+            if (!seen.add(key)) return result + content
+            var changed = false
+            for ((surface, meaning) in aliases.entries.sortedByDescending { it.key.length }) {
+                val from = surface.trim().replace(Regex("\\s+"), " ")
+                val to = meaning.trim()
+                if (from.isBlank() || to.isBlank() || from.equals(to, ignoreCase = true)) continue
+                val phrasePattern = from.split(Regex("\\s+")).joinToString("\\s+") { Regex.escape(it) }
+                val optionalLead = if (from.startsWith("my ") || from.startsWith("our ") || from.startsWith("the ")) "" else "(?:(?:my|our|the)\\s+)?"
+                val pattern = Regex("(?i)(?<![\\p{L}\\p{N}])" + optionalLead + phrasePattern + "(?![\\p{L}\\p{N}])")
+                if (pattern.containsMatchIn(result)) {
+                    val next = pattern.replace(result, to)
+                    val nextKey = next.lowercase().replace(Regex("[^\\p{L}\\p{N}' ]"), " ").replace(Regex("\\s+"), " ").trim()
+                    if (next != result && nextKey !in seen) { result = next; seen += nextKey; changed = true }
+                }
+            }
+            if (!changed) return result + content
+        }
+        return result + content
     }
 
     // -------------------------------------------------------- suggestions
@@ -357,47 +435,12 @@ object EmaLexicon {
      */
     fun suggestionsFor(command: String): List<String> {
         val cleaned = stripLeadings(command)
-        if (cleaned.isBlank()) return emptyList()
         val words = cleaned.lowercase().split(Regex("[^a-z0-9' ]+")).filter { it.isNotBlank() }
-        if (words.isEmpty()) return emptyList()
-
-        val verb = intentForVerb(words.first())
-        if (verb != null) return listOf(verb.example)
-
-        // No leading verb: look for a word that names a capability.
-        val hints = linkedMapOf(
-            "song" to "open Spotify and play Calm Down",
-            "music" to "open Spotify and play Calm Down",
-            "playlist" to "open Spotify and play Calm Down",
-            "album" to "open Spotify and play Calm Down",
-            "movie" to "search movies on YouTube",
-            "video" to "search videos on YouTube",
-            "message" to "send John a message saying I am on my way",
-            "whatsapp" to "send John a message on WhatsApp saying I am on my way",
-            "text" to "send John a message saying I am on my way",
-            "email" to "send John an email saying the report is ready",
-            "call" to "call Ada Lovelace",
-            "alarm" to "set an alarm for 7 am",
-            "remind" to "remind me to take my medicine at 9 pm",
-            "timer" to "set a timer for 10 minutes",
-            "brightness" to "increase brightness to maximum",
-            "volume" to "set volume to 50 percent",
-            "dnd" to "turn on Do Not Disturb",
-            "airplane" to "turn on airplane mode",
-            "wifi" to "turn on wifi",
-            "bluetooth" to "turn on bluetooth",
-            "flashlight" to "turn on flashlight",
-            "screen" to "read screen",
-            "shortcut" to "remember that whenever I say 'for me' it means open the Phormi app",
-            "schedule" to "at 9 pm open Spotify and play Calm Down"
-        )
-        for (word in words) {
-            hints[word]?.let { return listOf(it) }
+        val intent = words.firstOrNull()?.let(::intentForVerb)
+        return if (intent != null) {
+            listOf("I can help with ${intent.id} requests when the target and needed details are clear.")
+        } else {
+            listOf("EMA can control installed apps, handle media, messages and calls, manage alarms and reminders, and read or control the screen.")
         }
-        // Nothing specific: offer the two capabilities people ask for most.
-        return listOf(
-            "open an app and play something, for example: open Spotify and play Calm Down",
-            "send a message, for example: send John a message saying I am on my way"
-        )
     }
 }

@@ -433,6 +433,8 @@ class EmaAccessibilityService : AccessibilityService() {
         }
         queued.forEach { finishSearch(it, false) }
         searchDriverScheduled = false
+        assistantScreenshot?.recycle()
+        assistantScreenshot = null
         if (instance === this) instance = null
         super.onDestroy()
     }
@@ -1201,8 +1203,10 @@ class EmaAccessibilityService : AccessibilityService() {
             captureDisplayScreenshotInternal { live ->
                 if (live != null) callback(live)
                 else {
-                    val copy = EmaVoiceInteractionSession.currentScreenScreenshotCopy()
-                    callback(copy)
+                    // The retained assist screenshot is consumed once as a
+                    // fallback for this OCR request, then both cached copies
+                    // are released. The OCR caller recycles the returned copy.
+                    callback(EmaVoiceInteractionSession.consumeScreenScreenshot())
                 }
             }
         }

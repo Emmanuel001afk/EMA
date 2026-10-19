@@ -12,13 +12,18 @@ import android.speech.SpeechRecognizer
  * Declaring one is mandatory for Android's digital-assistant registration:
  * `VoiceInteractionServiceInfo` treats a voice-interaction XML without a
  * recognition service as a parse error, so the assistant never appears in the
- * system list. The service delegates to an explicit external recogniser (or the
- * on-device one) — never to the default recogniser, which could resolve back to
- * this service and recurse.
+ * system list. It delegates to an explicit platform recogniser by default and
+ * runs the local Vosk backend only when a request selects it; it never resolves
+ * to itself recursively.
  */
 class EmaRecognitionService : RecognitionService() {
 
+    companion object {
+        const val EXTRA_FORCE_OFFLINE = "com.ema.assistant.extra.FORCE_OFFLINE_RECOGNITION"
+    }
+
     @Volatile private var delegate: SpeechRecognizer? = null
+    @Volatile private var offline: EmaOfflineCommandRecognition? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -27,6 +32,12 @@ class EmaRecognitionService : RecognitionService() {
 
     override fun onStartListening(recognizerIntent: Intent, listener: Callback) {
         release()
+        if (recognizerIntent.getBooleanExtra(EXTRA_FORCE_OFFLINE, false)) {
+            val local = EmaOfflineCommandRecognition(this, listener)
+            offline = local
+            local.start()
+            return
+        }
         val recognizer = EmaSpeechRecognition.createRecognizer(this)
         if (recognizer == null) {
             listener.error(SpeechRecognizer.ERROR_CLIENT)
@@ -62,10 +73,11 @@ class EmaRecognitionService : RecognitionService() {
     }
 
     override fun onStopListening(listener: Callback) {
-        runCatching { delegate?.stopListening() }
+        offline?.stopListening() ?: runCatching { delegate?.stopListening() }
     }
 
     override fun onCancel(listener: Callback) {
+        offline?.cancel()
         runCatching { delegate?.cancel() }
         release()
     }
@@ -76,6 +88,8 @@ class EmaRecognitionService : RecognitionService() {
     }
 
     private fun release() {
+        offline?.cancel()
+        offline = null
         runCatching { delegate?.destroy() }
         delegate = null
     }

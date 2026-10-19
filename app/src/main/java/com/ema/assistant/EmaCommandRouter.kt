@@ -56,6 +56,8 @@ class EmaCommandRouter(
         val body: String? = null,
         val sim: Int? = null,
         val candidates: List<String> = emptyList(),
+        /** Actual contact rows preserve phone suffixes for disambiguation. */
+        val contactOptions: List<ContactLookup.Contact> = emptyList(),
         /** Triggers waiting for an ambiguity answer ("which app did you mean?"). */
         val triggers: List<String> = emptyList()
     )
@@ -296,6 +298,11 @@ class EmaCommandRouter(
             // Words the recogniser got wrong ("what's up" for "WhatsApp") are
             // corrected here, but never inside the content of a message, a
             // search or a reminder.
+            // Owner-taught surface forms outrank the built-in seed vocabulary.
+            // Both run before planning, grammar, app-name matching and contact
+            // resolution. Content-bearing requests are deliberately excluded so
+            // message/search/reminder text remains exactly what the owner said.
+            command = EmaLexicon.applyLearnedAliases(command, EmaMemoryStore.load(context).aliases)
             command = EmaLexicon.applyMishearings(command)
             currentCommand = command
 
@@ -573,6 +580,7 @@ class EmaCommandRouter(
 
     /** The kind of request a command is, when it uses an app. */
     private fun usageKind(command: String): String? {
+        EmaLexicon.appKindIn(command)?.let { return it }
         val verb = EmaLexicon.firstVerb(command) ?: return null
         return when (EmaLexicon.intentForVerb(verb)?.id) {
             "play-media" -> "media"
@@ -710,17 +718,9 @@ class EmaCommandRouter(
         } else {
             "No AI service is configured, so I answered using only the on-device assistant."
         }
-        val suggestions = EmaLexicon.suggestionsFor(command)
-        val closest = if (suggestions.isEmpty()) {
-            "Try naming the app, for example: open Spotify and play Arcade."
-        } else {
-            "Closest thing I can do: " + suggestions.joinToString(" ") +
-                " Say it that way and I will do it."
-        }
         return "I could not turn \"$command\" into a phone action. $reason " +
-            "I can open and control apps, play and search media, send messages, make calls, " +
-            "set alarms, timers and reminders, navigate Settings, and read or control the screen. " +
-            closest
+            "I can control installed apps, handle media, messages and calls, manage alarms and reminders, " +
+            "navigate Settings, and read or control the screen. Tell me the action and target you intended, in your own words."
     }
 
     // ------------------------------------------------------- system commands
@@ -1166,7 +1166,7 @@ class EmaCommandRouter(
             // No app named and no recent app: resume or start via the transport.
             val ok = EmaAccessibilityService.mediaTransport(EmaAccessibilityService.MediaTransportAction.PLAY)
             val message = if (ok) "I asked Android to start playback. Tell me the app if you want a specific song."
-            else "Tell me which app to play ${command.query} in, for example: play ${command.query} on Spotify."
+            else "Tell me which installed app you want to use for ${command.query}."
             speak(message); done(message)
             return
         }
@@ -1690,37 +1690,91 @@ class EmaCommandRouter(
         }
     }
 
+    /** Rank confirmed contact choices by call/message frequency, then recency. */
+    private fun preferredContact(alias: String, candidates: List<ContactLookup.Contact>): ContactLookup.Contact? {
+        val aliasKey = EmaAppResolver.normalize(alias).replace(' ', '_')
+        if (aliasKey.isBlank()) return null
+        val preferences = runCatching {
+            context.getSharedPreferences("ema_contact_choices", Context.MODE_PRIVATE)
+        }.getOrNull() ?: return null
+        return candidates.mapNotNull { contact ->
+            val phone = contact.phone.orEmpty().filter(Char::isDigit)
+            if (phone.isBlank()) null else {
+                val key = "${aliasKey}_$phone"
+                Triple(contact, preferences.getInt("count_$key", 0), preferences.getLong("at_$key", 0L))
+            }
+        }.filter { it.second > 0 }
+            .maxWithOrNull(compareBy<Triple<ContactLookup.Contact, Int, Long>> { it.second }.thenBy { it.third })
+            ?.first
+    }
+
+    private fun rememberContactChoice(alias: String, contact: ContactLookup.Contact) {
+        val aliasKey = EmaAppResolver.normalize(alias).replace(' ', '_')
+        val phone = contact.phone.orEmpty().filter(Char::isDigit)
+        if (aliasKey.isBlank() || phone.isBlank()) return
+        runCatching {
+            val preferences = context.getSharedPreferences("ema_contact_choices", Context.MODE_PRIVATE)
+            val key = "${aliasKey}_$phone"
+            preferences.edit()
+                .putInt("count_$key", preferences.getInt("count_$key", 0) + 1)
+                .putLong("at_$key", System.currentTimeMillis())
+                .apply()
+        }
+    }
+
     private fun sendAppMessage(
         recipient: String,
         app: String,
         body: String,
         done: (String) -> Unit
     ) {
+        // Resolve aliases only in the extracted recipient slot, never in body text.
+        val contactQuery = EmaLexicon.applyLearnedAliases(recipient, EmaMemoryStore.load(context).aliases)
         if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             requestPermission(Manifest.permission.READ_CONTACTS)
-            val result = "EMA needs Contacts access to find $recipient. Grant it, then repeat the message."
+            val result = "EMA needs Contacts access to find $contactQuery. Grant it, then repeat the message."
             speak(result); done(result); return
         }
 
-        val candidates = ContactLookup.find(context, recipient)
+        val candidates = ContactLookup.find(context, contactQuery)
 
         if (candidates.isEmpty()) {
-            val result = "I couldn't find $recipient in your contacts."
+            val result = "I couldn't find $contactQuery in your contacts."
             speak(result); done(result); return
         }
 
         val best = ContactLookup.best(candidates)
 
         if (best.size > 1) {
-            val names = best.take(3).joinToString(", ") { it.displayName }
-            pendingTask = PendingTask("message", recipient, app, body, candidates = best.map { it.displayName }.distinct())
-            val result = "I found more than one possible contact for $recipient: $names. Tell me which one."
+            val preferred = preferredContact(contactQuery, best)
+            if (preferred != null) {
+                pendingTask = null
+                rememberContactChoice(contactQuery, preferred)
+                sendAppMessageToContact(preferred, app, body, done)
+                return
+            }
+            val names = best.take(3).joinToString(", ") { contact ->
+                val suffix = contact.phone.orEmpty().filter(Char::isDigit).takeLast(4)
+                if (suffix.isBlank()) contact.displayName else "${contact.displayName}, ending $suffix"
+            }
+            pendingTask = PendingTask("message", contactQuery, app, body,
+                candidates = best.map { it.displayName }.distinct(), contactOptions = best)
+            val result = "I found more than one possible contact for $contactQuery: $names. Tell me which one."
             speak(result); done(result); return
         }
 
         pendingTask = null
-        val selected = best.first()
-        val key = EmaDuplicateGuard.messageKey(app, selected.displayName, body)
+        rememberContactChoice(contactQuery, best.first())
+        sendAppMessageToContact(best.first(), app, body, done)
+    }
+
+    private fun sendAppMessageToContact(
+        selected: ContactLookup.Contact,
+        app: String,
+        body: String,
+        done: (String) -> Unit
+    ) {
+        val key = EmaDuplicateGuard.messageKey(app, selected.displayName + selected.phone.orEmpty(), body)
         val now = android.os.SystemClock.elapsedRealtime()
         if (EmaDuplicateGuard.shared.recentlyDone(key, now)) {
             val result = "I sent that exact message to ${selected.displayName} less than a minute ago, so I did not send it again."
@@ -1818,23 +1872,45 @@ class EmaCommandRouter(
             Regex("(?i)\\b(first|1st|one)\\b").containsMatchIn(command) -> 0
             Regex("(?i)\\b(second|2nd|two)\\b").containsMatchIn(command) -> 1
             Regex("(?i)\\b(third|3rd|three)\\b").containsMatchIn(command) -> 2
+            Regex("(?i)\\b(last|final)\\b").containsMatchIn(command) && task.contactOptions.isNotEmpty() -> task.contactOptions.lastIndex
             else -> -1
         }
-        val sim = Regex("(?i)\\b(?:with\\s+)?(?:sim|slot)\\s*([12])\\b").find(command)
-            ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val endingDigits = Regex("(?i)\\bending(?:\\s+with)?\\s+(\\d{2,})\\b").find(command)
+            ?.groupValues?.getOrNull(1)
+        val simMatch = Regex("(?i)\\b(?:(?:with|on)\\s+)?(?:sim|slot)\\s*([12])\\b|\\b(first|1st|second|2nd)\\s+sim\\b").find(command)
+        val sim = simMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: when (simMatch?.groupValues?.getOrNull(2)?.lowercase()) {
+            "first", "1st" -> 1
+            "second", "2nd" -> 2
+            else -> null
+        }
+        val contact = when {
+            !endingDigits.isNullOrBlank() -> ContactLookup.endingWith(task.contactOptions, endingDigits)
+            ordinal >= 0 -> task.contactOptions.getOrNull(ordinal)
+            else -> task.contactOptions.firstOrNull {
+                EmaAppResolver.normalize(it.displayName) == EmaAppResolver.normalize(command.trim())
+            }
+        }
+        if (!endingDigits.isNullOrBlank() && contact == null) {
+            finishAssistantResponse("I don't see exactly one matching contact ending in $endingDigits. Choose one from the list I gave you.", done)
+            return true
+        }
         val selectedName = when {
+            contact != null -> contact.displayName
             exactOriginal -> task.target
             ordinal >= 0 -> task.candidates.getOrNull(ordinal)
             else -> command.replace(Regex("(?i)^(the\\s+)?(one|person)\\s+"), "").trim()
                 .takeIf { it.isNotBlank() && !it.equals("the other", true) }
         } ?: return false
         pendingTask = null
+        if (contact != null) rememberContactChoice(task.target, contact)
         if (task.type == "call") {
-            callContact(if (sim != null) "$selectedName with SIM $sim" else selectedName, done)
+            if (contact != null) placeCall(contact.phone.orEmpty(), contact.displayName, done, sim)
+            else callContact(if (sim != null) "$selectedName with SIM $sim" else selectedName, done)
             return true
         }
         if (task.type == "message" && task.app != null && !task.body.isNullOrBlank()) {
-            sendAppMessage(selectedName, task.app, task.body, done)
+            if (contact != null) sendAppMessageToContact(contact, task.app, task.body, done)
+            else sendAppMessage(selectedName, task.app, task.body, done)
             return true
         }
         return false
@@ -1843,7 +1919,8 @@ class EmaCommandRouter(
     private fun callContact(rawName: String, done: (String) -> Unit) {
         val sim = Regex("(?i)\\b(?:with\\s+)?(?:sim|slot)\\s*([12])\\s*$").find(rawName)
             ?.groupValues?.getOrNull(1)?.toIntOrNull()
-        val name = rawName.replace(Regex("(?i)\\s+(?:with\\s+)?(?:sim|slot)\\s*[12]\\s*$"), "").trim()
+        val rawContactName = rawName.replace(Regex("(?i)\\s+(?:with\\s+)?(?:sim|slot)\\s*[12]\\s*$"), "").trim()
+        val name = EmaLexicon.applyLearnedAliases(rawContactName, EmaMemoryStore.load(context).aliases)
         if (name.isBlank()) {
             val message = "Tell me who to call."
             speak(message); done(message); return
@@ -1868,14 +1945,26 @@ class EmaCommandRouter(
 
         val best = ContactLookup.best(candidates)
         if (best.size > 1) {
-            val names = best.take(3).joinToString(", ") { it.displayName }
-            pendingTask = PendingTask("call", name, sim = sim, candidates = best.map { it.displayName }.distinct())
+            val preferred = preferredContact(name, best)
+            if (preferred != null) {
+                pendingTask = null
+                rememberContactChoice(name, preferred)
+                placeCall(preferred.phone.orEmpty(), preferred.displayName, done, sim)
+                return
+            }
+            val names = best.take(3).joinToString(", ") { contact ->
+                val suffix = contact.phone.orEmpty().filter(Char::isDigit).takeLast(4)
+                if (suffix.isBlank()) contact.displayName else "${contact.displayName}, ending $suffix"
+            }
+            pendingTask = PendingTask("call", name, sim = sim,
+                candidates = best.map { it.displayName }.distinct(), contactOptions = best)
             val result = "I found more than one possible contact for $name: $names. Tell me which one."
             speak(result); done(result); return
         }
 
         pendingTask = null
         val selected = best.first()
+        rememberContactChoice(name, selected)
         placeCall(selected.phone.orEmpty().ifBlank { name }, selected.displayName, done, sim)
     }
 
@@ -2038,7 +2127,7 @@ class EmaCommandRouter(
     private fun openTimer(value: String, done: (String) -> Unit) {
         val duration = EmaTimeParser.parseDuration(value)
         if (duration == null) {
-            val result = "Tell me the timer duration, for example: set a timer for 10 minutes."
+            val result = "Tell me how long the timer should run."
             speak(result); done(result); return
         }
         val intent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
@@ -2672,7 +2761,7 @@ class EmaCommandRouter(
     private fun handleDaySchedule(command: String, done: (String) -> Unit) {
         val body = command.substringAfter(":", missingDelimiterValue = "").trim()
         if (body.isBlank()) {
-            val message = "Give me today's schedule as times and tasks, for example: schedule my day: 8 AM class; 1 PM meeting; 6 PM gym."
+            val message = "Tell me the times and tasks you want in today's schedule."
             speak(message); done(message); return
         }
 
@@ -2963,6 +3052,9 @@ class EmaCommandRouter(
         // no phrase list and no guessed package name.
         val applied = current.apply(op, installedApps()) ?: return false // e.g. recall of something never saved
         if (applied.memory != current) EmaMemoryStore.save(context, applied.memory)
+        if (op == EmaMemory.Op.ForgetAll) {
+            runCatching { context.getSharedPreferences("ema_contact_choices", Context.MODE_PRIVATE).edit().clear().apply() }
+        }
         applied.pendingShortcut?.let { pending ->
             pendingTask = PendingTask(
                 type = "shortcut-app",

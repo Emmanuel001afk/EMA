@@ -22,7 +22,7 @@ class EmaKnowledgeTest {
         assertTrue(a("what's 10 divided by 4")!!.endsWith("= 2.5."))
         assertTrue(a("what is the square root of 144")!!.endsWith("= 12."))
         assertTrue(a("5 factorial")!!.endsWith("= 120."))
-        assertEquals("That is undefined, for example a division by zero.", a("what is 5 / 0"))
+        assertEquals("That result is undefined.", a("what is 5 / 0"))
     }
 
     @Test fun conversions() {

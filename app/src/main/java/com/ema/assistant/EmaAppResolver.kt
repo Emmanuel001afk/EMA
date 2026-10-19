@@ -64,9 +64,12 @@ object EmaAppResolver {
         "audible" to listOf("audible"),
         "podcasts" to listOf("podcast"),
         "chrome" to listOf("chrome"),
-        "browser" to listOf("chrome", "browser", "firefox", "edge", "samsung internet", "opera", "brave"),
-        "web browser" to listOf("chrome", "browser", "firefox", "edge"),
-        "default browser" to listOf("chrome", "browser", "firefox", "edge"),
+        // A generic browser request is a category, not a preference for Chrome
+        // or any other vendor. Strong label/package matches are resolved below;
+        // Android's default browser is consulted only as a final fallback.
+        "browser" to listOf("browser"),
+        "web browser" to listOf("browser"),
+        "default browser" to listOf("browser"),
         "gmail" to listOf("gmail"),
         "mail" to listOf("gmail", "mail", "email", "outlook"),
         "email" to listOf("gmail", "mail", "email", "outlook"),

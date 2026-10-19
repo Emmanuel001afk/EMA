@@ -153,20 +153,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
         root.addView(status)
         root.addView(TextView(this).apply {
-            text = "TRY A REQUEST"
-            textSize = 12f
-            letterSpacing = 0.12f
-            setPadding(0, dp(24), 0, dp(8))
+            text = "Use your own words. EMA will learn the names and choices you teach it."
+            textSize = 13f
+            setPadding(0, dp(18), 0, dp(8))
         })
-        listOf("Message Daniel on WhatsApp that I am coming home", "Open YouTube, search for football and play the first result",
-            "What is 15% of 2400?", "Remind me to drink water in 30 minutes", "What can you do?").forEach { example ->
-            root.addView(Button(this).apply {
-                text = example
-                isAllCaps = false
-                gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
-                setOnClickListener { commandInput.setText(example); commandInput.requestFocus() }
-            })
-        }
         val home = root
         val settings = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -326,8 +316,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 prefs.edit().putBoolean("require_wake_phrase", enabled).apply()
             }
         })
+        root.addView(Switch(this).apply {
+            text = "Allow optional local English recognition if system speech fails"
+            isChecked = EmaSpeechRecognition.isOfflineEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, enabled -> EmaSpeechRecognition.setOfflineEnabled(this@MainActivity, enabled) }
+        })
         root.addView(TextView(this).apply {
-            text = "While the assistant is visible, say Hey EMA followed by your request, or say Hey EMA and then one request. This is not always-on background wake-up. Speech recognition may use your phone’s speech provider."
+            text = "Android speech recognition remains the default. Local fallback uses EMA’s bundled English model when the device has sufficient memory; it is skipped on low-memory devices."
             textSize = 13f
         })
 
@@ -614,71 +609,33 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         root.addView(profileRow)
     }
 
-    /** What EMA remembers and the opt-in "not understood" list, both fully under the user's control. */
+    /** Compact privacy controls; learned vocabulary and diagnostics stay off the main UI. */
     private fun addMemorySection(root: LinearLayout) {
         root.addView(TextView(this).apply {
-            text = "Memory & privacy"
+            text = "Privacy"
             textSize = 16f
             setPadding(0, dp(16), 0, dp(2))
         })
         root.addView(TextView(this).apply {
-            text = "EMA only stores what you explicitly ask it to: facts, shortcuts (\"remember that when I say… it means…\") and default apps. Shortcuts are only applied to whole requests and to app-name slots, never inside message text. EMA never stores passwords, PINs or card details. Recent results lists are forgotten after 10 minutes."
+            text = "Personal language, app preferences and contact choices stay in private on-device storage. Clear them at any time."
             textSize = 13f
         })
         root.addView(Button(this).apply {
-            text = "Forget everything EMA remembers"
-            isAllCaps = false
-            setOnClickListener { EmaMemoryStore.clear(this@MainActivity); EmaConversationContext.clear() }
-        })
-        root.addView(Switch(this).apply {
-            text = "Keep requests EMA didn't understand (on this phone only)"
-            isChecked = EmaLearningLog.isEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, on -> EmaLearningLog.setEnabled(this@MainActivity, on) }
-        })
-        root.addView(TextView(this).apply {
-            text = "EMA does not retrain itself. If you turn this on, you can copy the list into a bug report so the understanding rules can be improved and tested."
-            textSize = 13f
-        })
-        val learnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        learnRow.addView(Button(this).apply {
-            text = "Copy list"
+            text = "Clear personal data"
             isAllCaps = false
             setOnClickListener {
-                val items = EmaLearningLog.entries(this@MainActivity)
-                val clip = android.content.ClipData.newPlainText("EMA requests", items.joinToString("\n"))
-                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
-                status.text = if (items.isEmpty()) "The list is empty." else "Copied ${items.size} request(s)."
+                EmaMemoryStore.clear(this@MainActivity)
+                EmaLearningStore.forgetAll(this@MainActivity)
+                EmaLearningLog.setEnabled(this@MainActivity, false)
+                EmaLearningLog.clear(this@MainActivity)
+                EmaVoiceTemplateStore.clear(this@MainActivity)
+                EmaRunTraceStore.clear(this@MainActivity)
+                EmaConversationStore.clear(this@MainActivity)
+                getSharedPreferences("ema_contact_choices", MODE_PRIVATE).edit().clear().apply()
+                EmaConversationContext.clear()
+                status.text = "Personal data cleared."
             }
         })
-        learnRow.addView(Button(this).apply {
-            text = "Clear list"
-            isAllCaps = false
-            setOnClickListener { EmaLearningLog.clear(this@MainActivity); status.text = "Cleared." }
-        })
-        root.addView(learnRow)
-        root.addView(TextView(this).apply {
-            text = "The last runs are a short on-device record of what EMA heard, which layer answered, " +
-                "which steps ran and what each step said. Nothing leaves the phone, and no message " +
-                "body is kept beyond the first words."
-            textSize = 13f
-        })
-        val runRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        runRow.addView(Button(this).apply {
-            text = "Copy last runs"
-            isAllCaps = false
-            setOnClickListener {
-                val runs = EmaRunTraceStore.runs(this@MainActivity)
-                val clip = android.content.ClipData.newPlainText("EMA runs", EmaRunTraceStore.asText(this@MainActivity))
-                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
-                status.text = if (runs.isEmpty()) "There are no runs yet." else "Copied ${runs.size} run(s)."
-            }
-        })
-        runRow.addView(Button(this).apply {
-            text = "Clear runs"
-            isAllCaps = false
-            setOnClickListener { EmaRunTraceStore.clear(this@MainActivity); status.text = "Cleared the runs." }
-        })
-        root.addView(runRow)
     }
 
     /**
@@ -903,19 +860,21 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onError(e: Int) {
-                    val next = EmaRecognizerFallback.next(created.kind, retried)
-                    if (next != null) {
-                        val retry = EmaSpeechRecognition.create(this@MainActivity, next)
-                        if (retry != null) {
-                            android.util.Log.w(
-                                "EMA",
-                                "Speech recogniser ${created.kind} failed (error=$e); retrying the same session with ${retry.kind}"
-                            )
-                            recognizer?.destroy()
-                            recognizer = null
-                            startRecognizer(retry, vocabulary, retried = true)
-                            return
-                        }
+                    val retry = when {
+                        retried && created.kind == EmaRecognizerKind.EXTERNAL -> EmaSpeechRecognition.offlineRecognizer(this@MainActivity)
+                            ?.let { EmaSpeechRecognition.Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
+                        !retried -> EmaSpeechRecognition.nextAfterFailure(this@MainActivity, created.kind)
+                        else -> null
+                    }
+                    if (retry != null) {
+                        android.util.Log.w(
+                            "EMA",
+                            "Speech recogniser ${created.kind} failed (error=$e); retrying the same session with ${retry.kind}"
+                        )
+                        recognizer?.destroy()
+                        recognizer = null
+                        startRecognizer(retry, vocabulary, retried = true)
+                        return
                     }
                     conversation.setState(EmaConversationView.State.READY)
                     status.text = "I couldn't hear that. Try again."
@@ -935,7 +894,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         recognizer!!.startListening(
-            EmaSpeechRecognition.intent(vocabulary, partialResults = false, language = Locale.getDefault())
+            EmaSpeechRecognition.intent(vocabulary, partialResults = false, language = Locale.getDefault(), kind = created.kind)
         )
     }
 
