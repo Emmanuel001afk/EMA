@@ -32,8 +32,16 @@ class EmaRecognitionService : RecognitionService() {
 
     override fun onStartListening(recognizerIntent: Intent, listener: Callback) {
         release()
-        if (recognizerIntent.getBooleanExtra(EXTRA_FORCE_OFFLINE, false)) {
-            val local = EmaOfflineCommandRecognition(this, listener)
+        // Local-only mode is honoured even when the platform starts this
+        // service on its own: EMA must not delegate to a network recogniser on
+        // behalf of an owner who asked for offline.
+        val localOnly = EmaSpeechRecognition.engine(this).isLocalOnly
+        if (localOnly || recognizerIntent.getBooleanExtra(EXTRA_FORCE_OFFLINE, false)) {
+            val local = EmaOfflineCommandRecognition(
+                this,
+                listener,
+                learnedVocabulary = EmaSpeechRecognition.vocabulary(this)
+            )
             offline = local
             local.start()
             return

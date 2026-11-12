@@ -11,6 +11,11 @@ import java.util.Locale
 /**
  * Speech input that is aware of what the user has taught EMA.
  *
+ * The engine is a real choice, not a hidden fallback: [EmaSpeechEngine.LOCAL_ONLY]
+ * makes the microphone fully offline by never constructing an Android
+ * recogniser, while the other modes keep Google (or whichever recognition
+ * service is installed) in the picture.
+ *
  * Two reliability rules:
  *  - Never bind the *default* recogniser. Once EMA also offers a
  *    [EmaRecognitionService] (required for digital-assistant registration),
@@ -91,13 +96,13 @@ object EmaSpeechRecognition {
      * that another one works better on this phone. When the preferred kind
      * cannot even be created, the other one is used: a recogniser that does
      * not exist must not stop the user from speaking to EMA.
+     *
+     * The owner's engine choice is applied first: in local-only mode a system
+     * recogniser is never even constructed, so no audio can reach a network
+     * service by accident.
      */
     fun create(context: Context, preferred: EmaRecognizerKind? = preferredKind(context)): Recognizer? {
-        val order = when (preferred) {
-            EmaRecognizerKind.EXTERNAL -> listOf(EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.VOSK_OFFLINE)
-            EmaRecognizerKind.VOSK_OFFLINE -> listOf(EmaRecognizerKind.VOSK_OFFLINE, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL)
-            else -> listOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.VOSK_OFFLINE)
-        }
+        val order = engine(context).startOrder(preferred)
         for (kind in order) {
             val recognizer = when (kind) {
                 EmaRecognizerKind.ON_DEVICE -> onDeviceRecognizer(context)
@@ -143,44 +148,91 @@ object EmaSpeechRecognition {
     }
 
     /**
-     * The optional Vosk command backend. It is English-only, user-enabled, and
-     * refused on low-memory phones or while the background Vosk wake service
-     * owns a model, avoiding a second large model load.
+     * EMA's own Vosk command backend: the bundled English model, the phone's
+     * microphone, no network.
+     *
+     * It is no longer refused just because the screen-off wake service is
+     * running. Both now share a single model instance ([EmaLocalModel]) and each
+     * pauses capture on handoff, so only one of them holds the microphone at a
+     * time. The memory floor is only required when the model still has to be
+     * loaded; once it is in memory this backend costs nothing extra.
      */
     fun offlineRecognizer(context: Context): SpeechRecognizer? {
-        if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_OFFLINE_ENABLED, false)) return null
-        if (!Locale.getDefault().language.equals("en", ignoreCase = true)) return null
-        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) return null
-        if (EmaWakeWordService.isRunning()) return null
-        val manager = context.getSystemService(android.app.ActivityManager::class.java) ?: return null
-        if (manager.isLowRamDevice) return null
-        val memory = android.app.ActivityManager.MemoryInfo()
-        manager.getMemoryInfo(memory)
-        if (memory.availMem < MIN_OFFLINE_MEMORY_BYTES) return null
+        if (!localModelUsable(context)) return null
         val component = ComponentName(context, EmaRecognitionService::class.java)
         return runCatching { SpeechRecognizer.createSpeechRecognizer(context, component) }.getOrNull()
     }
 
-    fun isOfflineEnabled(context: Context): Boolean = runCatching {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_OFFLINE_ENABLED, false)
-    }.getOrDefault(false)
+    /**
+     * Whether the local engine may run on this phone, without creating a
+     * recogniser (creating one has to be paired with `destroy()`, so a status
+     * label must not do it).
+     */
+    fun localModelUsable(context: Context): Boolean {
+        if (!engine(context).usesLocalModel) return false
+        if (!Locale.getDefault().language.equals("en", ignoreCase = true)) return false
+        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return false
+        val manager = context.getSystemService(android.app.ActivityManager::class.java) ?: return false
+        if (EmaLocalModel.isLoaded()) return true
+        if (manager.isLowRamDevice) return false
+        val memory = android.app.ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(memory)
+        return memory.availMem >= MIN_OFFLINE_MEMORY_BYTES
+    }
 
-    fun setOfflineEnabled(context: Context, enabled: Boolean) {
-        runCatching {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean(KEY_OFFLINE_ENABLED, enabled).apply()
+    /**
+     * One line for the settings screen: which engine is in force and why the
+     * local one may be unavailable on this phone.
+     */
+    fun engineSummary(context: Context): String {
+        val mode = engine(context)
+        val localUsable = localModelUsable(context)
+        return buildString {
+            append(
+                when (mode) {
+                    EmaSpeechEngine.LOCAL_ONLY -> "Phone-only engine"
+                    EmaSpeechEngine.SYSTEM_WITH_LOCAL_FALLBACK -> "Android first, phone model as fallback"
+                    EmaSpeechEngine.SYSTEM -> "Android recogniser only"
+                }
+            )
+            if (mode.usesLocalModel) {
+                append(if (localUsable) " • local model ready" else " • local model unavailable on this phone")
+            }
+            if (EmaLocalModel.isLoaded()) append(" • model in memory")
         }
     }
 
-    /** The next distinct backend after a failure; never returns the same backend. */
-    fun nextAfterFailure(context: Context, current: EmaRecognizerKind): Recognizer? {
-        val next = when (current) {
-            EmaRecognizerKind.ON_DEVICE -> externalRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.EXTERNAL) }
-                ?: offlineRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
-            EmaRecognizerKind.EXTERNAL -> offlineRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
-            EmaRecognizerKind.VOSK_OFFLINE -> null
+    /** Which engine the owner chose. Defaults to the historical behaviour. */
+    fun engine(context: Context): EmaSpeechEngine = runCatching {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        EmaSpeechEngine.parse(
+            stored = prefs.getString(KEY_ENGINE, null),
+            legacyLocalFallback = prefs.getBoolean(KEY_OFFLINE_ENABLED, false)
+        )
+    }.getOrDefault(EmaSpeechEngine.SYSTEM)
+
+    fun setEngine(context: Context, engine: EmaSpeechEngine) {
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_ENGINE, engine.name).apply()
         }
-        return next
+    }
+
+    /** The next distinct backend after a failure, or null when this mode forbids one. */
+    fun nextAfterFailure(context: Context, current: EmaRecognizerKind): Recognizer? {
+        val mode = engine(context)
+        val next = mode.nextAfterFailure(current) ?: return null
+        return when (next) {
+            EmaRecognizerKind.ON_DEVICE ->
+                onDeviceRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.ON_DEVICE) }
+            EmaRecognizerKind.EXTERNAL ->
+                externalRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.EXTERNAL) }
+            EmaRecognizerKind.VOSK_OFFLINE ->
+                if (mode.usesLocalModel) {
+                    offlineRecognizer(context)?.let { Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
+                } else null
+        }
     }
 
     /** The kind of recogniser that worked last time on this phone. */
@@ -203,6 +255,8 @@ object EmaSpeechRecognition {
 
     private const val PREFS = "ema_speech"
     private const val KEY_RECOGNIZER = "recognizer_kind"
+    private const val KEY_ENGINE = "speech_engine"
     private const val KEY_OFFLINE_ENABLED = "offline_command_stt_enabled"
     private const val MIN_OFFLINE_MEMORY_BYTES = 220L * 1024L * 1024L
 }
+

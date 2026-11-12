@@ -316,15 +316,39 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 prefs.edit().putBoolean("require_wake_phrase", enabled).apply()
             }
         })
-        root.addView(Switch(this).apply {
-            text = "Allow optional local English recognition if system speech fails"
-            isChecked = EmaSpeechRecognition.isOfflineEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, enabled -> EmaSpeechRecognition.setOfflineEnabled(this@MainActivity, enabled) }
-        })
         root.addView(TextView(this).apply {
-            text = "Android speech recognition remains the default. Local fallback uses EMA’s bundled English model when the device has sufficient memory; it is skipped on low-memory devices."
-            textSize = 13f
+            text = "Speech engine"
+            textSize = 16f
+            setPadding(0, dp(12), 0, dp(2))
         })
+        val engineSpinner = Spinner(this)
+        val engineLabels = listOf(
+            "Phone only (works offline, English)",
+            "Phone first, then Android",
+            "Android / Google (default)"
+        )
+        val engineValues = listOf(
+            EmaSpeechEngine.LOCAL_ONLY,
+            EmaSpeechEngine.SYSTEM_WITH_LOCAL_FALLBACK,
+            EmaSpeechEngine.SYSTEM
+        )
+        val engineExplanation = TextView(this).apply {
+            text = engineText(EmaSpeechRecognition.engine(this@MainActivity)) + "\n" +
+                EmaSpeechRecognition.engineSummary(this@MainActivity)
+            textSize = 13f
+        }
+        engineSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engineLabels)
+        engineSpinner.setSelection(engineValues.indexOf(EmaSpeechRecognition.engine(this)).coerceAtLeast(0))
+        engineSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                EmaSpeechRecognition.setEngine(this@MainActivity, engineValues[position])
+                engineExplanation.text = engineText(engineValues[position]) + "\n" +
+                    EmaSpeechRecognition.engineSummary(this@MainActivity)
+            }
+        }
+        root.addView(engineSpinner)
+        root.addView(engineExplanation)
 
         root.addView(TextView(this).apply {
             text = "Assistant session timeout"
@@ -807,7 +831,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
 
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+        // Local-only mode never needs Android's recogniser, so it must not be
+        // blocked by a phone that has none: EMA's own engine is the point.
+        if (EmaSpeechRecognition.engine(this).usesSystemRecognizer &&
+            !SpeechRecognizer.isRecognitionAvailable(this)) {
             status.text = "Speech recognition is unavailable."
             return
         }
@@ -818,7 +845,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val vocabulary = EmaSpeechRecognition.vocabulary(this)
         val created = EmaSpeechRecognition.create(this)
         if (created == null) {
-            status.text = "No speech recognizer other than EMA is available on this phone."
+            status.text = when {
+                EmaSpeechRecognition.engine(this).isLocalOnly ->
+                    "The phone-only engine is unavailable. English and a non-low-memory device are required; " +
+                        "Android's recogniser is not used in this mode."
+                else -> "No speech recognizer other than EMA is available on this phone."
+            }
             EmaWakeWordService.resumeAfterSession()
             return
         }
@@ -883,7 +915,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     EmaWakeWordService.resumeAfterSession()
                 }
 
-                override fun onReadyForSpeech(p: Bundle?) { conversation.setState(EmaConversationView.State.LISTENING) }
+                override fun onReadyForSpeech(p: Bundle?) {
+                    conversation.setState(EmaConversationView.State.LISTENING)
+                    if (created.kind == EmaRecognizerKind.VOSK_OFFLINE) {
+                        status.text = "Listening on this phone's own recogniser."
+                    }
+                }
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(v: Float) {}
                 override fun onBufferReceived(b: ByteArray?) {}

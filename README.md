@@ -254,9 +254,31 @@ accessible controls; this is not a promise that arbitrary tasks work in every ap
 **Session wake phrase:** opt in under Setup & preferences. While Android's EMA
 assistant session is visible, speech requires `Hey EMA <request>`, or `Hey EMA`
 followed by one request within ten seconds. Each request consumes the wake.
-Typed input bypasses this voice-only gate. This session gate is separate from the opt-in screen-off service described below. Recognition uses Android's
-selected speech provider, which may require a network connection even though
-command planning itself is offline.
+Typed input bypasses this voice-only gate. This session gate is separate from the opt-in screen-off service described below.
+
+**Speech engine (what reads the microphone):** reading the microphone is plain
+`AudioRecord` and never needs a network. The *recogniser* that turns audio into
+words is the part that can. Setup & preferences offers three engines:
+
+| Setting | What it does | Network |
+| --- | --- | --- |
+| **Phone only (works offline)** | EMA's bundled English Vosk model decodes every request; Android's recogniser is never constructed | Never |
+| **Phone first, then Android** | Android's recogniser first; a failed session retries on the local model | Possible |
+| **Android / Google (default)** | Android's recogniser only; the local model is never loaded | Possible |
+
+In **Phone only** the microphone, the decoding and the command planning are all
+local: no Google recogniser, no API key, no network. The trade-off is honest:
+the small bundled model is less accurate than a server recogniser, is English
+only, and is refused on low-memory devices. Both the local command engine and
+the screen-off wake service now share one model instance (`EmaLocalModel`), so
+they can coexist; only one of them captures the microphone at a time because
+capture pauses on handoff.
+
+The local decoder runs under the grammar in `EmaCommandVocabulary` (learned
+triggers and app labels are added at runtime), which stops a small model from
+inventing free-form prose, and it reports real per-word confidences
+(`EmaDecodeConfidence`) instead of a placeholder. A result whose weakest word is
+below the threshold is reported as "not heard" rather than acted on.
 
 **Message safety:** only the exact requested body read back from the composer
 may be submitted. Existing transcript text is not treated as a composed message.
@@ -306,7 +328,8 @@ service (`EmaWakeWordService`) uses Vosk locally with a restricted wake vocabula
 It is not Android SpeechRecognizer in a retry loop and sends no idle audio to a
 server. Once triggered, it releases AudioRecord before the assistant starts
 normal speech recognition and native command execution. The command recognizer
-may still use Android's configured network speech provider.
+uses the same speech engine the owner selected, so in **Phone only** mode the
+command recogniser is local too.
 
 ### The personal voice check (optional, on the phone)
 

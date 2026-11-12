@@ -10,7 +10,6 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.*
 import org.json.JSONObject
-import org.vosk.Model
 import org.vosk.Recognizer
 
 /** Local software keyword detector. FGS + partial wake lock support screen-off capture.
@@ -138,12 +137,15 @@ class EmaWakeWordService : Service() {
     private fun detect() {
         try {
             update("Preparing built-in Hey EMA engine • no download needed")
-            val modelDirectory = EmaWakeModel.prepare(this)
-            if (!running) return
-            Model(modelDirectory.path).use { model ->
+            val model = EmaLocalModel.acquire(this)
+            if (!running) {
+                EmaLocalModel.release()
+                return
+            }
+            try {
                 while (running) {
                     if (paused || EmaVoiceInteractionSession.isActiveVisible()) {
-                        update("Paused • microphone handed to EMA. Close the assistant to resume.")
+                        update("Paused • microphone handed to EMA, model kept loaded. Close the assistant to resume.")
                         while (running && (paused || EmaVoiceInteractionSession.isActiveVisible())) Thread.sleep(200)
                         continue
                     }
@@ -212,6 +214,8 @@ class EmaWakeWordService : Service() {
                         }
                     }
                 }
+            } finally {
+                EmaLocalModel.release()
             }
         } catch (e: Throwable) {
             // Includes unsupported native ABI/model loading failures; don't leave
@@ -356,3 +360,4 @@ class EmaWakeWordService : Service() {
         super.onDestroy()
     }
 }
+

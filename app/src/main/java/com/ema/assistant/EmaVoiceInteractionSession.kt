@@ -543,7 +543,10 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             setState("Ready", "Microphone permission is required for voice.")
             return
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+        // A local-only engine does not use Android's recogniser at all, so its
+        // absence must not stop the microphone from working.
+        if (EmaSpeechRecognition.engine(context).usesSystemRecognizer &&
+            !SpeechRecognizer.isRecognitionAvailable(context)) {
             setState("Ready", "Speech recognition is unavailable on this phone.")
             return
         }
@@ -553,7 +556,14 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         val vocabulary = EmaSpeechRecognition.vocabulary(context)
         val created = EmaSpeechRecognition.create(context)
         if (created == null) {
-            setState("Ready", "No speech recognizer other than EMA is available on this phone.")
+            setState(
+                "Ready",
+                if (EmaSpeechRecognition.engine(context).isLocalOnly) {
+                    "The phone-only engine is unavailable. English and a non-low-memory device are required."
+                } else {
+                    "No speech recognizer other than EMA is available on this phone."
+                }
+            )
             return
         }
         startRecognizer(created, vocabulary, retried = false)

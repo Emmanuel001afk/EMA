@@ -10,23 +10,32 @@ import android.os.Looper
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import org.json.JSONObject
-import org.vosk.Model
 import org.vosk.Recognizer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Optional, private Vosk command recognizer. Android's SpeechRecognizer remains
- * EMA's first choice; this engine is invoked only when the owner enables the
- * local fallback and a system recognizer is unavailable or fails.
+ * EMA's own command recogniser: Vosk, the bundled English model, the phone's
+ * microphone, and nothing else. No network, no Google service, no API key.
  *
- * Uses the already-bundled English wake model, prepares it in private storage,
- * and keeps PCM only in the current read buffer. It never writes audio or
- * transcripts to disk. Low-memory devices and an active background wake service
- * decline this backend rather than loading a second large model.
+ * Used two ways:
+ *  - as the fallback when Android's recogniser fails, and
+ *  - as the *only* engine when the owner selects [EmaSpeechEngine.LOCAL_ONLY],
+ *    which is what makes the assistant's microphone fully offline.
+ *
+ * The decoder runs under a command grammar ([EmaCommandVocabulary]) so a small
+ * model is not asked to invent free-form prose, and per-word confidences are
+ * reported instead of a hardcoded placeholder.
+ *
+ * The model itself is shared with the screen-off wake service through
+ * [EmaLocalModel], so both can be alive at once without a second copy in RAM.
+ * Only one of them ever captures the microphone, because capture is paused on
+ * handoff. PCM stays in the current read buffer; nothing is written to disk.
  */
 internal class EmaOfflineCommandRecognition(
     context: Context,
-    private val callbacks: android.speech.RecognitionService.Callback
+    private val callbacks: android.speech.RecognitionService.Callback,
+    /** Learned triggers and app labels, so the decoder may spell them. */
+    private val learnedVocabulary: List<String> = emptyList()
 ) {
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -57,9 +66,24 @@ internal class EmaOfflineCommandRecognition(
 
     private fun recognize() {
         try {
-            val modelDir = EmaWakeModel.prepare(appContext)
-            Model(modelDir.path).use { model ->
-                Recognizer(model, EmaVoiceFeatures.SAMPLE_RATE.toFloat()).use { decoder ->
+            val model = EmaLocalModel.acquire(appContext)
+            try {
+                // A constrained decode is only safe with words this model knows;
+                // without a readable word list the grammar is dropped and the
+                // decoder runs free-form, exactly as before.
+                val grammar = EmaCommandVocabulary.grammarFor(
+                    EmaLocalModel.vocabulary(appContext),
+                    learnedVocabulary
+                )
+                val decoder = if (grammar == null) {
+                    Recognizer(model, EmaVoiceFeatures.SAMPLE_RATE.toFloat())
+                } else {
+                    Recognizer(model, EmaVoiceFeatures.SAMPLE_RATE.toFloat(), grammar)
+                }
+                decoder.use { decoder ->
+                    // Per-word confidences are off by default; without them the
+                    // result carries no honest score at all.
+                    runCatching { decoder.setWords(true) }
                     val minSize = AudioRecord.getMinBufferSize(
                         EmaVoiceFeatures.SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO,
@@ -93,9 +117,10 @@ internal class EmaOfflineCommandRecognition(
                             dispatch { callbacks.beginningOfSpeech() }
                         }
                         if (decoder.acceptWaveForm(bytes, read)) {
-                            val recognized = text(decoder.result)
+                            val json = decoder.result
+                            val recognized = text(json)
                             if (recognized.isNotBlank()) {
-                                deliverResult(recognized)
+                                deliverResult(recognized, json = json)
                                 return
                             }
                         } else if (speechStarted) {
@@ -109,11 +134,14 @@ internal class EmaOfflineCommandRecognition(
                             }
                         }
                     }
-                    val finalText = runCatching { text(decoder.finalResult) }.getOrDefault("")
-                    if (finalText.isNotBlank()) deliverResult(finalText)
+                    val finalJson = runCatching { decoder.finalResult }.getOrDefault("")
+                    val finalText = text(finalJson)
+                    if (finalText.isNotBlank()) deliverResult(finalText, json = finalJson)
                     else if (!speechStarted) dispatch { callbacks.error(SpeechRecognizer.ERROR_SPEECH_TIMEOUT) }
                     else dispatch { callbacks.error(SpeechRecognizer.ERROR_NO_MATCH) }
                 }
+            } finally {
+                EmaLocalModel.release()
             }
         } catch (error: Throwable) {
             if (running.get()) {
@@ -128,10 +156,22 @@ internal class EmaOfflineCommandRecognition(
         }
     }
 
-    private fun deliverResult(text: String) {
+    /**
+     * Deliver one hypothesis with the confidence the decoder actually measured.
+     *
+     * A hardcoded score would make EMA unable to tell "call Emma" from a guess,
+     * so a result whose weakest word is below [EmaDecodeConfidence.MIN_USABLE]
+     * is reported as no-match instead of as a command.
+     */
+    private fun deliverResult(text: String, json: String) {
+        val confidence = EmaDecodeConfidence.score(EmaDecodeConfidence.weakest(json))
+        if (confidence < EmaDecodeConfidence.MIN_USABLE) {
+            dispatch { callbacks.error(SpeechRecognizer.ERROR_NO_MATCH) }
+            return
+        }
         val results = Bundle().apply {
             putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf(text))
-            putFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, floatArrayOf(0.5f))
+            putFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, floatArrayOf(confidence))
         }
         dispatch {
             callbacks.endOfSpeech()
