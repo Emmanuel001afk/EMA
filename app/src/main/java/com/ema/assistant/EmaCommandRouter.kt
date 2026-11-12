@@ -1068,6 +1068,26 @@ class EmaCommandRouter(
                 setAssistantMode(EmaAssistantMode.NATIVE_FIRST, done)
             }
 
+            // Speech engine by voice, so "make the microphone offline" does not
+            // require finding a setting screen.
+            lower == "which speech engine are you using" || lower == "what speech engine" ||
+                lower == "are you listening offline" || lower == "do you work offline" -> {
+                val engine = EmaSpeechRecognition.engine(context)
+                val message = "Speech engine: ${engineSettingLabel(engine)}. " +
+                    EmaSpeechRecognition.engineSummary(context)
+                speak(message); done(message)
+            }
+
+            lower == "listen offline" || lower == "use the phone only" ||
+                lower == "use offline speech" || lower == "turn off google speech" -> {
+                setSpeechEngine(EmaSpeechEngine.LOCAL_ONLY, done)
+            }
+
+            lower == "listen online" || lower == "use google speech" ||
+                lower == "use android speech" || lower == "turn on google speech" -> {
+                setSpeechEngine(EmaSpeechEngine.SYSTEM, done)
+            }
+
             else -> return false
         }
         return true
@@ -1094,6 +1114,28 @@ class EmaCommandRouter(
         val aiAvailable = mode.allowsAi && CentralHubClient.isConfigured(context)
         val modeNote = if (mode == EmaAssistantMode.NATIVE_ONLY) " $ai" else ""
         return EmaCapabilityRegistry.describe(grantedPrerequisites(), aiAvailable) + modeNote
+    }
+
+    /** The label the settings spinner shows, so voice and screen agree. */
+    private fun engineSettingLabel(engine: EmaSpeechEngine): String = when (engine) {
+        EmaSpeechEngine.LOCAL_ONLY -> "phone only, works offline"
+        EmaSpeechEngine.SYSTEM_WITH_LOCAL_FALLBACK -> "phone first, then Android"
+        EmaSpeechEngine.SYSTEM -> "Android or Google"
+    }
+
+    private fun setSpeechEngine(engine: EmaSpeechEngine, done: (String) -> Unit) {
+        EmaSpeechRecognition.setEngine(context, engine)
+        val message = when (engine) {
+            EmaSpeechEngine.LOCAL_ONLY ->
+                "Speech engine set to phone only. Your voice is decoded on this phone and Google's " +
+                    "recogniser is no longer used. English only, and less accurate than a server."
+            EmaSpeechEngine.SYSTEM_WITH_LOCAL_FALLBACK ->
+                "Speech engine set to phone first, then Android. The phone's own model answers when " +
+                    "Android's recogniser fails."
+            EmaSpeechEngine.SYSTEM ->
+                "Speech engine set to Android or Google. EMA's local model is no longer loaded."
+        }
+        speak(message); done(message)
     }
 
     private fun setAssistantMode(mode: EmaAssistantMode, done: (String) -> Unit) {

@@ -713,6 +713,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         setStroke(dp(1), Color.rgb(226, 230, 240))
     }
 
+    /** Honest description of what each speech engine does and what it gives up. */
+    private fun engineText(engine: EmaSpeechEngine): String = when (engine) {
+        EmaSpeechEngine.LOCAL_ONLY ->
+            "The microphone is read and decoded entirely on this phone with EMA's bundled English model. " +
+                "No network, no Google recogniser and no API key are used. Accuracy is lower than a server " +
+                "recogniser, it is English only, and the ~41 MB model is already inside the app."
+        EmaSpeechEngine.SYSTEM_WITH_LOCAL_FALLBACK ->
+            "Android's recogniser is used first; if it fails, the same listening session retries on this " +
+                "phone's own English model. Falling back onto Android can still use the network."
+        EmaSpeechEngine.SYSTEM ->
+            "Only Android's configured recogniser is used (Google on most phones). It may send audio to a " +
+                "server. EMA's local model is never loaded in this mode."
+    }
+
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun openAccessibilitySettings() {

@@ -274,11 +274,17 @@ the screen-off wake service now share one model instance (`EmaLocalModel`), so
 they can coexist; only one of them captures the microphone at a time because
 capture pauses on handoff.
 
-The local decoder runs under the grammar in `EmaCommandVocabulary` (learned
-triggers and app labels are added at runtime), which stops a small model from
-inventing free-form prose, and it reports real per-word confidences
-(`EmaDecodeConfidence`) instead of a placeholder. A result whose weakest word is
-below the threshold is reported as "not heard" rather than acted on.
+The local decoder runs under the grammar in `EmaCommandVocabulary`, which stops a
+small model from inventing free-form prose, and it reports real per-word
+confidences (`EmaDecodeConfidence`) instead of a placeholder. A result whose
+weakest word is below the threshold is reported as "not heard" rather than acted
+on. The grammar is intersected with the words in the model's own `graph/words.txt`
+plus learned triggers and app labels, because a grammar alternative the model
+cannot pronounce would corrupt decoding; if that word list is unreadable, or too
+few phrases survive, decoding stays free-form instead of failing.
+
+The engine can also be set by voice, so a phone-only setup is not a dead end:
+*"listen offline"*, *"listen online"*, and *"which speech engine are you using"*.
 
 **Message safety:** only the exact requested body read back from the composer
 may be submitted. Existing transcript text is not treated as a composed message.
@@ -300,6 +306,10 @@ control enabled:
    standalone wake accepts one request, and a second request needs a new wake.
 6. Test reminders with exact-alarm permission both allowed and denied. Scheduling
    implementation is unchanged by this update.
+7. Phone-only engine: with mobile data and Wi-Fi off, say a handful of commands
+   and confirm they run; then say "listen online" and confirm the engine
+   switches back. Repeat with the screen-off Hey EMA service running, to confirm
+   the shared model works and only one component holds the microphone.
 
 The repository's JVM regression tests cover shorthand planning, message evidence
 and wake-gate transitions; app UI behavior still requires the device checks above.

@@ -30,7 +30,8 @@ class EmaCommandVocabularyTest {
     fun theGrammarKeepsTheCommandsTheParsersActOn() {
         for (phrase in listOf(
             "open", "play", "call", "turn on", "turn off", "remind me",
-            "set an alarm", "hey emma", "send a message", "pause"
+            "set an alarm", "hey emma", "send a message", "pause",
+            "listen offline", "listen online"
         )) {
             assertTrue("missing command phrase: $phrase", EmaCommandVocabulary.contains(phrase))
         }

@@ -26,6 +26,12 @@ object EmaCommandVocabulary {
         // Assistant mode and state.
         "what mode are you in", "turn on ai", "turn off ai", "turn on the ai", "turn off the ai",
         "stop listening", "cancel", "never mind", "wait", "help", "what can you do",
+        // Speech engine by voice. These must be decodable locally, otherwise a
+        // phone-only engine could never be asked to switch itself back.
+        "listen offline", "use the phone only", "use offline speech", "turn off google speech",
+        "listen online", "use google speech", "use android speech", "turn on google speech",
+        "which speech engine are you using", "what speech engine",
+        "are you listening offline", "do you work offline",
         // App and navigation verbs.
         "open", "launch", "close", "go back", "go home", "switch to",
         // Communication.
