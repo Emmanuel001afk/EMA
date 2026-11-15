@@ -1,9 +1,11 @@
 package com.ema.assistant.aeo
 
 import android.os.Build
-import android.util.Base64
+import java.util.Base64
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.security.KeyFactory
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
@@ -66,10 +68,11 @@ object AeoMembershipVerifier {
         trustedKeys: List<TrustedIssuerKey>,
         isCredentialRevoked: (issuer: String, credentialId: String, platformId: String) -> Boolean,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
-        clockSkewSeconds: Long = 60
+        clockSkewSeconds: Long = 60,
+        apiLevel: Int = Build.VERSION.SDK_INT
     ): Result {
         return try {
-            require(Build.VERSION.SDK_INT >= 33) {
+            require(apiLevel >= 33) {
                 "Ed25519 verification requires Android API 33 or newer; no crypto downgrade is permitted"
             }
             require(compactJws.isNotBlank() && compactJws.length <= MAX_TOKEN_LENGTH) {
@@ -198,7 +201,8 @@ object AeoMembershipVerifier {
         registration: JSONObject,
         trustedKeys: List<TrustedIssuerKey>,
         isCredentialRevoked: (issuer: String, credentialId: String, platformId: String) -> Boolean,
-        nowSeconds: Long = System.currentTimeMillis() / 1000
+        nowSeconds: Long = System.currentTimeMillis() / 1000,
+        apiLevel: Int = Build.VERSION.SDK_INT
     ): Result {
         return try {
             require(registration.getString("ecosystem") == "AEO" &&
@@ -211,7 +215,7 @@ object AeoMembershipVerifier {
                 "Invalid registration identity"
             }
             val credential = registration.getString("membershipCredential")
-            when (val result = verify(credential, trustedKeys, isCredentialRevoked, nowSeconds)) {
+            when (val result = verify(credential, trustedKeys, isCredentialRevoked, nowSeconds, apiLevel = apiLevel)) {
                 is Result.Failure -> result
                 is Result.Success -> {
                     require(result.value.platformId == platformId &&
@@ -227,13 +231,20 @@ object AeoMembershipVerifier {
     }
 
     private fun decodeUtf8(segment: String): String =
-        String(decodeBase64Url(segment), StandardCharsets.UTF_8)
+        StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(decodeBase64Url(segment))).toString()
 
     private fun decodeBase64Url(value: String): ByteArray {
         require(value.isNotEmpty() && value.matches(Regex("[A-Za-z0-9_-]+"))) {
             "Invalid base64url encoding"
         }
-        return Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        val decoded = Base64.getUrlDecoder().decode(value)
+        require(Base64.getUrlEncoder().withoutPadding().encodeToString(decoded) == value) {
+            "Non-canonical base64url encoding"
+        }
+        return decoded
     }
 
     private fun isPlatformId(value: String): Boolean {
