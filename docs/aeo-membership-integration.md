@@ -28,3 +28,8 @@ JVM tests cover valid credentials, tampered signatures, unknown keys, revoked cr
 ## Root-signed trust bundles
 
 The adapter verifies AEO root-signed trust bundles against pinned Ed25519 root public keys, validates issuer-key records and credential revocation IDs, and enforces expiry and a caller-supplied minimum bundle version. The caller must persist the highest accepted version and pass it as `minimumVersion`; this verifier does not persist state. Root-key rotation/recovery and live issuer/revocation distribution remain production prerequisites. Android API levels below 33 fail closed because the platform Ed25519 provider is unavailable; no algorithm downgrade is used.
+
+
+## UCCS capability manifest adapter
+
+`EmaAeoCapabilityManifest` projects `EmaCapabilityRegistry.ALL` into short-lived UCCS discovery metadata. It reports capability IDs, titles, local prerequisites and whether an operation is consequential. It does not expose a remote command endpoint, make EMA remotely invocable, grant capabilities, or bypass EMA's local permission and command-validation pipeline. Manifest discovery is not authorization; any future remote request needs a separately authenticated peer, explicit provider-side grant, scope/expiry/replay checks, and user consent for consequential actions.
