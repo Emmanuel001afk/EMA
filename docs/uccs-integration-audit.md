@@ -2,8 +2,8 @@
 
 **Audit status:** source-inspected; documentation only  
 **Audited base:** `main` at `16b1701917af826435db6b0737335ef0caed4749`  
-**UCCS target:** AEO Universal Cross-Platform Coordination System, draft 0.1  
-**Important:** This records compatibility findings. It does not claim EMA is UCCS-conformant and does not change runtime behavior.
+**Framework target:** AEO Ecosystem Framework (AEF), using UCCS as its internal coordination protocol, draft 0.1  
+**Architecture clarification:** AEO Ecosystem Framework (AEF) is the umbrella system; UCCS is its internal coordination protocol. The shared directory is optional, and each platform retains its own adapter and authority over local capabilities.\n\n**Important:** This records compatibility findings. It does not claim EMA is UCCS-conformant and does not change runtime behavior.
 
 ## 1. Existing EMA foundations
 
