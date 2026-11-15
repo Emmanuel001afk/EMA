@@ -23,3 +23,8 @@ The caller must supply trusted issuer public keys and a revocation checker. The 
 ## Validation
 
 JVM tests cover valid credentials, tampered signatures, unknown keys, revoked credentials, wrong audience, API-level fail-closed behavior, and registration identity binding. GitHub Actions results must be checked on this PR before calling the change build-verified.
+
+
+## Root-signed trust bundles
+
+The adapter verifies AEO root-signed trust bundles against pinned Ed25519 root public keys, validates issuer-key records and credential revocation IDs, and enforces expiry and a caller-supplied minimum bundle version. The caller must persist the highest accepted version and pass it as `minimumVersion`; this verifier does not persist state. Root-key rotation/recovery and live issuer/revocation distribution remain production prerequisites. Android API levels below 33 fail closed because the platform Ed25519 provider is unavailable; no algorithm downgrade is used.
