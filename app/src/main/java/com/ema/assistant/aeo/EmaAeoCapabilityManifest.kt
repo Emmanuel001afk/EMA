@@ -79,6 +79,12 @@ object EmaAeoCapabilityManifest {
                 require(entry.getString("sourceRegistry") == SOURCE_REGISTRY)
                 require(entry.getString("sourceCapabilityId") == id)
                 require(entry.getBoolean("consequential") == source.consequential)
+                val prerequisites = entry.getJSONArray("prerequisites")
+                val expectedPrerequisites = source.requires.map { it.name.lowercase() }.sorted()
+                require(prerequisites.length() == expectedPrerequisites.size)
+                for (prerequisiteIndex in expectedPrerequisites.indices) {
+                    require(prerequisites.getString(prerequisiteIndex) == expectedPrerequisites[prerequisiteIndex])
+                }
             }
             true
         }.getOrDefault(false)
