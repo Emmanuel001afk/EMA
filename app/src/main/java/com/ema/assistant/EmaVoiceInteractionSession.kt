@@ -9,8 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.service.voice.VoiceInteractionSession
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
@@ -34,7 +32,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
     private val handler = Handler(Looper.getMainLooper())
     private val wakeGate = EmaWakePhraseGate()
-    private var recognizer: SpeechRecognizer? = null
+    private var speechSession: EmaSpeechRecognition.Session? = null
     private var tts: TextToSpeech? = null
     private var sessionVisible = false
     private var wakeInvocation = false
@@ -51,9 +49,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     private val commandRouter: EmaCommandRouter by lazy { EmaCommandRouter(context) { tts } }
     private val prefs by lazy { context.getSharedPreferences("ema", Context.MODE_PRIVATE) }
     private val sessionTimeoutRunnable = Runnable {
-        // Never close an active voice capture. SpeechRecognizer may still be
-        // delivering microphone callbacks while the assistant is visible.
-        if (sessionVisible && !processingCommand && !speakingResponse && recognizer == null) closeActive()
+        // Never close an active voice capture while microphone callbacks are running.
+        if (sessionVisible && !processingCommand && !speakingResponse && speechSession?.isListening != true) closeActive()
     }
     private val commandTimeoutMs = 90_000L
 
@@ -106,9 +103,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             activeSession?.let { session ->
                 session.handler.post {
                     session.sessionVisible = false
-                    session.recognizer?.cancel()
-                    session.recognizer?.destroy()
-                    session.recognizer = null
+                    session.speechSession?.cancel()
+                    session.speechSession = null
                     session.tts?.stop()
                     session.commandRouter.shutdown()
                     session.handler.removeCallbacksAndMessages(null)
@@ -446,9 +442,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             return
         }
 
-        recognizer?.cancel()
-        recognizer?.destroy()
-        recognizer = null
+        speechSession?.cancel()
+        speechSession = null
         processingCommand = true
         val generation = ++commandGeneration
         commandWatchdog?.let(handler::removeCallbacks)
@@ -511,15 +506,20 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
     private fun toggleMicrophone() {
         if (micMode == "automatic") {
-            setState("Automatic", "Microphone resumes automatically after EMA speaks.")
+            if (speechSession?.isListening == true) {
+                speechSession?.stopListening()
+                setState("Thinking", "Finishing what you said…")
+            } else {
+                setState("Automatic", "Microphone resumes automatically after EMA speaks.")
+                if (!processingCommand && !speakingResponse) startListening(force = true)
+            }
             return
         }
         micEnabled = !micEnabled
         prefs.edit().putBoolean("mic_enabled", micEnabled).apply()
         if (!micEnabled) {
-            recognizer?.cancel()
-            recognizer?.destroy()
-            recognizer = null
+            speechSession?.cancel()
+            speechSession = null
             setState("Microphone off", if (micMode == "semi") "Conversation paused. Tap the microphone to continue." else "Microphone is off. Tap the microphone to turn it on.")
         } else if (!processingCommand && !speakingResponse) {
             setState("Listening", if (micMode == "semi") "Conversation microphone is on." else "Manual microphone is on.")
@@ -534,8 +534,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             return
         }
         if (EmaWakeWordService.isRunning() && EmaWakeWordService.isCapturing()) {
-            handler.postDelayed({ if (sessionVisible) startListening(force) }, 100)
-            return
+            EmaWakeWordService.pauseForSpeech()
         }
         if (!sessionVisible || (!force && micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
@@ -543,128 +542,107 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             setState("Ready", "Microphone permission is required for voice.")
             return
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            setState("Ready", "Speech recognition is unavailable on this phone.")
-            return
-        }
 
-        recognizer?.destroy()
-        recognizer = null
-        val vocabulary = EmaSpeechRecognition.vocabulary(context)
-        val created = EmaSpeechRecognition.create(context)
-        if (created == null) {
-            setState("Ready", "No speech recognizer other than EMA is available on this phone.")
-            return
-        }
-        startRecognizer(created, vocabulary, retried = false)
-    }
+        speechSession?.cancel()
+        val session = EmaSpeechRecognition.Session(context, object : EmaSpeechRecognition.SessionListener {
+            override fun onPreparingOfflineModel() {
+                if (!sessionVisible) return
+                handler.removeCallbacks(sessionTimeoutRunnable)
+                setState("Preparing", "Loading EMA's offline speech engine…")
+            }
 
-    /**
-     * Listen with one recogniser.
-     *
-     * When it fails - the language is not available, the service returns a
-     * server or network error, anything at all - EMA retries the SAME
-     * listening session once with another installed recogniser, so the user
-     * does not have to say the request again. The kind that worked is
-     * remembered and tried first next time.
-     */
-    private fun startRecognizer(
-        created: EmaSpeechRecognition.Recognizer,
-        vocabulary: ArrayList<String>,
-        retried: Boolean
-    ) {
-        recognizer = created.recognizer.also { sr ->
-            sr.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {
-                    android.util.Log.i("EMA", "SpeechRecognizer ready; mic session active")
-                    setState("Listening", "I'm listening…")
-                    transcript.text = "Speak now"
+            override fun onReadyForSpeech(kind: EmaRecognizerKind) {
+                android.util.Log.i("EMA", "Speech session ready via $kind")
+                if (!sessionVisible) return
+                val badge = if (kind.isStrictlyOffline) "Speak now · Offline" else "Speak now"
+                setState("Listening", "I'm listening…")
+                transcript.text = badge
+            }
+
+            override fun onBeginningOfSpeech(kind: EmaRecognizerKind) {
+                android.util.Log.i("EMA", "Speech session detected voice ($kind)")
+                handler.removeCallbacks(sessionTimeoutRunnable)
+                if (sessionVisible) setState("Listening", "Hearing you…")
+            }
+
+            override fun onPartialTranscript(text: String, kind: EmaRecognizerKind) {
+                if (!sessionVisible || text.isBlank()) return
+                handler.removeCallbacks(sessionTimeoutRunnable)
+                transcript.text = text
+            }
+
+            override fun onEndOfSpeech(kind: EmaRecognizerKind) {
+                android.util.Log.i("EMA", "Speech session end of speech ($kind)")
+                if (sessionVisible) {
+                    setState("Thinking", "Processing…")
+                    scheduleSessionTimeout()
                 }
+            }
 
-                override fun onBeginningOfSpeech() {
-                    android.util.Log.i("EMA", "SpeechRecognizer received microphone audio")
-                    handler.removeCallbacks(sessionTimeoutRunnable)
-                    setState("Listening", "Hearing you…")
+            override fun onSwitchingBackend(from: EmaRecognizerKind, to: EmaRecognizerKind, errorCode: Int) {
+                if (!sessionVisible) return
+                val hint = if (to == EmaRecognizerKind.EMA_OFFLINE) {
+                    "Switching to EMA offline speech…"
+                } else {
+                    "Switching to ${to.shortLabel}…"
                 }
+                setState("Listening", hint)
+            }
 
-                override fun onResults(results: Bundle?) {
-                    EmaSpeechRecognition.rememberKind(context, created.kind)
-                    val guesses = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-                    val command = EmaSpeechRecognition.chooseHypothesis(guesses, vocabulary)
-                    recognizer?.destroy()
-                    recognizer = null
-                    if (command.isNullOrBlank()) {
-                        setState("Listening", "I couldn't hear that. Try again.")
-                        restartListeningIfNeeded()
-                    } else {
-                        val request = wakeGate.accept(command,
-                            prefs.getBoolean("require_wake_phrase", false),
-                            android.os.SystemClock.elapsedRealtime())
-                        when {
-                            request == null -> {
-                                setState("Waiting for Hey EMA", "Say Hey EMA, followed by your request.")
-                                restartListeningIfNeeded()
-                            }
-                            request.isBlank() -> {
-                                setState("Listening", "What would you like me to do?")
-                                restartListeningIfNeeded()
-                            }
-                            else -> execute(request, guesses)
-                        }
-                    }
-                }
-
-                override fun onError(error: Int) {
-                    android.util.Log.w("EMA", "SpeechRecognizer error=$error")
-                    val retry = when {
-                        retried && created.kind == EmaRecognizerKind.EXTERNAL -> EmaSpeechRecognition.offlineRecognizer(context)
-                            ?.let { EmaSpeechRecognition.Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
-                        !retried -> EmaSpeechRecognition.nextAfterFailure(context, created.kind)
-                        else -> null
-                    }
-                    if (retry != null) {
-                        android.util.Log.w(
-                            "EMA",
-                            "Speech recogniser ${created.kind} failed (error=$error); retrying the same session with ${retry.kind}"
-                        )
-                        recognizer?.destroy()
-                        recognizer = null
-                        startRecognizer(retry, vocabulary, retried = true)
-                        return
-                    }
-                    recognizer?.destroy()
-                    recognizer = null
-                    if (sessionVisible) {
-                        setState("Listening", "I couldn't hear that. Try again.")
+            override fun onResults(
+                primary: String,
+                alternatives: List<String>,
+                confidenceScores: FloatArray,
+                kind: EmaRecognizerKind
+            ) {
+                speechSession = null
+                if (!sessionVisible) return
+                val request = wakeGate.accept(
+                    primary,
+                    prefs.getBoolean("require_wake_phrase", false),
+                    android.os.SystemClock.elapsedRealtime()
+                )
+                when {
+                    request == null -> {
+                        setState("Waiting for Hey EMA", "Say Hey EMA, followed by your request.")
                         restartListeningIfNeeded()
                     }
-                }
-
-                override fun onEndOfSpeech() {
-                    android.util.Log.i("EMA", "SpeechRecognizer end of speech")
-                    if (sessionVisible) {
-                        setState("Thinking", "Processing…")
-                        scheduleSessionTimeout()
+                    request.isBlank() -> {
+                        setState("Listening", "What would you like me to do?")
+                        restartListeningIfNeeded()
                     }
+                    else -> execute(request, listOf(primary) + alternatives)
                 }
+            }
 
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onPartialResults(partialResults: Bundle?) {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-        }
-
-        recognizer?.startListening(
-            EmaSpeechRecognition.intent(vocabulary, partialResults = true, language = Locale.getDefault(), kind = created.kind)
+            override fun onFailure(errorCode: Int, userMessage: String, lastKind: EmaRecognizerKind?) {
+                speechSession = null
+                if (!sessionVisible) return
+                val terminal = errorCode == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
+                    lastKind == null
+                setState(if (terminal) "Ready" else "Listening", userMessage)
+                if (!terminal) {
+                    val delay = if (errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) 450L else 300L
+                    restartListeningIfNeeded(delay)
+                } else {
+                    scheduleSessionTimeout()
+                }
+            }
+        })
+        speechSession = session
+        session.start(
+            profile = EmaRecognitionProfile.COMMAND,
+            language = Locale.getDefault()
         )
     }
 
-    private fun restartListeningIfNeeded() {
-        if (!sessionVisible || !micEnabled || processingCommand || speakingResponse) return
+    private fun restartListeningIfNeeded(delayMs: Long = 250L) {
+        if (!sessionVisible || (micMode != "automatic" && !micEnabled) || processingCommand || speakingResponse) return
         handler.postDelayed({
-            if (sessionVisible && (micMode == "automatic" || micEnabled) && !processingCommand && !speakingResponse && recognizer == null) startListening()
-        }, 250L)
+            if (sessionVisible && (micMode == "automatic" || micEnabled) && !processingCommand && !speakingResponse && speechSession?.isListening != true) {
+                startListening()
+            }
+        }, delayMs)
     }
 
     private fun scheduleSessionTimeout() {
@@ -757,9 +735,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         processingCommand = false
         commandWatchdog?.let(handler::removeCallbacks)
         commandWatchdog = null
-        recognizer?.cancel()
-        recognizer?.destroy()
-        recognizer = null
+        speechSession?.cancel()
+        speechSession = null
         tts?.stop()
         commandRouter.shutdown()
         speakingResponse = false
@@ -772,8 +749,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onHide() {
         sessionVisible = false
         stopBargeInMonitor()
-        recognizer?.destroy()
-        recognizer = null
+        speechSession?.cancel()
+        speechSession = null
         tts?.stop()
         commandRouter.shutdown()
         handler.removeCallbacksAndMessages(null)
@@ -792,8 +769,8 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
     override fun onDestroy() {
         sessionVisible = false
         stopBargeInMonitor()
-        recognizer?.destroy()
-        recognizer = null
+        speechSession?.cancel()
+        speechSession = null
         tts?.shutdown()
         tts = null
         commandRouter.shutdown()

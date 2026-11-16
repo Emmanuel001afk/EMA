@@ -36,6 +36,15 @@ class EmaVoiceInteractionService : VoiceInteractionService() {
         // Keep contextual assist data enabled so EMA can receive the current
         // app's assist structure/screenshot when Android permits it.
         setDisabledShowContext(0)
+        // Warm EMA's built-in offline speech engine so assistant activations start immediately.
+        if (EmaSpeechRecognition.speechMode(this).prefersEmaOffline) {
+            EmaOfflineSpeechModel.warmUpAsync(this)
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        EmaOfflineSpeechModel.onTrimMemory(level)
     }
 
 }

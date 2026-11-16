@@ -50,6 +50,72 @@ object EmaFileAccessEngine {
         return matches.joinToString("\n") { it.absolutePath }
     }
 
+    /**
+     * Resolve a local RIFF/WAVE audio file strictly confined within shared
+     * storage for offline speech-to-text transcription. Searches common voice
+     * recording folders first so results return quickly.
+     */
+    fun findWavFile(rawQuery: String): File? {
+        if (!isAvailable()) return null
+        val cleaned = rawQuery.trim().trim('"', '\'', '.', ' ')
+        if (cleaned.isBlank()) return null
+
+        // Direct relative or absolute path confined under shared storage.
+        resolve(cleaned)?.takeIf { it.isFile && isWavName(it.name) }?.let { return it }
+        if (!isWavName(cleaned)) {
+            resolve("$cleaned.wav")?.takeIf { it.isFile }?.let { return it }
+        }
+
+        val base = Environment.getExternalStorageDirectory().canonicalFile
+        val basePrefix = base.path.trimEnd(File.separatorChar) + File.separator
+        val needle = cleaned.removeSuffix(".wav").removeSuffix(".wave").lowercase()
+        val priorityRoots = listOf("Recordings", "Music", "Download", "Documents", "Podcasts")
+            .map { File(base, it) }
+            .filter { it.isDirectory }
+        val roots = if (priorityRoots.isNotEmpty()) priorityRoots + base else listOf(base)
+
+        val visited = HashSet<String>()
+        var bestPartial: File? = null
+        var scannedDirs = 0
+
+        for (root in roots) {
+            val queue = ArrayDeque<Pair<File, Int>>()
+            queue.add(root to 0)
+            while (queue.isNotEmpty() && scannedDirs < 250) {
+                val (dir, depth) = queue.removeFirst()
+                val canonicalDir = runCatching { dir.canonicalPath }.getOrNull() ?: continue
+                if (canonicalDir != base.path && !canonicalDir.startsWith(basePrefix)) continue
+                if (!visited.add(canonicalDir)) continue
+                scannedDirs++
+
+                val children = runCatching { dir.listFiles().orEmpty() }.getOrDefault(emptyArray())
+                for (child in children) {
+                    if (child.isHidden) continue
+                    if (child.isFile && isWavName(child.name)) {
+                        val canon = runCatching { child.canonicalFile }.getOrNull() ?: continue
+                        if (!canon.path.startsWith(basePrefix)) continue
+                        val stem = canon.nameWithoutExtension.lowercase()
+                        if (stem == needle || canon.name.lowercase() == cleaned.lowercase()) {
+                            return canon
+                        }
+                        if (bestPartial == null && stem.contains(needle)) {
+                            bestPartial = canon
+                        }
+                    } else if (child.isDirectory && depth < 4) {
+                        queue.add(child to depth + 1)
+                    }
+                }
+            }
+            if (bestPartial != null && root != base) return bestPartial
+        }
+        return bestPartial
+    }
+
+    private fun isWavName(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.endsWith(".wav") || lower.endsWith(".wave")
+    }
+
     private fun resolve(path: String): File? {
         val base = Environment.getExternalStorageDirectory().canonicalFile
         val candidate = if (path.isBlank()) base else {

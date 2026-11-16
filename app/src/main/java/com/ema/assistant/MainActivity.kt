@@ -17,9 +17,6 @@ import android.widget.ArrayAdapter
 import android.widget.Spinner
 import android.os.Bundle
 import android.os.Build
-import android.speech.RecognizerIntent
-import android.speech.RecognitionListener
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.service.voice.VoiceInteractionService
 import android.view.ViewGroup
@@ -34,9 +31,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var tts: TextToSpeech
     private lateinit var status: TextView
     private lateinit var commandInput: EditText
-    private var recognizer: SpeechRecognizer? = null
+    private lateinit var speakButton: Button
+    private lateinit var dictateButton: Button
+    private var speechSession: EmaSpeechRecognition.Session? = null
+    private var activeVoiceProfile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND
+    private var dictationPrefix: String = ""
     private lateinit var router: EmaCommandRouter
     private lateinit var modeExplanation: TextView
+    private lateinit var speechModeExplanation: TextView
+    private lateinit var offlineSpeechStatus: TextView
     private lateinit var hubStatus: TextView
     private lateinit var hubAddress: EditText
     private lateinit var wakeStatus: TextView
@@ -56,6 +59,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     else -> prefs.getString("wake_status", "Starting…")
                 }
             }
+            if (::offlineSpeechStatus.isInitialized) {
+                offlineSpeechStatus.text = EmaOfflineSpeechModel.statusSummary(this@MainActivity)
+            }
             wakeUiHandler.postDelayed(this, 1500)
         }
     }
@@ -63,6 +69,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         tts = TextToSpeech(this, this)
+        if (EmaSpeechRecognition.speechMode(this).prefersEmaOffline) {
+            EmaOfflineSpeechModel.warmUpAsync(this) {
+                if (::offlineSpeechStatus.isInitialized) {
+                    offlineSpeechStatus.text = EmaOfflineSpeechModel.statusSummary(this)
+                }
+            }
+        }
         requestRequiredPermissions()
         router = EmaCommandRouter(this) { tts }
 
@@ -136,11 +149,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             contentDescription = "Send request to EMA"
             setOnClickListener { executeTypedCommand() }
         })
-        actions.addView(Button(this).apply {
+        speakButton = Button(this).apply {
             text = "Speak"
             contentDescription = "Speak a request"
-            setOnClickListener { listenOnce() }
-        })
+            setOnClickListener { toggleVoiceCapture(EmaRecognitionProfile.COMMAND) }
+        }
+        actions.addView(speakButton)
+        dictateButton = Button(this).apply {
+            text = "Dictate"
+            contentDescription = "Dictate text into the input box"
+            setOnClickListener { toggleVoiceCapture(EmaRecognitionProfile.DICTATION) }
+        }
+        actions.addView(dictateButton)
         root.addView(actions)
 
         // Setup and system notices (permissions, assistant role). Replies go to the conversation.
@@ -316,14 +336,55 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 prefs.edit().putBoolean("require_wake_phrase", enabled).apply()
             }
         })
-        root.addView(Switch(this).apply {
-            text = "Allow optional local English recognition if system speech fails"
-            isChecked = EmaSpeechRecognition.isOfflineEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, enabled -> EmaSpeechRecognition.setOfflineEnabled(this@MainActivity, enabled) }
-        })
         root.addView(TextView(this).apply {
-            text = "Android speech recognition remains the default. Local fallback uses EMA’s bundled English model when the device has sufficient memory; it is skipped on low-memory devices."
+            text = "Speech recognition & offline speech-to-text"
+            textSize = 16f
+            setPadding(0, 24, 0, 4)
+        })
+        val speechModes = EmaSpeechMode.values().toList()
+        val speechModeSpinner = Spinner(this)
+        speechModeSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            speechModes.map { it.label }
+        )
+        val initialSpeechMode = EmaSpeechRecognition.speechMode(this)
+        speechModeSpinner.setSelection(speechModes.indexOf(initialSpeechMode).coerceAtLeast(0))
+        speechModeExplanation = TextView(this).apply {
+            text = initialSpeechMode.explanation
             textSize = 13f
+            setPadding(0, 4, 0, 6)
+        }
+        offlineSpeechStatus = TextView(this).apply {
+            text = EmaOfflineSpeechModel.statusSummary(this@MainActivity)
+            textSize = 13f
+            setTextColor(Color.rgb(66, 78, 102))
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            setPadding(0, 2, 0, 6)
+        }
+        speechModeSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val chosen = speechModes[position]
+                if (chosen != EmaSpeechRecognition.speechMode(this@MainActivity)) {
+                    EmaSpeechRecognition.setSpeechMode(this@MainActivity, chosen)
+                }
+                speechModeExplanation.text = chosen.explanation
+                offlineSpeechStatus.text = EmaOfflineSpeechModel.statusSummary(this@MainActivity)
+            }
+        }
+        root.addView(speechModeSpinner)
+        root.addView(speechModeExplanation)
+        root.addView(offlineSpeechStatus)
+        root.addView(Button(this).apply {
+            text = "Prepare offline speech engine"
+            isAllCaps = false
+            setOnClickListener {
+                offlineSpeechStatus.text = "Preparing EMA's built-in offline speech engine…"
+                EmaOfflineSpeechModel.warmUpAsync(this@MainActivity) {
+                    offlineSpeechStatus.text = EmaOfflineSpeechModel.statusSummary(this@MainActivity)
+                }
+            }
         })
 
         root.addView(TextView(this).apply {
@@ -791,14 +852,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun listenOnce() {
+    private fun toggleVoiceCapture(profile: EmaRecognitionProfile) {
+        val current = speechSession
+        if (current != null && current.isListening) {
+            if (activeVoiceProfile == profile) {
+                // Flush everything spoken so far rather than throwing it away.
+                status.text = "Finishing what you said…"
+                current.stopListening()
+                return
+            }
+            current.cancel()
+            speechSession = null
+            resetVoiceButtons()
+        }
+        listenOnce(profile)
+    }
+
+    private fun listenOnce(profile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND) {
         if (getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
             status.text = "Unlock your phone before running commands."
-            return
-        }
-        EmaWakeWordService.pauseForSpeech()
-        if (EmaWakeWordService.isCapturing()) {
-            commandInput.postDelayed({ if (!isFinishing && !isDestroyed) listenOnce() }, 100)
             return
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -807,95 +879,122 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             return
         }
 
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            status.text = "Speech recognition is unavailable."
-            return
-        }
-
+        runCatching { tts.stop() }
         EmaWakeWordService.pauseForSpeech()
-        recognizer?.destroy()
-        recognizer = null
-        val vocabulary = EmaSpeechRecognition.vocabulary(this)
-        val created = EmaSpeechRecognition.create(this)
-        if (created == null) {
-            status.text = "No speech recognizer other than EMA is available on this phone."
-            EmaWakeWordService.resumeAfterSession()
-            return
+        speechSession?.cancel()
+
+        activeVoiceProfile = profile
+        dictationPrefix = if (profile == EmaRecognitionProfile.DICTATION) {
+            commandInput.text.toString().trim()
+        } else {
+            ""
         }
-        startRecognizer(created, vocabulary, retried = false)
+        updateVoiceButtonsListening(profile)
+
+        val session = EmaSpeechRecognition.Session(this, object : EmaSpeechRecognition.SessionListener {
+            override fun onPreparingOfflineModel() {
+                conversation.setState(EmaConversationView.State.THINKING)
+                status.text = "Preparing EMA's built-in offline speech engine…"
+            }
+
+            override fun onReadyForSpeech(kind: EmaRecognizerKind) {
+                conversation.setState(EmaConversationView.State.LISTENING)
+                val tag = if (kind.isStrictlyOffline) "offline" else kind.shortLabel
+                status.text = if (profile == EmaRecognitionProfile.DICTATION) {
+                    "Dictating ($tag) — speak naturally, tap Done when finished."
+                } else {
+                    "Listening ($tag)…"
+                }
+            }
+
+            override fun onBeginningOfSpeech(kind: EmaRecognizerKind) {
+                conversation.setState(EmaConversationView.State.LISTENING)
+            }
+
+            override fun onPartialTranscript(text: String, kind: EmaRecognizerKind) {
+                if (text.isBlank()) return
+                if (profile == EmaRecognitionProfile.DICTATION) {
+                    val combined = combineDictation(dictationPrefix, text)
+                    commandInput.setText(combined)
+                    commandInput.setSelection(combined.length)
+                } else {
+                    status.text = "“$text”"
+                }
+            }
+
+            override fun onEndOfSpeech(kind: EmaRecognizerKind) {
+                conversation.setState(EmaConversationView.State.THINKING)
+                status.text = "Processing…"
+            }
+
+            override fun onSwitchingBackend(from: EmaRecognizerKind, to: EmaRecognizerKind, errorCode: Int) {
+                status.text = if (to == EmaRecognizerKind.EMA_OFFLINE) {
+                    "Switching to EMA offline speech…"
+                } else {
+                    "Switching to ${to.shortLabel}…"
+                }
+            }
+
+            override fun onResults(
+                primary: String,
+                alternatives: List<String>,
+                confidenceScores: FloatArray,
+                kind: EmaRecognizerKind
+            ) {
+                speechSession = null
+                resetVoiceButtons()
+                EmaWakeWordService.resumeAfterSession()
+                if (profile == EmaRecognitionProfile.DICTATION) {
+                    val combined = combineDictation(dictationPrefix, primary)
+                    commandInput.setText(combined)
+                    commandInput.setSelection(combined.length)
+                    conversation.setState(EmaConversationView.State.READY)
+                    status.text = if (kind.isStrictlyOffline) {
+                        "Transcribed offline. Tap Send to run, Dictate to add more, or edit above."
+                    } else {
+                        "Transcribed. Tap Send to run, Dictate to add more, or edit above."
+                    }
+                } else {
+                    // Reuse the activity's router so pending follow-up questions survive across turns.
+                    runRequest(primary, listOf(primary) + alternatives)
+                }
+            }
+
+            override fun onFailure(errorCode: Int, userMessage: String, lastKind: EmaRecognizerKind?) {
+                speechSession = null
+                resetVoiceButtons()
+                conversation.setState(EmaConversationView.State.READY)
+                status.text = userMessage
+                EmaWakeWordService.resumeAfterSession()
+            }
+        })
+        speechSession = session
+        session.start(
+            profile = profile,
+            language = Locale.getDefault()
+        )
     }
 
-    /**
-     * Listen with one recogniser.
-     *
-     * When the recogniser fails (the language is not available, the service
-     * returns a server error, anything at all), EMA retries the SAME listening
-     * session once with another installed recogniser, so the user does not
-     * have to repeat the request. The kind that worked is remembered and
-     * tried first next time.
-     */
-    private fun startRecognizer(
-        created: EmaSpeechRecognition.Recognizer,
-        vocabulary: ArrayList<String>,
-        retried: Boolean
-    ) {
-        recognizer = created.recognizer.also { sr ->
-            sr.setRecognitionListener(object : RecognitionListener {
-                override fun onResults(b: Bundle?) {
-                    EmaSpeechRecognition.rememberKind(this@MainActivity, created.kind)
-                    val guesses = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
-                    val command = EmaSpeechRecognition.chooseHypothesis(guesses, vocabulary)
-                    if (command.isNullOrBlank()) {
-                        conversation.setState(EmaConversationView.State.READY)
-                        status.text = "I couldn't hear that. Try again."
-                    } else {
-                        // Must reuse the activity's router: a fresh instance would
-                        // drop any pending follow-up question ("What time should I
-                        // remind you?") that the previous turn asked.
-                        runRequest(command, guesses)
-                    }
-                    recognizer?.destroy()
-                    recognizer = null
-                    EmaWakeWordService.resumeAfterSession()
-                }
+    private fun combineDictation(prefix: String, spoken: String): String {
+        val clean = spoken.trim()
+        if (prefix.isBlank()) return clean
+        if (clean.isBlank()) return prefix
+        val needsSpace = !prefix.endsWith(" ") && !clean.first().let { it in ",.;:!?" }
+        return if (needsSpace) "$prefix $clean" else "$prefix$clean"
+    }
 
-                override fun onError(e: Int) {
-                    val retry = when {
-                        retried && created.kind == EmaRecognizerKind.EXTERNAL -> EmaSpeechRecognition.offlineRecognizer(this@MainActivity)
-                            ?.let { EmaSpeechRecognition.Recognizer(it, EmaRecognizerKind.VOSK_OFFLINE) }
-                        !retried -> EmaSpeechRecognition.nextAfterFailure(this@MainActivity, created.kind)
-                        else -> null
-                    }
-                    if (retry != null) {
-                        android.util.Log.w(
-                            "EMA",
-                            "Speech recogniser ${created.kind} failed (error=$e); retrying the same session with ${retry.kind}"
-                        )
-                        recognizer?.destroy()
-                        recognizer = null
-                        startRecognizer(retry, vocabulary, retried = true)
-                        return
-                    }
-                    conversation.setState(EmaConversationView.State.READY)
-                    status.text = "I couldn't hear that. Try again."
-                    recognizer?.destroy()
-                    recognizer = null
-                    EmaWakeWordService.resumeAfterSession()
-                }
-
-                override fun onReadyForSpeech(p: Bundle?) { conversation.setState(EmaConversationView.State.LISTENING) }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(v: Float) {}
-                override fun onBufferReceived(b: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onPartialResults(b: Bundle?) {}
-                override fun onEvent(t: Int, b: Bundle?) {}
-            })
+    private fun updateVoiceButtonsListening(profile: EmaRecognitionProfile) {
+        if (::speakButton.isInitialized) {
+            speakButton.text = if (profile == EmaRecognitionProfile.COMMAND) "Done" else "Speak"
         }
+        if (::dictateButton.isInitialized) {
+            dictateButton.text = if (profile == EmaRecognitionProfile.DICTATION) "Done" else "Dictate"
+        }
+    }
 
-        recognizer!!.startListening(
-            EmaSpeechRecognition.intent(vocabulary, partialResults = false, language = Locale.getDefault(), kind = created.kind)
-        )
+    private fun resetVoiceButtons() {
+        if (::speakButton.isInitialized) speakButton.text = "Speak"
+        if (::dictateButton.isInitialized) dictateButton.text = "Dictate"
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -924,8 +1023,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         runOnUiThread { refreshVoiceUi() }
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        EmaOfflineSpeechModel.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
-        recognizer?.destroy()
+        speechSession?.cancel()
+        speechSession = null
         wakeUiHandler.removeCallbacksAndMessages(null)
         EmaWakeWordService.resumeAfterSession()
         tts.shutdown()

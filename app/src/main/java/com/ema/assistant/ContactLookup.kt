@@ -1,6 +1,9 @@
 package com.ema.assistant
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.SystemClock
 import android.provider.ContactsContract
 
 /**
@@ -24,6 +27,11 @@ object ContactLookup {
     )
 
     private const val NO_MATCH = Int.MAX_VALUE
+    private const val SPEECH_CACHE_TTL_MS = 90_000L
+    private const val MAX_SPEECH_CONTACT_NAMES = 150
+
+    @Volatile private var cachedSpeechNames: List<String> = emptyList()
+    @Volatile private var cachedSpeechNamesAtMs: Long = 0L
 
     /**
      * Score a contact name against the spoken reference. Lower is better.
@@ -147,7 +155,7 @@ object ContactLookup {
                 }
             }
         }.onFailure {
-            android.util.Log.e("EMA", "Phone contact lookup failed for '$query'", it)
+            android.util.Log.e("EMA", "Phone contact lookup failed (${EmaPrivacy.describe(query)})", it)
         }
         return out
     }
@@ -181,5 +189,52 @@ object ContactLookup {
             return Contact(trimmed, trimmed.replace(Regex("[^+0-9]"), ""), null, 0)
         }
         return best(findPhones(context, trimmed)).firstOrNull()
+    }
+
+    /**
+     * Local contact display names for strictly on-device speech rescoring and
+     * phonetic slot grounding.
+     *
+     * Never exported into network recognizer intents, never logged and never
+     * written to disk. Unordered query avoids OEM COLLATE quirks.
+     */
+    fun localNamesForSpeech(context: Context): List<String> {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return emptyList()
+        }
+        val now = SystemClock.elapsedRealtime()
+        val existing = cachedSpeechNames
+        if (existing.isNotEmpty() && now - cachedSpeechNamesAtMs < SPEECH_CACHE_TTL_MS) {
+            return existing
+        }
+        val projection = arrayOf(
+            ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
+            ContactsContract.Contacts.STARRED
+        )
+        val starred = LinkedHashSet<String>()
+        val regular = LinkedHashSet<String>()
+        runCatching {
+            context.contentResolver.query(
+                ContactsContract.Contacts.CONTENT_URI,
+                projection,
+                "${ContactsContract.Contacts.HAS_PHONE_NUMBER} > 0",
+                null,
+                null
+            )?.use { cursor ->
+                val nameIdx = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY)
+                val starIdx = cursor.getColumnIndex(ContactsContract.Contacts.STARRED)
+                if (nameIdx < 0) return@use
+                while (cursor.moveToNext() && starred.size + regular.size < MAX_SPEECH_CONTACT_NAMES * 2) {
+                    val name = cursor.getString(nameIdx).orEmpty().trim()
+                    if (name.length !in 2..50 || name.any(Char::isDigit) || name.contains('@')) continue
+                    val isStar = starIdx >= 0 && cursor.getInt(starIdx) > 0
+                    if (isStar) starred += name else regular += name
+                }
+            }
+        }
+        val combined = (starred + regular).take(MAX_SPEECH_CONTACT_NAMES)
+        cachedSpeechNames = combined
+        cachedSpeechNamesAtMs = now
+        return combined
     }
 }

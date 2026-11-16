@@ -8,15 +8,17 @@ open.
 ## How detection works
 
 ```
-AudioRecord (16 kHz mono, 50 ms frames)
-  -> EmaWakeAudioGate     cheap energy gate: only voice-like windows reach the decoder
-  -> Vosk Recognizer      restricted grammar (EmaWakeDetector.grammarJson())
-  -> EmaWakeDetector      token search + stability check on partial results
-  -> activate()           opens the assistant session (or a notification fallback)
+AudioRecord (16 kHz mono, 50 ms frames, 75 Hz high-pass DC/rumble filter)
+  -> EmaWakeAudioGate        cheap energy gate: only voice-like windows reach the decoder
+  -> EmaOfflineSpeechModel   shared ref-counted Vosk Model lease + restricted wake grammar
+  -> EmaWakeDetector         token search + stability check on partial results
+  -> activate()              signals mic release & hands off to EMA's offline speech session
 ```
 
-Everything in the first three boxes runs on the phone. No audio leaves the device
-during wake detection.
+Everything runs on the phone. Because `EmaWakeWordService` and
+`EmaOfflineSpeechEngine` lease the same in-memory `Model` via
+`EmaOfflineSpeechModel`, moving from "Hey EMA" into full offline command
+recognition requires zero duplicate model memory and zero cold-load wait.
 
 ## Root causes found
 

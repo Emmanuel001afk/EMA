@@ -127,6 +127,10 @@ object EmaVoiceEnrollmentEngine {
      * was heard.
      */
     private fun recordRound(): ShortArray? {
+        if (EmaWakeWordService.isCapturing()) {
+            EmaWakeWordService.pauseForSpeech()
+            EmaWakeWordService.awaitCaptureReleased(600L)
+        }
         val size = maxOf(4096, AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
         val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size * 2)
@@ -141,25 +145,35 @@ object EmaVoiceEnrollmentEngine {
         var silenceSamples = 0
         var firstVoiced = -1
         var lastVoiced = -1
-        var noiseFloor = 300.0
+        var noiseFloor = 260.0
+        var hpPrevIn = 0f
+        var hpPrevOut = 0f
         try {
             audio.startRecording()
             while (running) {
                 val read = audio.read(block, 0, block.size)
                 if (read <= 0) break
+                // Match runtime wake-word 75 Hz high-pass filtering so stored MFCC templates align.
                 var energy = 0.0
-                for (i in 0 until read) energy += block[i].toDouble() * block[i].toDouble()
+                for (i in 0 until read) {
+                    val x = block[i].toFloat()
+                    val y = 0.971f * (hpPrevOut + x - hpPrevIn)
+                    hpPrevIn = x
+                    hpPrevOut = y
+                    val s = y.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                    block[i] = s
+                    energy += s.toDouble() * s.toDouble()
+                }
                 val rms = Math.sqrt(energy / read)
-                val voiced = rms > maxOf(900.0, noiseFloor * 3.0)
+                val voiced = rms > maxOf(700.0, noiseFloor * 2.8)
                 if (voiced) {
-                    noiseFloor = noiseFloor * 0.98 + rms * 0.02
                     if (firstVoiced < 0) firstVoiced = samples.size
-                    lastVoiced = samples.size
+                    lastVoiced = samples.size + read
                     voicedSamples += read
                     silenceSamples = 0
                 } else {
                     silenceSamples += read
-                    if (voicedSamples > 0) noiseFloor = noiseFloor * 0.995 + rms * 0.005
+                    noiseFloor = (noiseFloor * 0.94 + rms * 0.06).coerceIn(100.0, 2_200.0)
                 }
                 for (i in 0 until read) samples += block[i]
                 if (voicedSamples >= MIN_VOICED_MS * SAMPLE_RATE / 1000 && silenceSamples >= SILENCE_END_MS * SAMPLE_RATE / 1000) break
@@ -172,7 +186,7 @@ object EmaVoiceEnrollmentEngine {
             runCatching { audio.release() }
         }
         if (firstVoiced < 0 || lastVoiced <= firstVoiced) return null
-        val from = firstVoiced
+        val from = maxOf(0, firstVoiced - SAMPLE_RATE / 10)
         val until = minOf(lastVoiced + SAMPLE_RATE / 10, samples.size)
         val out = ShortArray(until - from)
         for (i in out.indices) out[i] = samples[from + i]

@@ -56,13 +56,25 @@ object EmaSystemCommandVocabulary {
         // Assistant itself
         "close ema", "exit ema", "what can you do", "help",
         "what mode are you in", "turn off ai", "disable ai", "no ai mode",
-        "turn on ai", "enable ai"
+        "turn on ai", "enable ai",
+        // Offline speech-to-text and recognizer mode
+        "speech status", "offline speech status", "speech recognition status",
+        "what speech mode are you in", "is offline speech ready", "is offline speech on",
+        "is speech recognition offline", "offline speech only", "use offline speech only",
+        "strict offline speech", "private speech mode", "switch to offline speech only",
+        "offline speech first", "use offline speech", "use offline speech first",
+        "enable offline speech", "turn on offline speech", "use ema speech",
+        "use built in speech", "use offline recognizer", "system speech first",
+        "use system speech", "use system speech first", "use android speech",
+        "disable offline speech", "turn off offline speech",
+        "prepare offline speech", "warm up offline speech", "load offline speech",
+        "prepare speech engine"
     )
 
     /** Commands matched by their opening words, the rest being the argument. */
     val PREFIXES: List<String> = listOf(
         "type ", "set brightness to ", "set volume to ", "volume to ",
-        "list files in ", "find file ", "find the file ",
+        "list files in ", "find file ", "find the file ", "transcribe ",
         "cancel my reminder ", "cancel the reminder ",
         "delete my reminder ", "remove my reminder ",
         "create a calendar task ", "calendar task ", "set a calendar task ",

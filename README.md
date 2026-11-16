@@ -299,14 +299,39 @@ and wake-gate transitions; app UI behavior still requires the device checks abov
   learned" clears it without touching the remembered shortcuts. Everything
   stays on the phone.
 
+## Built-in offline speech-to-text & speech recognizer
+
+EMA ships with its own full offline English speech-to-text engine
+(`EmaOfflineSpeechEngine`) and system-registered `EmaRecognitionService`,
+sharing a single verified, reference-counted on-device model instance
+(`EmaOfflineSpeechModel`) with **Hey EMA** so voice commands, live dictation
+and local `.wav` file transcription work with zero internet, zero external
+speech apps, zero API keys and no duplicate RAM.
+
+- **Signal & decoding pipeline:** 75 Hz high-pass DC/rumble removal, adaptive
+  speech-band VAD with 360 ms pre-roll, speech-gated AGC and soft-knee
+  limiting, multi-rate resampling (4–192 kHz, mono/multichannel), continuation-
+  aware endpointing, multi-segment N-best lattice assembly, contextual domain
+  rescoring, inverse text normalization (spoken times, numbers, percentages,
+  dictation punctuation) and margin-gated phonetic slot grounding for installed
+  apps and contacts, while leaving message/search/typed bodies verbatim.
+- **Owner-controlled modes** (in Setup & preferences or by voice):
+  *EMA offline first* (default), *EMA offline only* (strict private — never
+  calls external speech services), and *System recognizer first* (automatic
+  offline failover). Say *"offline speech status"* anytime to inspect readiness,
+  tap **Dictate** for continuous offline text input, or say
+  *"transcribe \<recording\>.wav"* to transcribe a local WAV file on the phone.
+- Full technical design and limits: `docs/OFFLINE_SPEECH.md`.
+
 ## Screen-off Hey EMA service
 
 **Implemented but not yet device-certified.** A dedicated microphone foreground
-service (`EmaWakeWordService`) uses Vosk locally with a restricted wake vocabulary.
-It is not Android SpeechRecognizer in a retry loop and sends no idle audio to a
-server. Once triggered, it releases AudioRecord before the assistant starts
-normal speech recognition and native command execution. The command recognizer
-may still use Android's configured network speech provider.
+service (`EmaWakeWordService`) shares `EmaOfflineSpeechModel` with a restricted
+wake vocabulary. It is not Android `SpeechRecognizer` in a retry loop and sends
+no idle audio to a server. Once triggered, it releases `AudioRecord` and signals
+`EmaOfflineSpeechEngine` (or the configured fallback recognizer in
+*System recognizer first* mode) so command recognition runs offline with zero
+model reload.
 
 ### The personal voice check (optional, on the phone)
 

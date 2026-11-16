@@ -216,14 +216,21 @@ cannot, so EMA uses the tile path and verifies what it can observe.
   alarm notification, full-screen only when Android allows it). It also checks
   the exact-alarm permission and opens the grant screen when it is missing.
 
-## Digital-assistant registration
+## Digital-assistant registration & offline speech recognition
 
-The voice-interaction XML names a real `RecognitionService`; without one
-Android rejects the registration silently. `EmaRecognitionService` delegates to
-an **explicit** recogniser (on-device on API 31+, otherwise an installed
-service that is not EMA). EMA never binds the default recogniser, because that
-can resolve back to EMA now that it offers one. Setup shows the real state:
-role held / service active / recognition service declared.
+The voice-interaction XML names EMA's `EmaRecognitionService`; without one
+Android rejects the registration silently. `EmaRecognitionService` runs EMA's
+own built-in offline speech-to-text engine (`EmaOfflineSpeechEngine` backed by
+the shared `EmaOfflineSpeechModel` lease, including Android 13+ on-device
+support checks, `EXTRA_AUDIO_SOURCE` pipe transcription and model warm-up
+triggers). When the owner chooses *System recognizer first* online or speaks a
+non-English locale, it delegates only to an **explicit** non-EMA recogniser
+(never resolving recursively back to EMA) and fails over automatically to
+`EmaOfflineSpeechEngine` if the platform service errors. Inside EMA itself,
+`EmaSpeechRecognition.Session` drives `EmaOfflineSpeechEngine` directly
+in-process and passes all hypotheses (offline or platform) through
+`EmaSpeechRescorer`, `EmaInverseTextNormalizer` and `EmaPhoneticMatcher` before
+reaching the understanding layers above. See `docs/OFFLINE_SPEECH.md`.
 
 ## What still needs checking on a real phone
 

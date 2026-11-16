@@ -1068,6 +1068,52 @@ class EmaCommandRouter(
                 setAssistantMode(EmaAssistantMode.NATIVE_FIRST, done)
             }
 
+            lower == "speech status" || lower == "offline speech status" ||
+                lower == "speech recognition status" || lower == "what speech mode are you in" ||
+                lower == "is offline speech ready" || lower == "is offline speech on" ||
+                lower == "is speech recognition offline" -> {
+                val message = EmaSpeechRecognition.diagnosticsSummary(context)
+                speak(message); done(message)
+            }
+
+            lower == "offline speech only" || lower == "use offline speech only" ||
+                lower == "strict offline speech" || lower == "private speech mode" ||
+                lower == "switch to offline speech only" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.EMA_OFFLINE_ONLY, done)
+            }
+
+            lower == "offline speech first" || lower == "use offline speech" ||
+                lower == "use offline speech first" || lower == "enable offline speech" ||
+                lower == "turn on offline speech" || lower == "use ema speech" ||
+                lower == "use built in speech" || lower == "use offline recognizer" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.EMA_OFFLINE_FIRST, done)
+            }
+
+            lower == "system speech first" || lower == "use system speech" ||
+                lower == "use system speech first" || lower == "use android speech" ||
+                lower == "disable offline speech" || lower == "turn off offline speech" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.SYSTEM_FIRST, done)
+            }
+
+            lower == "prepare offline speech" || lower == "warm up offline speech" ||
+                lower == "load offline speech" || lower == "prepare speech engine" -> {
+                EmaOfflineSpeechModel.warmUpAsync(context) { ok ->
+                    val message = if (ok) {
+                        "EMA's built-in offline speech engine is loaded and ready."
+                    } else {
+                        EmaOfflineSpeechModel.statusSummary(context)
+                    }
+                    speak(message); done(message)
+                }
+            }
+
+            lower.startsWith("transcribe ") -> {
+                val target = command
+                    .replace(Regex("(?i)^transcribe\\s+(?:the\\s+)?(?:(?:audio|voice|recording|file)\\s+)*"), "")
+                    .trim()
+                transcribeAudioFileCommand(target, done)
+            }
+
             else -> return false
         }
         return true
@@ -1100,6 +1146,62 @@ class EmaCommandRouter(
         prefs.edit().putString("assistant_mode", mode.key).apply()
         val message = "Assistant mode set to ${mode.label}. ${mode.explanation}"
         speak(message); done(message)
+    }
+
+    private fun setSpeechRecognitionMode(mode: EmaSpeechMode, done: (String) -> Unit) {
+        EmaSpeechRecognition.setSpeechMode(context, mode)
+        val message = "Speech mode set to ${mode.label}. ${mode.explanation}"
+        speak(message); done(message)
+    }
+
+    private fun transcribeAudioFileCommand(query: String, done: (String) -> Unit) {
+        if (query.isBlank()) {
+            val message = "Tell me the name of the WAV recording to transcribe, for example: transcribe meeting.wav."
+            speak(message); done(message)
+            return
+        }
+        if (!EmaFileAccessEngine.isAvailable()) {
+            val message = "EMA needs Broad file access in Setup before it can read local audio recordings for offline transcription."
+            speak(message); done(message)
+            return
+        }
+        val availability = EmaOfflineSpeechModel.checkAvailability(context, ignoreLanguage = true)
+        if (!availability.available) {
+            val message = availability.reason
+            speak(message); done(message)
+            return
+        }
+        Thread({
+            val reply = try {
+                val file = EmaFileAccessEngine.findWavFile(query)
+                if (file == null) {
+                    "I couldn't find a WAV recording matching \"$query\" in your storage."
+                } else {
+                    val result = EmaOfflineSpeechEngine.transcribeWav(
+                        context = context,
+                        wavFile = file,
+                        profile = EmaRecognitionProfile.DICTATION
+                    )
+                    if (result.text.isBlank()) {
+                        "I read ${file.name} offline, but didn't hear any spoken words in it."
+                    } else {
+                        "Transcript of ${file.name} (offline): ${result.text}"
+                    }
+                }
+            } catch (error: IllegalArgumentException) {
+                "I couldn't transcribe that file offline: ${error.message ?: "unsupported WAV format"}."
+            } catch (error: Throwable) {
+                android.util.Log.e("EMA", "Offline WAV transcription failed: ${error.javaClass.simpleName}", error)
+                "I ran into an error transcribing that audio offline."
+            }
+            commandHandler.post {
+                speak(reply)
+                done(reply)
+            }
+        }, "ema-offline-wav-stt").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     // ------------------------------------------------------------- dispatch

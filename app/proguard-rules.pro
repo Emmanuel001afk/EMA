@@ -5,13 +5,17 @@
 # from the manifest; these are explicit so a rule change cannot silently drop an
 # entry point that Android instantiates by name.
 -keep class com.ema.assistant.MainActivity { *; }
+-keep class com.ema.assistant.EmaWakeActivity { *; }
 -keep class com.ema.assistant.EmaVoiceInteractionService { *; }
 -keep class com.ema.assistant.EmaVoiceInteractionSessionService { *; }
+-keep class com.ema.assistant.EmaRecognitionService { *; }
+-keep class com.ema.assistant.EmaWakeWordService { *; }
 -keep class com.ema.assistant.EmaNotificationListenerService { *; }
 -keep class com.ema.assistant.EmaAccessibilityService { *; }
 -keep class com.ema.assistant.EmaScheduledActionReceiver { *; }
 -keep class com.ema.assistant.EmaReminderReceiver { *; }
 -keep class com.ema.assistant.EmaRoutineReceiver { *; }
+-keep class com.ema.assistant.EmaAlarmReceiver { *; }
 -keep class com.ema.assistant.EmaBootReceiver { *; }
 
 # EmaReminderReceiver delegates to this nested receiver class.
@@ -22,7 +26,8 @@
 
 # ML Kit provides its own consumer rules. Do not broadly keep ML libraries.
 
-# JNA resolves Vosk's native entry points reflectively.
+# JNA resolves Vosk's native entry points reflectively for EMA's offline STT and wake detector.
 -keep class org.vosk.** { *; }
 -keep class com.sun.jna.** { *; }
+-keepclassmembers class * extends com.sun.jna.** { public *; }
 -dontwarn java.awt.**
