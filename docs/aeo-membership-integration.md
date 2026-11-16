@@ -1,35 +1,26 @@
 # EMA AEO membership adapter
 
-This change adds a native Kotlin verifier for the AEO membership credential profile and the UCCS `uccs/1` registration envelope.
+This change adds a native Kotlin verifier for AEO Ed25519 membership credentials, UCCS `uccs/1` registration envelopes, and root-signed trust bundles.
 
 ## Security boundary
 
-- A valid membership credential establishes that the platform is an AEO ecosystem member.
-- It does **not** authenticate a live device or session.
-- It does **not** grant access to any EMA capability or another platform's capabilities.
-- It does **not** replace peer authentication, provider-controlled grants, scopes, expiry, replay protection, or user consent.
-- EMA's existing capability catalogue and its existing Hub integration remain unchanged.
+- Membership establishes ecosystem membership only.
+- It does not authenticate a live device/session, authorize capabilities, or represent user consent.
+- EMA's existing capability catalogue and Central Hub integration remain separate and unchanged.
+- No traffic is required to pass through Central Hub.
 
 ## Cryptographic support
 
-The verifier uses JCA Ed25519 and is enabled only on Android API 33+. EMA's minimum supported API is 26, so API 26–32 devices receive a fail-closed `crypto_unavailable` result. No weaker algorithm or silent fallback is used. A separately reviewed, maintained crypto provider would be required before supporting those older API levels.
+The verifier uses JCA Ed25519 and is enabled only on Android API 33+. EMA supports API 26+, so API 26–32 fail closed with `crypto_unavailable`; there is no algorithm downgrade. A separately reviewed maintained provider is required before supporting older API levels.
 
-The raw 32-byte Ed25519 public key is wrapped in the standard X.509 SubjectPublicKeyInfo prefix for JCA import. Credential signature, issuer, audience, ecosystem, credential type/version, platform identity, publisher claims, UUIDv4 credential ID, time bounds, membership scope, and revocation callback are checked.
+## Trust bundles
 
-## Trust provisioning
+The adapter verifies compact JWS trust bundles against pinned Ed25519 root public keys, validates issuer-key records and credential revocation IDs, and enforces expiry and a caller-supplied minimum version. The caller must persist the highest accepted bundle version in EMA-owned secure storage and pass it as `minimumVersion`. The verifier itself does not persist state or fetch trust material. Root custody, rotation/recovery, live issuer/revocation distribution, and initial platform registration remain production prerequisites.
 
-The caller must supply trusted issuer public keys and a revocation checker. The verifier does not fetch keys, contact Central Hub, or write to a database. This PR does not yet implement the root-signed trust-bundle bootstrap and monotonic bundle-version persistence available in the Central Hub verifier branch. Do not embed private keys or treat placeholder keys as production trust anchors.
+## Capability discovery
+
+`EmaAeoCapabilityManifest` projects EMA's existing capability registry into short-lived UCCS discovery metadata. It does not expose remote command execution, grant capabilities, or bypass EMA's local permission and command-validation pipeline.
 
 ## Validation
 
-JVM tests cover valid credentials, tampered signatures, unknown keys, revoked credentials, wrong audience, API-level fail-closed behavior, and registration identity binding. GitHub Actions results must be checked on this PR before calling the change build-verified.
-
-
-## Root-signed trust bundles
-
-The adapter verifies AEO root-signed trust bundles against pinned Ed25519 root public keys, validates issuer-key records and credential revocation IDs, and enforces expiry and a caller-supplied minimum bundle version. The caller must persist the highest accepted version and pass it as `minimumVersion`; this verifier does not persist state. Root-key rotation/recovery and live issuer/revocation distribution remain production prerequisites. Android API levels below 33 fail closed because the platform Ed25519 provider is unavailable; no algorithm downgrade is used.
-
-
-## UCCS capability manifest adapter
-
-`EmaAeoCapabilityManifest` projects `EmaCapabilityRegistry.ALL` into short-lived UCCS discovery metadata. It reports capability IDs, titles, local prerequisites and whether an operation is consequential. It does not expose a remote command endpoint, make EMA remotely invocable, grant capabilities, or bypass EMA's local permission and command-validation pipeline. Manifest discovery is not authorization; any future remote request needs a separately authenticated peer, explicit provider-side grant, scope/expiry/replay checks, and user consent for consequential actions.
+JVM tests cover membership verification, registration identity binding, root-signed trust-bundle verification, rollback rejection, invalid roots/signatures, and API-level fail-closed behavior. CI must pass on the latest PR commit before merge.
