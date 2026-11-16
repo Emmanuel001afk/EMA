@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -42,6 +43,7 @@ internal class EmaBargeInMonitor(
         var retained = 0
         var voicedSamples = 0
         var lastCompare = 0L
+        var echoCanceler: AcousticEchoCanceler? = null
         try {
             val rate = EmaVoiceFeatures.SAMPLE_RATE
             val minSize = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -50,8 +52,18 @@ internal class EmaBargeInMonitor(
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minSize * 2, 4096))
             recorder = audio
             if (audio.state != AudioRecord.STATE_INITIALIZED) return
+            echoCanceler = runCatching {
+                if (audio.audioSessionId > 0 && AcousticEchoCanceler.isAvailable()) {
+                    AcousticEchoCanceler.create(audio.audioSessionId)?.apply { enabled = true }
+                } else {
+                    null
+                }
+            }.getOrNull()
             audio.startRecording()
+            if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) return
             val bytes = ByteArray(640) // 20 ms PCM16 mono at 16 kHz
+            var hpPrevIn = 0f
+            var hpPrevOut = 0f
             while (running.get()) {
                 val count = audio.read(bytes, 0, bytes.size)
                 if (count <= 0) {
@@ -61,7 +73,11 @@ internal class EmaBargeInMonitor(
                 val samples = ShortArray(count / 2)
                 var energy = 0.0
                 for (i in samples.indices) {
-                    val value = ((bytes[i * 2 + 1].toInt() shl 8) or (bytes[i * 2].toInt() and 0xff)).toShort()
+                    val x = ((bytes[i * 2 + 1].toInt() shl 8) or (bytes[i * 2].toInt() and 0xff)).toShort().toFloat()
+                    val y = 0.971f * (hpPrevOut + x - hpPrevIn)
+                    hpPrevIn = x
+                    hpPrevOut = y
+                    val value = y.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
                     samples[i] = value
                     energy += value.toDouble() * value.toDouble()
                 }
@@ -91,6 +107,12 @@ internal class EmaBargeInMonitor(
                     val accepted = runCatching { EmaVoiceTemplateStore.verifier(appContext).verdict(features).accepted }
                         .getOrDefault(false)
                     if (accepted && running.compareAndSet(true, false)) {
+                        // Release capture before notifying so follow-up listening opens cleanly.
+                        runCatching { echoCanceler?.release() }
+                        echoCanceler = null
+                        runCatching { audio.stop() }
+                        runCatching { audio.release() }
+                        recorder = null
                         runCatching(onOwnerVoice)
                         break
                     }
@@ -106,8 +128,12 @@ internal class EmaBargeInMonitor(
             if (running.get()) android.util.Log.w("EMA", "Barge-in monitor stopped safely", error)
         } finally {
             running.set(false)
-            runCatching { recorder?.release() }
-            recorder = null
+            runCatching { echoCanceler?.release() }
+            recorder?.let {
+                runCatching { it.stop() }
+                runCatching { it.release() }
+                recorder = null
+            }
             worker = null
         }
     }

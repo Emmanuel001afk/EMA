@@ -42,6 +42,16 @@ class EmaTimeParserTest {
         assertEquals(300, EmaTimeParser.parseDuration("five minutes")?.seconds)
         assertEquals(3600, EmaTimeParser.parseDuration("one hour")?.seconds)
         assertEquals(1500, EmaTimeParser.parseDuration("twenty five minutes")?.seconds)
+        assertEquals(90, EmaTimeParser.parseDuration("ninety seconds")?.seconds)
+        assertEquals(4500, EmaTimeParser.parseDuration("seventy five minutes")?.seconds)
+    }
+
+    @Test
+    fun parsesSpokenClockTimesWithoutColons() {
+        val now = calendar(5, 0)
+        assertEquals(6 to 30, parts(EmaTimeParser.parse("six thirty am", now)!!.millis))
+        assertEquals(18 to 45, parts(EmaTimeParser.parse("six forty five pm", now)!!.millis))
+        assertEquals(19 to 5, parts(EmaTimeParser.parse("seven oh five pm", now)!!.millis))
     }
 
     @Test

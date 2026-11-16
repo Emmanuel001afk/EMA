@@ -66,6 +66,9 @@ class EmaCommandRouter(
     // VoiceInteractionSession instances cannot consume one another's pending task.
     private var pendingTask: PendingTask? = null
 
+    /** True while EMA is waiting for the owner to confirm, cancel or choose an option. */
+    fun hasPendingQuestion(): Boolean = pendingTask != null || pendingStepConfirmation != null
+
     /** Real progress for the UI that owns this router (app screen or voice overlay). */
     var progressListener: EmaProgressListener? = null
 
@@ -116,6 +119,7 @@ class EmaCommandRouter(
 
     private companion object {
         const val PREF_CONFIRM_STEPS = "confirm_plan_steps"
+        const val LATEST_RECORDING_SENTINEL = "__ema_latest_recording__"
 
         /**
          * Gap between two alarm requests. Several clock apps drop a request
@@ -1068,6 +1072,68 @@ class EmaCommandRouter(
                 setAssistantMode(EmaAssistantMode.NATIVE_FIRST, done)
             }
 
+            lower == "speech status" || lower == "offline speech status" ||
+                lower == "speech recognition status" || lower == "what speech mode are you in" ||
+                lower == "is offline speech ready" || lower == "is offline speech on" ||
+                lower == "is speech recognition offline" -> {
+                val message = EmaSpeechRecognition.diagnosticsSummary(context)
+                speak(message); done(message)
+            }
+
+            lower == "offline speech only" || lower == "use offline speech only" ||
+                lower == "strict offline speech" || lower == "private speech mode" ||
+                lower == "switch to offline speech only" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.EMA_OFFLINE_ONLY, done)
+            }
+
+            lower == "offline speech first" || lower == "use offline speech" ||
+                lower == "use offline speech first" || lower == "enable offline speech" ||
+                lower == "turn on offline speech" || lower == "use ema speech" ||
+                lower == "use built in speech" || lower == "use offline recognizer" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.EMA_OFFLINE_FIRST, done)
+            }
+
+            lower == "system speech first" || lower == "use system speech" ||
+                lower == "use system speech first" || lower == "use android speech" ||
+                lower == "disable offline speech" || lower == "turn off offline speech" -> {
+                setSpeechRecognitionMode(EmaSpeechMode.SYSTEM_FIRST, done)
+            }
+
+            lower == "prepare offline speech" || lower == "warm up offline speech" ||
+                lower == "load offline speech" || lower == "prepare speech engine" -> {
+                EmaOfflineSpeechModel.warmUpAsync(context) { ok ->
+                    val message = if (ok) {
+                        "EMA's built-in offline speech engine is loaded and ready."
+                    } else {
+                        EmaOfflineSpeechModel.statusSummary(context)
+                    }
+                    speak(message); done(message)
+                }
+            }
+
+            lower == "transcribe last recording" || lower == "transcribe latest recording" ||
+                lower == "transcribe my last recording" || lower == "transcribe my latest recording" ||
+                lower == "transcribe latest voice note" || lower == "transcribe last voice note" ||
+                lower == "transcribe my last voice note" -> {
+                transcribeAudioFileCommand(LATEST_RECORDING_SENTINEL, done)
+            }
+
+            lower.startsWith("transcribe ") -> {
+                val target = command
+                    .replace(Regex("(?i)^transcribe\\s+"), "")
+                    .trim()
+                if (Regex("(?i)^(?:my\\s+|the\\s+)?(?:last|latest|newest|most\\s+recent)\\s+(?:audio|voice\\s+note|voice\\s+memo|recording|memo|file)$")
+                        .matches(target)
+                ) {
+                    transcribeAudioFileCommand(LATEST_RECORDING_SENTINEL, done)
+                } else {
+                    val cleaned = target
+                        .replace(Regex("(?i)^(?:the\\s+|my\\s+)?(?:(?:audio|voice|note|memo|recording|file)\\s+)+"), "")
+                        .trim()
+                    transcribeAudioFileCommand(cleaned, done)
+                }
+            }
+
             else -> return false
         }
         return true
@@ -1100,6 +1166,86 @@ class EmaCommandRouter(
         prefs.edit().putString("assistant_mode", mode.key).apply()
         val message = "Assistant mode set to ${mode.label}. ${mode.explanation}"
         speak(message); done(message)
+    }
+
+    private fun setSpeechRecognitionMode(mode: EmaSpeechMode, done: (String) -> Unit) {
+        EmaSpeechRecognition.setSpeechMode(context, mode)
+        val message = "Speech mode set to ${mode.label}. ${mode.explanation}"
+        speak(message); done(message)
+    }
+
+    private fun transcribeAudioFileCommand(query: String, done: (String) -> Unit) {
+        if (query.isBlank()) {
+            val message = "Tell me which audio file to transcribe (for example, transcribe meeting.m4a or transcribe last recording), or tap Transcribe audio in EMA."
+            speak(message); done(message)
+            return
+        }
+        if (!EmaFileAccessEngine.isAvailable()) {
+            val message = "EMA needs Broad file access in Setup to search shared storage by name, or you can tap Transcribe audio in EMA to pick any recording without extra permissions."
+            speak(message); done(message)
+            return
+        }
+        val availability = EmaOfflineSpeechModel.checkAvailability(context, ignoreLanguage = true)
+        if (!availability.available) {
+            val message = availability.reason
+            speak(message); done(message)
+            return
+        }
+        val wantLatest = query == LATEST_RECORDING_SENTINEL
+        Thread({
+            var spokenSummary: String? = null
+            val reply = try {
+                val file = if (wantLatest) {
+                    EmaFileAccessEngine.findLatestAudioRecording()
+                } else {
+                    EmaFileAccessEngine.findAudioFile(query)
+                }
+                if (file == null) {
+                    if (wantLatest) {
+                        "I couldn't find a recent audio recording in your Recordings or Download folders."
+                    } else {
+                        "I couldn't find an audio recording matching \"$query\" (supports WAV, M4A, MP3, Opus, OGG, FLAC and AAC)."
+                    }
+                } else {
+                    val result = EmaOfflineSpeechEngine.transcribeFile(
+                        context = context,
+                        audioFile = file,
+                        profile = EmaRecognitionProfile.DICTATION
+                    )
+                    if (result.text.isBlank()) {
+                        "I decoded ${file.name} offline, but didn't detect any spoken words in it."
+                    } else {
+                        val secs = (result.durationMs / 1000L).coerceAtLeast(1L)
+                        val copiedNote = if (result.text.length >= 160) {
+                            val copied = runCatching {
+                                val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                cb?.setPrimaryClip(ClipData.newPlainText("EMA Offline Transcript", result.text))
+                                cb != null
+                            }.getOrDefault(false)
+                            if (copied) " · copied to clipboard" else ""
+                        } else {
+                            ""
+                        }
+                        if (result.text.length > 420) {
+                            spokenSummary = "Transcribed ${file.name} offline (${secs} seconds)${if (copiedNote.isNotEmpty()) " and copied it to your clipboard" else ""}. ${result.text.take(320)}…"
+                        }
+                        "Transcript of ${file.name} (${secs}s · offline$copiedNote):\n${result.text}"
+                    }
+                }
+            } catch (error: IllegalArgumentException) {
+                "I couldn't transcribe that recording offline: ${error.message ?: "unsupported audio format"}."
+            } catch (error: Throwable) {
+                android.util.Log.e("EMA", "Offline audio transcription failed: ${error.javaClass.simpleName}", error)
+                "I ran into an error transcribing that audio offline."
+            }
+            commandHandler.post {
+                speak(spokenSummary ?: reply)
+                done(reply)
+            }
+        }, "ema-offline-file-stt").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     // ------------------------------------------------------------- dispatch

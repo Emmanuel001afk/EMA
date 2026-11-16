@@ -1,16 +1,122 @@
 package com.ema.assistant
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The on-device recogniser fails in ways the phone never explains: the
- * language is not available, the model is not supported, the service returns
- * a server or network error. EMA retries the same listening session once with
- * another installed recogniser.
+ * Pure JVM tests for EMA's speech mode selection, offline-first / strict-offline
+ * / system-first recognizer plans, connectivity awareness and error recovery.
  */
 class EmaRecognizerFallbackTest {
+
+    private val allBackends = setOf(
+        EmaRecognizerKind.EMA_OFFLINE,
+        EmaRecognizerKind.ON_DEVICE,
+        EmaRecognizerKind.EXTERNAL
+    )
+
+    @Test
+    fun offlineFirstPrioritizesEmaEngineThenOnDeviceThenExternal() {
+        val plan = EmaRecognizerFallback.plan(
+            mode = EmaSpeechMode.EMA_OFFLINE_FIRST,
+            available = allBackends,
+            networkAvailable = true
+        )
+        assertEquals(
+            listOf(EmaRecognizerKind.EMA_OFFLINE, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL),
+            plan
+        )
+    }
+
+    @Test
+    fun worksStandaloneOnPhonesWithZeroExternalSpeechServices() {
+        val plan = EmaRecognizerFallback.plan(
+            mode = EmaSpeechMode.EMA_OFFLINE_FIRST,
+            available = setOf(EmaRecognizerKind.EMA_OFFLINE),
+            networkAvailable = false
+        )
+        assertEquals(listOf(EmaRecognizerKind.EMA_OFFLINE), plan)
+    }
+
+    @Test
+    fun offlineOnlyModeNeverIncludesExternalOrPlatformServices() {
+        val plan = EmaRecognizerFallback.plan(
+            mode = EmaSpeechMode.EMA_OFFLINE_ONLY,
+            available = allBackends,
+            networkAvailable = true
+        )
+        assertEquals(listOf(EmaRecognizerKind.EMA_OFFLINE), plan)
+        assertTrue(
+            EmaRecognizerFallback.plan(
+                mode = EmaSpeechMode.EMA_OFFLINE_ONLY,
+                available = setOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL),
+                networkAvailable = true
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun systemFirstPromotesEmaOfflineImmediatelyWhenNetworkIsDown() {
+        val offline = EmaRecognizerFallback.plan(
+            mode = EmaSpeechMode.SYSTEM_FIRST,
+            available = allBackends,
+            networkAvailable = false
+        )
+        assertEquals(
+            listOf(EmaRecognizerKind.EMA_OFFLINE, EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL),
+            offline
+        )
+
+        val online = EmaRecognizerFallback.plan(
+            mode = EmaSpeechMode.SYSTEM_FIRST,
+            available = allBackends,
+            networkAvailable = true
+        )
+        assertEquals(
+            listOf(EmaRecognizerKind.ON_DEVICE, EmaRecognizerKind.EXTERNAL, EmaRecognizerKind.EMA_OFFLINE),
+            online
+        )
+    }
+
+    @Test
+    fun classifiesRecognizerErrorsAndLanguageSupportAccurately() {
+        assertTrue(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_NETWORK))
+        assertTrue(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_SERVER))
+        assertTrue(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_LANGUAGE_NOT_SUPPORTED))
+        assertFalse(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_NO_MATCH))
+        assertFalse(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_SPEECH_TIMEOUT))
+        assertFalse(EmaRecognizerFallback.shouldFallback(EmaRecognizerFallback.ERROR_INSUFFICIENT_PERMISSIONS))
+
+        assertTrue(EmaRecognizerFallback.shouldRetrySameBackend(EmaRecognizerFallback.ERROR_AUDIO, alreadyRetriedAudio = false))
+        assertFalse(EmaRecognizerFallback.shouldRetrySameBackend(EmaRecognizerFallback.ERROR_AUDIO, alreadyRetriedAudio = true))
+
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage(null, defaultLanguageTag = "en-US"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-US"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-NG"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-GH"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-KE"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-ZA"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-IN"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-SG"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en_GB"))
+        assertTrue(EmaSpeechMode.SUPPORTED_OFFLINE_LOCALES.size >= 18)
+        assertEquals("en-NG", EmaSpeechMode.canonicalOfflineTag("en_ng"))
+        assertFalse(EmaSpeechMode.supportsOfflineLanguage("fr-FR"))
+        assertEquals(EmaRecognizerKind.EMA_OFFLINE, EmaRecognizerKind.fromStored("VOSK_OFFLINE"))
+        assertEquals(EmaRecognitionProfile.WEB_SEARCH, EmaRecognitionProfile.fromKey("web_search"))
+        assertEquals(EmaRecognitionProfile.CONFIRMATION, EmaRecognitionProfile.fromKey("confirmation"))
+        assertEquals(0f, EmaSpeechRecognition.normalizeRmsLevel(-2f), 0.01f)
+        assertEquals(1f, EmaSpeechRecognition.normalizeRmsLevel(12f), 0.01f)
+        assertEquals(
+            listOf("Sign In", "Continue"),
+            EmaSpeechRecognition.extractScreenLabels("Sign In · Continue · 12")
+        )
+    }
+
+    // --------------------------------------------------- legacy compatibility
 
     @Test
     fun theOnDeviceRecogniserFallsBackToAnExternalOne() {

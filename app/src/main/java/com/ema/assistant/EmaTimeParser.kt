@@ -31,7 +31,12 @@ object EmaTimeParser {
         "eleven" to 11, "twelve" to 12, "thirteen" to 13, "fourteen" to 14,
         "fifteen" to 15, "sixteen" to 16, "seventeen" to 17, "eighteen" to 18,
         "nineteen" to 19, "twenty" to 20, "thirty" to 30, "forty" to 40,
-        "fifty" to 50, "quarter" to 15, "half" to 30
+        "fifty" to 50, "sixty" to 60, "seventy" to 70, "eighty" to 80,
+        "ninety" to 90, "quarter" to 15, "half" to 30
+    )
+
+    private val TENS_WORDS = setOf(
+        "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"
     )
 
     private val DAY_NAMES = mapOf(
@@ -57,7 +62,7 @@ object EmaTimeParser {
         while (i < words.size) {
             val a = words[i]
             val b = words.getOrNull(i + 1)
-            if (a == "twenty" || a == "thirty" || a == "forty" || a == "fifty") {
+            if (a in TENS_WORDS) {
                 val bv = b?.let { WORD_NUMBERS[it] }
                 if (bv != null && bv in 1..9) {
                     joined += (WORD_NUMBERS.getValue(a) + bv).toString()
@@ -65,8 +70,16 @@ object EmaTimeParser {
                     continue
                 }
             }
-            val mapped = WORD_NUMBERS[a]
-            if (mapped != null) joined += mapped.toString() else joined += a
+            // Spoken "seven oh five" -> "7:05".
+            val av = WORD_NUMBERS[a]
+            val c = words.getOrNull(i + 2)
+            val cv = c?.let { WORD_NUMBERS[it] }
+            if (av != null && av in 1..23 && (b == "oh" || b == "o") && cv != null && cv in 1..9) {
+                joined += "$av:0$cv"
+                i += 3
+                continue
+            }
+            if (av != null) joined += av.toString() else joined += a
             i++
         }
         return joined.joinToString(" ")
@@ -146,15 +159,17 @@ object EmaTimeParser {
             return atTime(nowMillis, normalizeHour(baseHour, meridiem), minute)
         }
 
-        val match = Regex("""(\d{1,2})(?::(\d{2}))?\s*(a\s*m|p\s*m|am|pm|in the morning|in the afternoon|in the evening|at night)?""")
+        // Spoken "six thirty am" becomes "6 30 am" without a colon; support both "6:30" and "6 30".
+        val match = Regex("""(\d{1,2})(?::(\d{2})|\s+([1-5]\d)(?!\s*(?:second|sec|minute|min|hour|hr|day|percent|%)|:\d))?\s*(a\s*m|p\s*m|am|pm|in the morning|in the afternoon|in the evening|at night)?""")
             .find(text) ?: return null
         val hour = match.groupValues[1].toIntOrNull() ?: return null
-        val minute = match.groupValues[2].ifBlank { "0" }.toIntOrNull() ?: 0
+        val minuteStr = match.groupValues[2].ifBlank { match.groupValues[3] }
+        val minute = minuteStr.ifBlank { "0" }.toIntOrNull() ?: 0
         if (minute !in 0..59) return null
-        // The marker must be adjacent to the number (group 3). Scanning the
+        // The marker must be adjacent to the number (group 4). Scanning the
         // whole sentence made "set an alarm for 7, I am going out" a 7 AM alarm
         // through the "am" in "I am", and could contradict an explicit "pm".
-        val meridiem = match.groupValues[3].replace(Regex("\\s+"), "")
+        val meridiem = match.groupValues[4].replace(Regex("\\s+"), "")
         if (hour !in 0..23) return null
         if (meridiem.isBlank() && hour in 1..12) {
             // No am/pm: choose the nearest future occurrence of this clock

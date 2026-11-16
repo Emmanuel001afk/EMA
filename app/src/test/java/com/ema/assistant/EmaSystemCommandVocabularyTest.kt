@@ -168,6 +168,25 @@ class EmaSystemCommandVocabularyTest {
     }
 
     @Test
+    fun recognisesOfflineSpeechAndAudioTranscriptionCommands() {
+        listOf(
+            "offline speech status",
+            "speech recognition status",
+            "prepare offline speech",
+            "transcribe last recording",
+            "transcribe latest voice note",
+            "transcribe meeting.m4a",
+            "transcribe note.opus",
+            "transcribe audio interview.mp3"
+        ).forEach { command ->
+            assertTrue("expected recognised offline-speech command: $command",
+                EmaSystemCommandVocabulary.recognises(command))
+            assertTrue("expected device-action gate pass: $command",
+                EmaSystemCommandVocabulary.looksLikeDeviceAction(command))
+        }
+    }
+
+    @Test
     fun argumentBearingPrefixesCannotClipLongerWords() {
         // "type " carries a trailing space so it cannot match "typewriter".
         assertFalse(EmaSystemCommandVocabulary.recognises("typewriter settings"))

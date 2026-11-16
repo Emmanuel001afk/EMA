@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
@@ -41,6 +42,29 @@
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.ASSIST"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+            <!-- Share any local voice note or audio recording to EMA for offline transcription. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="audio/*"/>
+            </intent-filter>
+        </activity>
+        <!-- System-wide offline voice input dialog for apps starting ACTION_RECOGNIZE_SPEECH. -->
+        <activity
+            android:name=".EmaRecognizeSpeechActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.speech.action.RECOGNIZE_SPEECH"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.speech.action.WEB_SEARCH"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
         <service android:name=".EmaWakeWordService" android:exported="false" android:foregroundServiceType="microphone"/>
         <activity android:name=".EmaWakeActivity" android:exported="false" android:excludeFromRecents="true" android:showWhenLocked="true" android:turnScreenOn="true"/>
@@ -51,10 +75,8 @@
         <service android:name=".EmaVoiceInteractionSessionService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true">
             <intent-filter><action android:name="android.service.voice.VoiceInteractionSessionService"/></intent-filter>
         </service>
-        <!-- A recognition service is mandatory for digital-assistant
-             registration; VoiceInteractionServiceInfo rejects the voice
-             interaction XML without one. It delegates to an explicit external
-             recogniser, never to the default one (which could be EMA). -->
+        <!-- EMA's system-registered Android 8-15 offline speech-to-text service
+             (also mandatory for digital-assistant VoiceInteractionServiceInfo). -->
         <service android:name=".EmaRecognitionService" android:exported="true" android:permission="android.permission.BIND_RECOGNITION_SERVICE">
             <intent-filter><action android:name="android.speech.RecognitionService"/></intent-filter>
             <meta-data android:name="android.speech" android:resource="@xml/recognition_service"/>

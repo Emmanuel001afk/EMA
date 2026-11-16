@@ -9,9 +9,10 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.*
-import org.json.JSONObject
-import org.vosk.Model
 import org.vosk.Recognizer
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** Local software keyword detector. FGS + partial wake lock support screen-off capture.
  * Not a DSP hotword engine; battery use and false triggers must be measured on devices.
@@ -21,6 +22,8 @@ class EmaWakeWordService : Service() {
     @Volatile private var running = false
     @Volatile private var paused = false
     @Volatile private var recorder: AudioRecord? = null
+    private val captureLock = ReentrantLock()
+    private val captureReleased = captureLock.newCondition()
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val prefs by lazy { getSharedPreferences("ema", MODE_PRIVATE) }
@@ -46,6 +49,24 @@ class EmaWakeWordService : Service() {
         fun isCapturing() = active?.recorder != null
         fun pauseForSpeech() { active?.pauseCapture() }
         fun resumeAfterSession() { active?.let { it.paused = false } }
+
+        /**
+         * Wait up to [timeoutMs] on a worker thread until wake-word capture has
+         * fully released [AudioRecord], preventing mic contention during handoff.
+         */
+        fun awaitCaptureReleased(timeoutMs: Long = 650L): Boolean {
+            val svc = active ?: return true
+            if (svc.recorder == null) return true
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
+            svc.captureLock.withLock {
+                while (svc.recorder != null) {
+                    val remaining = deadline - SystemClock.elapsedRealtime()
+                    if (remaining <= 0L) break
+                    runCatching { svc.captureReleased.await(remaining.coerceAtMost(80L), TimeUnit.MILLISECONDS) }
+                }
+            }
+            return svc.recorder == null
+        }
 
         /**
          * Tell the wake word that a command really ran after the wake.
@@ -137,21 +158,26 @@ class EmaWakeWordService : Service() {
 
     private fun detect() {
         try {
-            update("Preparing built-in Hey EMA engine • no download needed")
-            val modelDirectory = EmaWakeModel.prepare(this)
-            if (!running) return
-            Model(modelDirectory.path).use { model ->
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
+            // Share the process-wide EmaOfflineSpeechModel lease so offline command
+            // recognition runs instantaneously with zero duplicate RAM while Hey EMA is on.
+            EmaOfflineSpeechModel.acquire(
+                context = this,
+                onPreparing = { update("Preparing built-in Hey EMA engine • no download needed") }
+            ).use { lease ->
+                if (!running) return
+                val model = lease.model
                 while (running) {
                     if (paused || EmaVoiceInteractionSession.isActiveVisible()) {
                         update("Paused • microphone handed to EMA. Close the assistant to resume.")
-                        while (running && (paused || EmaVoiceInteractionSession.isActiveVisible())) Thread.sleep(200)
+                        while (running && (paused || EmaVoiceInteractionSession.isActiveVisible())) Thread.sleep(150)
                         continue
                     }
                     Recognizer(model, 16000f, EmaWakeDetector.grammarJson()).use { decoder ->
                         val size = maxOf(4096, AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
                         val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
                             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size * 2)
-                        recorder = audio
+                        captureLock.withLock { recorder = audio }
                         try {
                             check(audio.state == AudioRecord.STATE_INITIALIZED) { "Microphone unavailable" }
                             wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EMA:local-wake").apply { acquire(60 * 60 * 1000L) }
@@ -168,6 +194,8 @@ class EmaWakeWordService : Service() {
                                 EmaVoiceTemplateStore.isEnrolled(this@EmaWakeWordService)
                             }.getOrDefault(false))
                             val buffer = ByteArray(1600) // 50 ms, PCM16 mono 16 kHz
+                            var hpPrevIn = 0f
+                            var hpPrevOut = 0f
                             var renewal = SystemClock.elapsedRealtime()
                             capture@ while (running && !paused && !EmaVoiceInteractionSession.isActiveVisible()) {
                                 val count = audio.read(buffer, 0, buffer.size)
@@ -175,12 +203,28 @@ class EmaWakeWordService : Service() {
                                     if (paused || !running) break
                                     error("Microphone capture stopped ($count)")
                                 }
-                                val window = gate.accept(buffer, count - count % 2)
+                                val even = count - count % 2
+                                // Remove DC offset and sub-75 Hz handling rumble before gating.
+                                var b = 0
+                                while (b + 1 < even) {
+                                    val x = ((buffer[b].toInt() and 0xff) or (buffer[b + 1].toInt() shl 8)).toShort().toFloat()
+                                    val y = 0.971f * (hpPrevOut + x - hpPrevIn)
+                                    hpPrevIn = x
+                                    hpPrevOut = y
+                                    val s = y.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                                    buffer[b] = (s and 0xff).toByte()
+                                    buffer[b + 1] = ((s ushr 8) and 0xff).toByte()
+                                    b += 2
+                                }
+                                val window = gate.accept(buffer, even)
                                 for (frame in window.audio) {
                                     rememberAudio(frame)
                                     val final = decoder.acceptWaveForm(frame, frame.size)
-                                    val result = JSONObject(if (final) decoder.result else decoder.partialResult)
-                                    val words = result.optString(if (final) "text" else "partial").trim()
+                                    val words = if (final) {
+                                        EmaVoskJsonParser.parseResult(decoder.result).firstOrNull()?.text.orEmpty()
+                                    } else {
+                                        EmaVoskJsonParser.parsePartial(decoder.partialResult).text
+                                    }
                                     // Token search, not string equality: "[unk] hey emma" counts.
                                     val heard = if (final) detector.onFinal(words) else detector.onPartial(words)
                                     if (heard) {
@@ -193,6 +237,14 @@ class EmaWakeWordService : Service() {
                                             continue
                                         }
                                         paused = true
+                                        // Release AudioRecord before activating the session so EMA's
+                                        // live command recognizer acquires the microphone with zero contention.
+                                        runCatching { audio.stop() }
+                                        runCatching { audio.release() }
+                                        captureLock.withLock {
+                                            recorder = null
+                                            captureReleased.signalAll()
+                                        }
                                         main.post { activate() }
                                         break@capture
                                     }
@@ -205,8 +257,11 @@ class EmaWakeWordService : Service() {
                             }
                         } finally {
                             runCatching { audio.stop() }
-                            audio.release()
-                            recorder = null
+                            runCatching { audio.release() }
+                            captureLock.withLock {
+                                recorder = null
+                                captureReleased.signalAll()
+                            }
                             wakeLock?.let { if (it.isHeld) it.release() }
                             wakeLock = null
                         }
@@ -344,6 +399,11 @@ class EmaWakeWordService : Service() {
         // launch or a secure keyguard prevents direct assistant activation.
         update("Hey EMA detected • tap to wake EMA${if (keyguard.isKeyguardLocked) " and unlock securely" else ""}")
         main.postDelayed({ if (running && !EmaVoiceInteractionSession.isActiveVisible()) paused = false }, 30_000)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        EmaOfflineSpeechModel.onTrimMemory(level)
     }
 
     override fun onDestroy() {

@@ -216,14 +216,27 @@ cannot, so EMA uses the tile path and verifies what it can observe.
   alarm notification, full-screen only when Android allows it). It also checks
   the exact-alarm permission and opens the grant screen when it is missing.
 
-## Digital-assistant registration
+## Digital-assistant registration & offline speech recognition
 
-The voice-interaction XML names a real `RecognitionService`; without one
-Android rejects the registration silently. `EmaRecognitionService` delegates to
-an **explicit** recogniser (on-device on API 31+, otherwise an installed
-service that is not EMA). EMA never binds the default recogniser, because that
-can resolve back to EMA now that it offers one. Setup shows the real state:
-role held / service active / recognition service declared.
+The voice-interaction XML names EMA's `EmaRecognitionService`; without one
+Android rejects the registration silently. `EmaRecognitionService` (paired with
+`EmaRecognizeSpeechActivity` for `ACTION_RECOGNIZE_SPEECH` / `ACTION_WEB_SEARCH`)
+runs EMA's own built-in offline speech-to-text engine (`EmaOfflineSpeechEngine`
+backed by the shared `EmaOfflineSpeechModel` lease, including Android 13/14
+on-device support checks across 19 English locales, `EXTRA_SEGMENTED_SESSION`
+continuous streaming, `EXTRA_AUDIO_SOURCE` pipe transcription, formatting/masking
+extras, model warm-up triggers and third-party caller UID privacy isolation).
+When the owner chooses *System recognizer first* online or speaks a non-English
+locale, it delegates only to an **explicit** non-EMA recogniser (never resolving
+recursively back to EMA) and fails over automatically to `EmaOfflineSpeechEngine`
+if the platform service errors. Inside EMA itself, `EmaSpeechRecognition.Session`
+routes audio through `EmaAudioCaptureRouter`, drives `EmaOfflineSpeechEngine`
+directly in-process (adapting between `COMMAND`, `CONFIRMATION`, `DICTATION` and
+`WEB_SEARCH` profiles), and passes all hypotheses through 3-band Wiener
+conditioning, `EmaSpeechRescorer` (with MBR word consensus and verified owner
+corrections), `EmaInverseTextNormalizer` and `EmaPhoneticMatcher` before
+reaching the understanding layers above; local recordings and shared voice notes
+decode offline via `EmaOfflineAudioDecoder`. See `docs/OFFLINE_SPEECH.md`.
 
 ## What still needs checking on a real phone
 
