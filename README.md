@@ -302,25 +302,35 @@ and wake-gate transitions; app UI behavior still requires the device checks abov
 ## Built-in offline speech-to-text & speech recognizer
 
 EMA ships with its own full offline English speech-to-text engine
-(`EmaOfflineSpeechEngine`) and system-registered `EmaRecognitionService`,
-sharing a single verified, reference-counted on-device model instance
-(`EmaOfflineSpeechModel`) with **Hey EMA** so voice commands, live dictation
-and local `.wav` file transcription work with zero internet, zero external
-speech apps, zero API keys and no duplicate RAM.
+(`EmaOfflineSpeechEngine`), system-registered Android 8–15
+`EmaRecognitionService`, system-wide voice input dialog
+(`EmaRecognizeSpeechActivity`), and universal offline audio decoder
+(`EmaOfflineAudioDecoder`), sharing a single verified, reference-counted
+on-device model instance (`EmaOfflineSpeechModel`) with **Hey EMA** so voice
+commands, follow-up confirmations, voice dictation and local audio/voice-note
+transcription (`.wav`, `.m4a`, `.mp3`, `.opus`, `.ogg`, `.flac`, `.aac`, `.amr`,
+`.3gp`, `.webm`) run with zero internet, zero external speech apps, zero API
+keys and no duplicate RAM.
 
-- **Signal & decoding pipeline:** 75 Hz high-pass DC/rumble removal, adaptive
-  speech-band VAD with 360 ms pre-roll, speech-gated AGC and soft-knee
-  limiting, multi-rate resampling (4–192 kHz, mono/multichannel), continuation-
-  aware endpointing, multi-segment N-best lattice assembly, contextual domain
-  rescoring, inverse text normalization (spoken times, numbers, percentages,
-  dictation punctuation) and margin-gated phonetic slot grounding for installed
-  apps and contacts, while leaving message/search/typed bodies verbatim.
-- **Owner-controlled modes** (in Setup & preferences or by voice):
-  *EMA offline first* (default), *EMA offline only* (strict private — never
-  calls external speech services), and *System recognizer first* (automatic
-  offline failover). Say *"offline speech status"* anytime to inspect readiness,
-  tap **Dictate** for continuous offline text input, or say
-  *"transcribe \<recording\>.wav"* to transcribe a local WAV file on the phone.
+- **Signal, hardware & decoding pipeline:** exclusive transient assistant audio
+  focus + BLE/USB/wired/Bluetooth headset routing (`EmaAudioCaptureRouter`),
+  75 Hz high-pass filter, exact-reconstruction 3-band adaptive Wiener noise
+  suppression, adaptive speech-band VAD with 360 ms pre-roll, speech-gated AGC
+  and soft-knee limiting, sinc anti-aliased resampling (4–192 kHz, 1–8 ch),
+  cadence/hesitation smart endpointing, audio-quality diagnostic hints,
+  multi-segment N-best lattice assembly with pause-aware paragraphing,
+  MBR/ROVER consensus + verified owner correction rescoring, rich inverse text
+  normalization (spoken times, phone numbers, compound ordinals, signed numbers,
+  percentages, emails, domains, `"scratch that"` editing and dictation
+  punctuation) and margin-gated phonetic grounding for apps, contacts and
+  on-screen controls — while leaving message/search/typed bodies intact.
+- **Owner-controlled modes & offline transcription** (in Setup & preferences or
+  by voice): *EMA offline first* (default), *EMA offline only* (strict private —
+  never calls external speech services), and *System recognizer first*
+  (automatic offline failover across 19 regional English locales). Tap
+  **Dictate** for continuous voice typing, tap **Audio** (or share any voice
+  note to EMA) to transcribe recordings offline with zero extra storage
+  permissions, or say *"offline speech status"* / *"transcribe last recording"*.
 - Full technical design and limits: `docs/OFFLINE_SPEECH.md`.
 
 ## Screen-off Hey EMA service

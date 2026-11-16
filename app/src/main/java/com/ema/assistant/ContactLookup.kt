@@ -108,7 +108,7 @@ object ContactLookup {
                 }
             }
         }.onFailure {
-            android.util.Log.e("EMA", "Contact lookup failed for '$query'", it)
+            android.util.Log.e("EMA", "Contact lookup failed (${EmaPrivacy.describe(query)})", it)
         }
 
         return grouped.values.mapNotNull { (displayName, phone, email) ->

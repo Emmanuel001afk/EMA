@@ -5,6 +5,7 @@ import android.content.AttributionSource
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.speech.ModelDownloadListener
 import android.speech.RecognitionListener
 import android.speech.RecognitionService
@@ -13,20 +14,23 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 
 /**
- * EMA's system-registered Android [RecognitionService].
+ * EMA's system-registered Android 8–15 [RecognitionService].
  *
  * Serves two roles:
  *  1. Digital-assistant registration (`VoiceInteractionServiceInfo` requires a
  *     real recognition service declared by the assistant package).
- *  2. Full offline speech-to-text service powered by [EmaOfflineSpeechEngine]:
- *     runs EMA's built-in offline engine whenever offline recognition is
- *     configured, requested (`EXTRA_PREFER_OFFLINE` / [EXTRA_FORCE_OFFLINE]),
- *     fed an audio pipe (`EXTRA_AUDIO_SOURCE`), invoked while the phone is
- *     offline, or when no external recognizer is installed. When delegating to
- *     an explicit non-EMA platform recognizer (e.g. `SYSTEM_FIRST` online or a
- *     non-English locale), it never resolves recursively to EMA and falls back
- *     automatically to [EmaOfflineSpeechEngine] if the delegate fails on a
- *     supported language.
+ *  2. Full system-wide offline speech-to-text service powered by
+ *     [EmaOfflineSpeechEngine]: handles standard single-turn recognition,
+ *     Android 13/14 continuous segmented sessions (`EXTRA_SEGMENTED_SESSION` ->
+ *     `segmentResults` / `endOfSegmentedSession`), piped audio streams
+ *     (`EXTRA_AUDIO_SOURCE`), punctuation formatting (`EXTRA_ENABLE_FORMATTING`),
+ *     optional profanity masking (`EXTRA_MASK_OFFENSIVE_WORDS`), web-search
+ *     language model hints, recognition support discovery across 19 regional
+ *     English locales and zero-network model warm-up (`onTriggerModelDownload`).
+ *
+ * Privacy isolation: when invoked by another app (`callingUid != myUid()`),
+ * EMA runs with a sanitized context that excludes the owner's private contacts
+ * and personal corrections.
  */
 class EmaRecognitionService : RecognitionService() {
 
@@ -42,15 +46,16 @@ class EmaRecognitionService : RecognitionService() {
     override fun onStartListening(recognizerIntent: Intent, listener: Callback) {
         release(resumeWake = false)
 
-        val config = EmaOfflineSpeechEngine.Config.fromIntent(recognizerIntent)
+        val isSelfCaller = runCatching { listener.callingUid == Process.myUid() }.getOrDefault(false)
+        val parsedConfig = EmaOfflineSpeechEngine.Config.fromIntent(recognizerIntent)
         val forceOffline = recognizerIntent.getBooleanExtra(EXTRA_FORCE_OFFLINE, false)
         val forceSystem = recognizerIntent.getBooleanExtra(EXTRA_FORCE_SYSTEM, false) && !forceOffline
         val preferOffline = recognizerIntent.getBooleanExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-        val hasAudioStream = config.audioSource != null
+        val hasAudioStream = parsedConfig.audioSource != null
 
         val offlineAvailability = EmaOfflineSpeechModel.checkAvailability(
             context = this,
-            languageTag = config.languageTag,
+            languageTag = parsedConfig.languageTag,
             ignoreLanguage = forceOffline
         )
         val mode = EmaSpeechRecognition.speechMode(this)
@@ -60,19 +65,24 @@ class EmaRecognitionService : RecognitionService() {
             forceOffline ||
                 preferOffline ||
                 hasAudioStream ||
+                parsedConfig.segmentedSession ||
                 mode.prefersEmaOffline ||
                 !online
             )
 
         if (shouldRunLocalFirst) {
-            startLocalEngine(config.copy(ignoreLanguageCheck = forceOffline), listener)
+            startLocalEngine(
+                config = parsedConfig.copy(ignoreLanguageCheck = forceOffline),
+                listener = listener,
+                isSelfCaller = isSelfCaller
+            )
             return
         }
 
         // Strict offline-only mode never touches an external speech service.
         if (mode == EmaSpeechMode.EMA_OFFLINE_ONLY && !forceSystem) {
-            runCatching { config.audioSource?.close() }
-            val err = if (!EmaSpeechMode.supportsOfflineLanguage(config.languageTag)) {
+            runCatching { parsedConfig.audioSource?.close() }
+            val err = if (!EmaSpeechMode.supportsOfflineLanguage(parsedConfig.languageTag)) {
                 SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
             } else {
                 SpeechRecognizer.ERROR_CLIENT
@@ -83,8 +93,8 @@ class EmaRecognitionService : RecognitionService() {
 
         // Audio-stream intents cannot be forwarded safely to arbitrary delegates if local declined.
         if (hasAudioStream) {
-            runCatching { config.audioSource?.close() }
-            val err = if (!EmaSpeechMode.supportsOfflineLanguage(config.languageTag)) {
+            runCatching { parsedConfig.audioSource?.close() }
+            val err = if (!EmaSpeechMode.supportsOfflineLanguage(parsedConfig.languageTag)) {
                 SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
             } else {
                 SpeechRecognizer.ERROR_CLIENT
@@ -95,11 +105,10 @@ class EmaRecognitionService : RecognitionService() {
 
         val platform = EmaSpeechRecognition.createRecognizer(this)
         if (platform == null) {
-            // No external recognizer exists on this phone: use EMA's built-in engine if viable.
             if (offlineAvailability.available) {
-                startLocalEngine(config, listener)
+                startLocalEngine(parsedConfig, listener, isSelfCaller)
             } else {
-                val err = if (!EmaSpeechMode.supportsOfflineLanguage(config.languageTag)) {
+                val err = if (!EmaSpeechMode.supportsOfflineLanguage(parsedConfig.languageTag)) {
                     SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
                 } else {
                     SpeechRecognizer.ERROR_CLIENT
@@ -135,6 +144,21 @@ class EmaRecognitionService : RecognitionService() {
                 runCatching { listener.partialResults(partialResults ?: Bundle()) }
             }
 
+            @TargetApi(Build.VERSION_CODES.TIRAMISU)
+            override fun onSegmentResults(segmentResults: Bundle) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    runCatching { listener.segmentResults(segmentResults) }
+                }
+            }
+
+            @TargetApi(Build.VERSION_CODES.TIRAMISU)
+            override fun onEndOfSegmentedSession() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    runCatching { listener.endOfSegmentedSession() }
+                }
+                release(resumeWake = true)
+            }
+
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
             override fun onResults(results: Bundle?) {
@@ -143,15 +167,17 @@ class EmaRecognitionService : RecognitionService() {
             }
 
             override fun onError(error: Int) {
-                // Seamlessly recover with EMA's built-in offline engine when the platform service fails.
                 val canRecoverLocally = !forceSystem &&
                     EmaRecognizerFallback.shouldFallback(error) &&
-                    EmaOfflineSpeechModel.checkAvailability(this@EmaRecognitionService, config.languageTag).available
+                    EmaOfflineSpeechModel.checkAvailability(
+                        this@EmaRecognitionService,
+                        parsedConfig.languageTag
+                    ).available
                 if (canRecoverLocally) {
                     android.util.Log.w("EMA", "Platform recognizer failed ($error); switching service client to EMA offline STT")
                     runCatching { delegate?.destroy() }
                     delegate = null
-                    startLocalEngine(config, listener)
+                    startLocalEngine(parsedConfig, listener, isSelfCaller)
                     return
                 }
                 runCatching { listener.error(error) }
@@ -164,7 +190,7 @@ class EmaRecognitionService : RecognitionService() {
             runCatching { delegate?.destroy() }
             delegate = null
             if (!forceSystem && offlineAvailability.available) {
-                startLocalEngine(config, listener)
+                startLocalEngine(parsedConfig, listener, isSelfCaller)
             } else {
                 runCatching { listener.error(SpeechRecognizer.ERROR_CLIENT) }
                 release(resumeWake = true)
@@ -172,11 +198,29 @@ class EmaRecognitionService : RecognitionService() {
         }
     }
 
-    private fun startLocalEngine(config: EmaOfflineSpeechEngine.Config, listener: Callback) {
+    private fun startLocalEngine(
+        config: EmaOfflineSpeechEngine.Config,
+        listener: Callback,
+        isSelfCaller: Boolean
+    ) {
         if (config.audioSource == null && EmaWakeWordService.isCapturing()) {
             pausedWakeForExternalClient = true
             EmaWakeWordService.pauseForSpeech()
         }
+        // Never apply owner's private contacts or personal history when servicing external apps.
+        val scopedConfig = if (isSelfCaller) {
+            config
+        } else {
+            val publicApps = runCatching { EmaAppActionEngine(this).installedAppLabels() }.getOrDefault(emptyList())
+            config.copy(speechContext = EmaSpeechContext(installedApps = publicApps))
+        }
+        val segmentedSupported = scopedConfig.segmentedSession && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        val effectiveConfig = if (scopedConfig.segmentedSession && !segmentedSupported) {
+            scopedConfig.copy(segmentedSession = false)
+        } else {
+            scopedConfig
+        }
+
         val engine = EmaOfflineSpeechEngine(this, object : EmaOfflineSpeechEngine.Listener {
             override fun onReadyForSpeech(params: Bundle) {
                 runCatching { listener.readyForSpeech(params) }
@@ -198,6 +242,22 @@ class EmaRecognitionService : RecognitionService() {
                 runCatching { listener.partialResults(EmaSpeechResult.partialBundle(text, confidence)) }
             }
 
+            @TargetApi(Build.VERSION_CODES.TIRAMISU)
+            override fun onSegmentResults(result: EmaSpeechResult) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    runCatching { listener.segmentResults(result.toRecognitionBundle()) }
+                }
+            }
+
+            @TargetApi(Build.VERSION_CODES.TIRAMISU)
+            override fun onEndOfSegmentedSession() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    runCatching { listener.endOfSegmentedSession() }
+                }
+                offlineEngine = null
+                resumeWakeIfOwned()
+            }
+
             override fun onEndOfSpeech() {
                 runCatching { listener.endOfSpeech() }
             }
@@ -215,16 +275,29 @@ class EmaRecognitionService : RecognitionService() {
             }
         })
         offlineEngine = engine
-        engine.start(config)
+        engine.start(effectiveConfig)
     }
 
     @TargetApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCheckRecognitionSupport(recognizerIntent: Intent, supportCallback: SupportCallback) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        deliverRecognitionSupport(supportCallback)
+    }
+
+    @TargetApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    override fun onCheckRecognitionSupport(
+        recognizerIntent: Intent,
+        attributionSource: AttributionSource,
+        supportCallback: SupportCallback
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        deliverRecognitionSupport(supportCallback)
+    }
+
+    @TargetApi(Build.VERSION_CODES.TIRAMISU)
+    private fun deliverRecognitionSupport(supportCallback: SupportCallback) {
         runCatching {
             val locales = EmaSpeechMode.SUPPORTED_OFFLINE_LOCALES
-            // The model ships inside the APK, so English is always supported on-device
-            // with zero network downloads required.
             val support = RecognitionSupport.Builder()
                 .setInstalledOnDeviceLanguages(locales)
                 .setSupportedOnDeviceLanguages(locales)
@@ -242,7 +315,6 @@ class EmaRecognitionService : RecognitionService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val lang = EmaOfflineSpeechEngine.Config.readLanguageTag(recognizerIntent.extras)
         if (EmaSpeechMode.supportsOfflineLanguage(lang)) {
-            // No internet call: unpacks and warms the bundled APK model locally.
             EmaOfflineSpeechModel.warmUpAsync(this)
         }
     }

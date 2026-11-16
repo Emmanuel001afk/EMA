@@ -73,7 +73,13 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
             "en-ZA",
             "en-GH",
             "en-KE",
+            "en-TZ",
+            "en-UG",
             "en-SG",
+            "en-PH",
+            "en-HK",
+            "en-JM",
+            "en-001",
             "en"
         )
 
@@ -104,28 +110,47 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
             val parts = cleaned.split('-').filter { it.isNotBlank() }
             val primary = parts.firstOrNull()?.lowercase(Locale.ROOT) ?: return "en-US"
             if (primary != "en" && primary != "eng") return "en-US"
-            val region = parts.getOrNull(1)?.takeIf { it.length == 2 }?.uppercase(Locale.ROOT)
+            val region = parts.getOrNull(1)?.let { sub ->
+                when {
+                    sub.length == 2 && sub.all(Char::isLetter) -> sub.uppercase(Locale.ROOT)
+                    sub.length == 3 && sub.all(Char::isDigit) -> sub
+                    else -> null
+                }
+            }
             return if (region != null) "en-$region" else "en-US"
         }
     }
 }
 
 /**
- * Tailors endpointing and text normalization to what the owner is doing.
+ * Tailors endpointing, normalization and rescoring to the exact interaction.
  */
 enum class EmaRecognitionProfile(val key: String) {
     /**
      * Interactive assistant requests: commands, multi-step plans, messaging,
      * calls, alarms, calculations and questions. Snappy after a complete
-     * sentence, patient after a dangling clause ("saying", "and", "for").
+     * phrase, patient after a dangling clause or spoken hesitation.
      */
     COMMAND("command"),
 
     /**
-     * Continuous offline speech-to-text dictation: longer natural pauses,
-     * multi-sentence accumulation, sentence casing and spoken punctuation.
+     * Continuous offline speech-to-text dictation and audio transcription:
+     * generous pause tolerance, sentence/proper-noun casing, spoken punctuation,
+     * spoken emails/domains and voice editing ("scratch that").
      */
-    DICTATION("dictation");
+    DICTATION("dictation"),
+
+    /**
+     * Concise search queries (Android `LANGUAGE_MODEL_WEB_SEARCH`): preserves
+     * natural search phrasing while normalizing numbers, times and percentages.
+     */
+    WEB_SEARCH("web_search"),
+
+    /**
+     * Fast follow-up answers when EMA asked a clarifying question (yes, no,
+     * stop, cancel, ordinal option choices, SIM 1/2, or a missing time/name).
+     */
+    CONFIRMATION("confirmation");
 
     companion object {
         fun fromKey(key: String?): EmaRecognitionProfile =

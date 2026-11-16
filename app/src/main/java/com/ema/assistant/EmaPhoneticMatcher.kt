@@ -7,17 +7,23 @@ import kotlin.math.min
  * Deterministic phonetic and compound-word matcher for offline speech slot
  * grounding.
  *
- * Small offline acoustic models have a fixed dictionary: brand names, private
- * enterprise apps and regional personal names ("OPay", "Moniepoint",
- * "Audiomack", "Boomplay", "Phormi", "Tunde", "Okafor") are frequently decoded
- * as phonetically identical English word sequences ("oh pay", "money point",
- * "audio mac", "boom play", "for me", "tune day").
+ * Small offline acoustic models have a fixed dictionary: global and African
+ * fintechs, private enterprise apps and regional personal names ("OPay",
+ * "Moniepoint", "PalmPay", "Kuda", "PiggyVest", "Paystack", "Audiomack",
+ * "Boomplay", "Phormi", "Tunde", "Okafor", "Chioma", "Chinedu", "Emeka",
+ * "Ngozi", "Adeyemi", "Gbenga") are frequently decoded as phonetically
+ * matching English word sequences ("oh pay", "money point", "palm pay",
+ * "could a", "audio mac", "boom play", "for me", "tune day", "oak a four",
+ * "eh mecca").
  *
  * Safety contract:
- *  - Only called on explicit app or contact slots, never on message bodies,
- *    search queries or reminder text.
+ *  - Only called on explicit app, contact or on-screen action slots, never on
+ *    message bodies, search queries or reminder text.
  *  - Requires both a high absolute score and a clear margin over the runner-up;
  *    close ties return null so EMA asks the owner instead of guessing.
+ *  - Contact grounding preserves ambiguity when multiple contacts share a
+ *    given name (returning the shared given name rather than picking one full
+ *    contact silently).
  *  - Pure Kotlin, fully unit tested without a device.
  */
 object EmaPhoneticMatcher {
@@ -36,9 +42,11 @@ object EmaPhoneticMatcher {
         "app", "application", "phone", "screen", "home", "back", "recent", "recents",
         "settings", "notification", "notifications", "message", "messages", "music",
         "song", "video", "videos", "result", "results", "first", "second", "third",
-        "last", "next", "previous", "now", "today", "tomorrow", "tonight", "please",
-        "wifi", "bluetooth", "flashlight", "torch", "volume", "brightness", "alarm",
-        "timer", "reminder", "battery", "storage", "time", "date", "camera"
+        "fourth", "fifth", "last", "next", "previous", "now", "today", "tomorrow",
+        "tonight", "please", "wifi", "bluetooth", "flashlight", "torch", "volume",
+        "brightness", "alarm", "timer", "reminder", "battery", "storage", "time",
+        "date", "camera", "hotspot", "location", "silent", "mute", "unmute",
+        "yes", "no", "cancel", "stop", "pause", "resume", "help", "file", "recording"
     )
 
     /** Lowercase alphanumeric form with all spaces and punctuation collapsed. */
@@ -51,9 +59,10 @@ object EmaPhoneticMatcher {
     /**
      * Pronunciation-oriented phonetic key for a word or short phrase.
      *
-     * Joins split tokens first (so "oh pay" and "OPay", or "for me" and
-     * "Phormi", map to the same sequence before consonant-cluster folding),
-     * preserves leading and trailing distinctive vowels, and collapses silent
+     * Joins split tokens first (so "oh pay" and "OPay", "for me" and "Phormi",
+     * or "eh mecca" and "Emeka" map to the same sequence before cluster
+     * folding), preserves leading and trailing distinctive vowels, handles
+     * West-African labial-velar digraphs (`gb`, `kp`) and collapses silent
      * English spellings (`ph`->`F`, `ck`->`K`, `dg`->`J`, `sh`/`ch`->`X`,
      * `th`->`0`, `kn`/`gn`->`N`, `wr`->`R`, `wh`->`W`, `qu`->`KW`).
      */
@@ -66,31 +75,46 @@ object EmaPhoneticMatcher {
         if (words.isEmpty()) return ""
 
         // Normalize common single-word English homophone fragments before joining
-        // so split ASR transcripts match single-token names faithfully.
+        // so split ASR transcripts align with single-token personal and brand names.
         val normalizedJoined = words.joinToString("") { w ->
             when (w) {
-                "oh" -> "o"
+                "oh", "owe", "oak" -> if (w == "oak") "ok" else "o"
+                "ah", "are" -> if (w == "ah") "a" else "ar"
+                "eh", "air" -> if (w == "eh") "e" else "er"
                 "eye", "aye" -> "i"
                 "me" -> "mi"
                 "be", "bee" -> "bi"
                 "he" -> "hi"
                 "she" -> "shi"
                 "we" -> "wi"
-                "you", "u" -> "yu"
+                "do", "due", "dew" -> "du"
+                "go" -> "go"
+                "so", "sew" -> "so"
+                "no", "know" -> "no"
+                "you", "u", "yew" -> "yu"
+                "yeah", "yay" -> "ye"
                 "four", "fore" -> "for"
                 "too", "two" -> "to"
+                "won" -> "wan"
                 "sea", "see" -> "si"
-                "gee" -> "g"
-                "jay" -> "j"
-                "kay" -> "k"
-                "pee" -> "p"
-                "tee" -> "t"
+                "gee" -> "ji"
+                "jay" -> "ja"
+                "kay" -> "ka"
+                "pee", "pea" -> "pi"
+                "tee", "tea" -> "ti"
+                "dee" -> "di"
+                "zee", "zed" -> if (w == "zee") "zi" else "zed"
                 "why" -> "wi"
                 "ex" -> "eks"
+                "mac", "mack" -> "mak"
+                "mecca" -> "meka"
                 "could" -> "kud"
                 "would" -> "wud"
                 "should" -> "shud"
-                else -> w.removeSuffix("eh")
+                "chew" -> "chu"
+                "jew" -> "ju"
+                "add" -> "ad"
+                else -> if (w.length > 3 && w.endsWith("eh")) w.removeSuffix("eh") + "e" else w
             }
         }
         return encodeJoined(normalizedJoined)
@@ -109,14 +133,19 @@ object EmaPhoneticMatcher {
         }
 
         var i = 0
-        // Silent initial consonant pairs: kn, gn, pn, wr, ps, wh
+        // Silent initial consonant pairs & West-African labial-velar onsets (gb, kp).
         if (len >= 2) {
-            val pair = "${s[0]}${s[1]}"
-            when (pair) {
-                "kn", "gn", "pn", "ae" -> i = 1
-                "wr" -> i = 1
+            when ("${s[0]}${s[1]}") {
+                "kn", "gn", "pn", "ae", "wr", "ps" -> i = 1
                 "wh" -> { emit('W'); i = 2 }
-                "ps" -> i = 1
+                "gb" -> { emit('P'); i = 2 }
+                "kp" -> { emit('P'); i = 2 }
+                "ng" -> {
+                    // Sounded syllabic nasal onset in "Ngozi", "Ngugi".
+                    emit('N')
+                    emit('G')
+                    i = 2
+                }
             }
         }
 
@@ -141,19 +170,19 @@ object EmaPhoneticMatcher {
                         emit(when (c) { 'e', 'i', 'y' -> 'I'; 'o', 'u' -> 'O'; else -> 'A' })
                         i++
                     } else if (i == len - 1) {
-                        // "ay"/"ey" -> 'A', "ee"/"ie"/"i"/"y" -> 'I', "ow"/"oh"/"o" -> 'O'; silent bare 'e' dropped.
+                        // Preserve distinctive sounded final vowels while dropping silent English VCe.
                         when {
                             c == 'y' && (prev == 'a' || prev == 'e') -> emit('A')
                             c == 'i' || c == 'y' -> emit('I')
                             c == 'a' -> emit('A')
                             c == 'o' || c == 'u' -> emit('O')
                             c == 'e' && prev == 'e' -> emit('I')
-                            // Sounded final "-nde"/"-nte" in names ("Tunde", "Dante"), silent in English VCe ("tune", "home").
+                            // Sounded final "-nde"/"-nte"/"-mbe"/"-nke" in regional & global names
+                            // ("Tunde", "Dante", "Bamidele" handled via consonant skeleton).
                             c == 'e' && (prev == 'd' || prev == 't') && at(i - 2) == 'n' -> emit('A')
                         }
                         i++
                     } else if (c == 'a' && next == 'y' && (i + 2 == len || !isVowel(at(i + 2)))) {
-                        // Internal/final "-ay" diphthong ("day", "pay", "play").
                         if (i + 2 == len) emit('A')
                         i += 2
                     } else {
@@ -161,7 +190,6 @@ object EmaPhoneticMatcher {
                     }
                 }
                 'b' -> {
-                    // Silent 'b' in "-mb" at end ("dumb", "climb").
                     if (!(i == len - 1 && prev == 'm')) emit('P')
                     i++
                 }
@@ -169,7 +197,7 @@ object EmaPhoneticMatcher {
                     when {
                         next == 'h' -> { emit('X'); i += 2 }
                         next == 'k' -> { emit('K'); i += 2 }
-                        c == 'c' && next == 'i' && at(i + 2) == 'a' -> { emit('X'); i += 3 }
+                        next == 'i' && at(i + 2) == 'a' -> { emit('X'); i += 3 }
                         next == 'e' || next == 'i' || next == 'y' -> { emit('S'); i++ }
                         else -> { emit('K'); i++ }
                     }
@@ -179,8 +207,6 @@ object EmaPhoneticMatcher {
                         emit('J')
                         i += 2
                     } else {
-                        // Keep D distinct from T? No, collapse voiced/unvoiced gently in key,
-                        // while compact() keeps d/t distinct as a tie-breaker.
                         emit('D')
                         i++
                     }
@@ -188,7 +214,8 @@ object EmaPhoneticMatcher {
                 'f' -> { emit('F'); i++ }
                 'g' -> {
                     when {
-                        next == 'h' && !isVowel(at(i + 2)) -> i += 2 // silent "gh" in "light", "night"
+                        next == 'b' && isVowel(at(i + 2)) -> { emit('P'); i += 2 } // medial "gb" ("Agbaje", "Igbinedion")
+                        next == 'h' && !isVowel(at(i + 2)) -> i += 2
                         next == 'h' && i == 0 -> { emit('G'); i += 2 }
                         next == 'n' && i == len - 2 -> { emit('N'); i += 2 }
                         next == 'e' || next == 'i' || next == 'y' -> { emit('J'); i++ }
@@ -196,14 +223,20 @@ object EmaPhoneticMatcher {
                     }
                 }
                 'h' -> {
-                    // Sounded only before a vowel and not after a consonant cluster.
                     if (isVowel(next) && (i == 0 || isVowel(prev))) emit('H')
                     i++
                 }
                 'j' -> { emit('J'); i++ }
-                'k' -> { emit('K'); i++ }
+                'k' -> {
+                    if (next == 'p' && isVowel(at(i + 2))) {
+                        emit('P') // medial "kp" ("Akpan", "Okpara")
+                        i += 2
+                    } else {
+                        emit('K')
+                        i++
+                    }
+                }
                 'l' -> {
-                    // Silent 'l' in "palm", "calm", "walk", "talk", "half".
                     val silent = prev == 'a' && (next == 'm' || next == 'k' || next == 'f')
                     if (!silent) emit('L')
                     i++
@@ -253,7 +286,8 @@ object EmaPhoneticMatcher {
      * Similarity in `[0.0, 1.0]` combining direct collapsed-character accuracy
      * (catches split compounds like "boom play" -> "Boomplay") with phonetic
      * equivalence (catches "for me" -> "Phormi", "oh pay" -> "OPay",
-     * "money point" -> "Moniepoint").
+     * "money point" -> "Moniepoint", "tune day" -> "Tunde",
+     * "eh mecca" -> "Emeka").
      */
     fun similarity(spoken: String, candidate: String): Double {
         val normSpoken = spoken.trim().lowercase().replace(Regex("\\s+"), " ")
@@ -280,9 +314,6 @@ object EmaPhoneticMatcher {
         if (pA.length < 2 || pB.length < 2) return charSim * 0.85
 
         val phonSim = editSimilarity(pA, pB)
-        // Exact phonetic match on a substantial key (>= 3 symbols) strongly rescues
-        // homophones ("for me" / "Phormi", "oh pay" / "OPay", "money point" / "Moniepoint"),
-        // while keeping charSim as a tie-breaker so "Daniel" beats "Danielle" for "daniel".
         val combined = when {
             pA == pB && pA.length >= 4 -> max(0.89 + 0.09 * charSim, 0.65 * phonSim + 0.35 * charSim)
             pA == pB && pA.length == 3 -> 0.86 + 0.11 * charSim
@@ -307,18 +338,7 @@ object EmaPhoneticMatcher {
         if (cleaned.isEmpty() || candidates.isEmpty()) return null
         val lower = cleaned.lowercase()
 
-        // Deduplicate candidates case-insensitively while preserving the owner's casing.
-        val unique = LinkedHashMap<String, String>()
-        for (raw in candidates) {
-            val c = raw.trim()
-            if (c.isEmpty()) continue
-            val key = c.lowercase()
-            // Prefer mixed/capitalized canonical label over all-lowercase duplicate.
-            val prev = unique[key]
-            if (prev == null || (prev == prev.lowercase() && c != c.lowercase())) {
-                unique[key] = c
-            }
-        }
+        val unique = deduplicatePreservingCasing(candidates)
         if (unique.isEmpty()) return null
 
         // Exact case-insensitive hit always wins cleanly (restoring canonical casing).
@@ -350,6 +370,70 @@ object EmaPhoneticMatcher {
         if (bestScore < minScore) return null
         if (secondScore > 0.0 && margin < minMargin) return null
         return Match(winner, bestScore, margin, exactOrCompound = isCompound)
+    }
+
+    /**
+     * Ambiguity-safe contact-slot grounding across both full display names
+     * ("Tunde Okafor") and first/given names ("Tunde").
+     *
+     * If the owner says "call tune day" and the phonebook holds both
+     * "Tunde Okafor" and "Tunde Balogun", this resolves the misheard spelling
+     * to `"Tunde"` — never silently choosing one full contact — so
+     * [ContactLookup] sees both Tundes and asks the owner which one to call.
+     * If two distinct names compete closely ("Daniel" vs "Danielle"), returns
+     * null.
+     */
+    fun bestContactSlotMatch(
+        spoken: String,
+        contactNames: Collection<String>,
+        minScore: Double = 0.89,
+        minMargin: Double = 0.10
+    ): Match? {
+        if (contactNames.isEmpty()) return null
+        val cleaned = spoken.trim().replace(Regex("\\s+"), " ")
+        val lower = cleaned.lowercase()
+        if (cleaned.isEmpty() || lower in PROTECTED_COMMON_WORDS) return null
+
+        // 1. Try matching against full display names first ("tunde okafor" -> "Tunde Okafor",
+        //    "daniel" -> "Daniel" if single-word contact).
+        bestUnambiguousMatch(cleaned, contactNames, minScore = minScore, minMargin = minMargin)?.let { full ->
+            // Guard against picking "Daniel" silently when "Danielle" doesn't exist,
+            // AND against picking single-name "Tunde" when "Tunde Okafor" also exists
+            // (both share given name "Tunde", so returning "Tunde" preserves ambiguity).
+            return full
+        }
+
+        // 2. Fallback: match against deduplicated given names (>= 4 letters) so
+        //    "call tune day" matches "Tunde" even when stored as "Tunde Okafor"
+        //    (or across both "Tunde Okafor" and "Tunde Balogun").
+        val givenNames = ArrayList<String>(contactNames.size)
+        for (full in contactNames) {
+            val first = full.trim().split(Regex("\\s+")).firstOrNull()?.trim().orEmpty()
+            if (first.length >= 4 && first.all { it.isLetter() || it == '\'' || it == '-' }) {
+                givenNames += first
+            }
+        }
+        if (givenNames.isEmpty()) return null
+        return bestUnambiguousMatch(
+            spoken = cleaned,
+            candidates = givenNames,
+            minScore = max(minScore, 0.90),
+            minMargin = minMargin
+        )
+    }
+
+    private fun deduplicatePreservingCasing(candidates: Collection<String>): LinkedHashMap<String, String> {
+        val unique = LinkedHashMap<String, String>()
+        for (raw in candidates) {
+            val c = raw.trim()
+            if (c.isEmpty()) continue
+            val key = c.lowercase()
+            val prev = unique[key]
+            if (prev == null || (prev == prev.lowercase() && c != c.lowercase())) {
+                unique[key] = c
+            }
+        }
+        return unique
     }
 
     /** Normalized Levenshtein similarity in `[0.0, 1.0]`. */

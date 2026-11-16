@@ -5,6 +5,7 @@
 # from the manifest; these are explicit so a rule change cannot silently drop an
 # entry point that Android instantiates by name.
 -keep class com.ema.assistant.MainActivity { *; }
+-keep class com.ema.assistant.EmaRecognizeSpeechActivity { *; }
 -keep class com.ema.assistant.EmaWakeActivity { *; }
 -keep class com.ema.assistant.EmaVoiceInteractionService { *; }
 -keep class com.ema.assistant.EmaVoiceInteractionSessionService { *; }

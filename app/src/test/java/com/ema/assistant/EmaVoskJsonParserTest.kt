@@ -131,6 +131,44 @@ class EmaVoskJsonParserTest {
     }
 
     @Test
+    fun deduplicatesBoundaryEchoesPunctuatesPausesAndCompactsLongRecordings() {
+        // Boundary overlap dedup ("youtube" echoed across short pause).
+        assertEquals(
+            "open youtube and play music",
+            EmaUtteranceAssembler.joinSegmentText("open youtube", "youtube and play music", pauseMs = 120L, punctuate = false)
+        )
+        // Pause-aware sentence and paragraph insertion in dictation/file mode.
+        val assembler = EmaUtteranceAssembler(maxAlternatives = 5, formatPausePunctuation = true)
+        assembler.onSegment("""{"text":"first sentence today"}""", explicitPauseMs = 0L)
+        assembler.onSegment("""{"text":"second sentence follows"}""", explicitPauseMs = 1_200L)
+        val done = assembler.finish("""{"text":"new paragraph starts here"}""", explicitPauseMs = 2_800L)
+        assertEquals(3, done.segmentCount)
+        assertEquals(
+            "first sentence today. second sentence follows.\n\nnew paragraph starts here",
+            done.hypotheses.first().text
+        )
+
+        // O(1) prefix compaction over 16 consecutive segments in a long audio file.
+        val longForm = EmaUtteranceAssembler(maxAlternatives = 4, formatPausePunctuation = false)
+        for (i in 1..15) {
+            longForm.onSegment("""{"text":"part$i"}""")
+        }
+        val full = longForm.finish("""{"text":"part16"}""")
+        assertEquals(16, full.segmentCount)
+        assertEquals(16, full.wordCount)
+        assertTrue(full.hypotheses.first().text.startsWith("part1 part2"))
+        assertTrue(full.hypotheses.first().text.endsWith("part15 part16"))
+
+        // Speaking-rate estimation from word timestamps.
+        val words = listOf(
+            EmaVoskJsonParser.WordTiming("open", 0.0f, 0.3f, 0.9f),
+            EmaVoskJsonParser.WordTiming("youtube", 0.3f, 0.7f, 0.9f),
+            EmaVoskJsonParser.WordTiming("now", 0.7f, 1.0f, 0.9f)
+        )
+        assertEquals(180, EmaVoskJsonParser.estimateWordsPerMinute(words))
+    }
+
+    @Test
     fun handlesMalformedAndEmptyJsonGracefully() {
         assertTrue(EmaVoskJsonParser.parseResult("").isEmpty())
         assertTrue(EmaVoskJsonParser.parseResult("{broken json").isEmpty())

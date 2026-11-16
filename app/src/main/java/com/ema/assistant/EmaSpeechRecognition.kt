@@ -22,18 +22,21 @@ import java.util.Locale
  * Unifies EMA's built-in offline engine ([EmaOfflineSpeechEngine]), Android's
  * platform on-device recognizer (Android 12+), and any external system
  * [RecognitionService] behind one mode-aware planner, one intent builder, one
- * contextual N-best rescorer ([EmaSpeechRescorer]), and one session controller
- * ([Session]).
+ * contextual & MBR N-best rescorer ([EmaSpeechRescorer]), and one session
+ * controller ([Session]).
  */
 object EmaSpeechRecognition {
 
     const val EXTRA_BIASING_STRINGS = "android.speech.extra.BIASING_STRINGS"
+    private const val EXTRA_ENABLE_FORMATTING = "android.speech.extra.ENABLE_FORMATTING"
+    private const val EXTRA_FORMATTING_OPTIMIZE_QUALITY = "quality"
 
     private const val PREFS_NAME = "ema"
     private const val KEY_SPEECH_MODE = "speech_mode"
     private const val LEGACY_KEY_OFFLINE_ENABLED = "offline_recognition_enabled"
     private const val MAX_BIASING_STRINGS = 160
     private const val MAX_BIASING_LENGTH = 60
+    private const val MAX_SCREEN_LABELS = 80
     private const val TRANSIENT_AUDIO_RETRY_DELAY_MS = 180L
 
     /** Owner's chosen speech recognition mode (defaults to EMA's built-in offline engine first). */
@@ -58,10 +61,16 @@ object EmaSpeechRecognition {
         }
     }
 
-    /** Human-readable overview combining mode, offline model readiness, and fallback availability. */
+    /** Human-readable overview combining mode, offline model readiness, telemetry and fallbacks. */
     fun diagnosticsSummary(context: Context): String {
         val mode = speechMode(context)
         val modelLine = EmaOfflineSpeechModel.statusSummary(context)
+        val stats = EmaOfflineSpeechModel.telemetry()
+        val statsLine = if (stats.completedTurns > 0) {
+            " Offline turns this session: ${stats.completedTurns} (avg finalize ${stats.avgFinalizeMs} ms)."
+        } else {
+            ""
+        }
         val onDevice = hasPlatformOnDevice(context)
         val external = findExternalService(context) != null
         val fallbackLine = when {
@@ -76,13 +85,13 @@ object EmaSpeechRecognition {
             else ->
                 "EMA's built-in offline engine is the sole speech recognizer on this phone."
         }
-        return "Speech mode: ${mode.label}. $modelLine $fallbackLine"
+        return "Speech mode: ${mode.label}. $modelLine$statsLine $fallbackLine"
     }
 
     /**
      * Phrases safe to pass as recognizer biasing hints: installed app labels
-     * and owner-saved shortcuts. Contacts are intentionally excluded so they
-     * are never attached to an external recognizer intent.
+     * and owner-saved shortcuts. Contacts, personal corrections and screen text
+     * are excluded so private data is never attached to an external intent.
      */
     fun userVocabulary(context: Context): List<String> {
         val apps = runCatching { EmaAppActionEngine(context).installedAppLabels() }.getOrDefault(emptyList())
@@ -94,31 +103,60 @@ object EmaSpeechRecognition {
     }
 
     /**
-     * Complete local context for strictly on-device N-best rescoring and
-     * phonetic grounding. Kept in process memory only; never exported.
+     * Complete local context for strictly on-device N-best rescoring, personal
+     * mishearing recovery and phonetic slot grounding. Kept in memory only;
+     * never logged or sent off-device.
      */
-    fun speechContext(context: Context, includeContacts: Boolean = true): EmaSpeechContext {
+    fun speechContext(
+        context: Context,
+        includeContacts: Boolean = true,
+        screenLabels: List<String> = emptyList()
+    ): EmaSpeechContext {
         val apps = runCatching { EmaAppActionEngine(context).installedAppLabels() }.getOrDefault(emptyList())
         val memory = runCatching { EmaMemoryStore.load(context) }.getOrNull()
         val shortcuts = memory?.shortcuts?.keys?.toList().orEmpty()
         val aliases = memory?.aliases?.keys?.toList().orEmpty()
-        val learned = runCatching {
-            EmaLearningStore.model(context).links()
-                .filter { it.confirmed || it.times >= 2 }
-                .flatMap { listOf(it.phrase, it.meaning) }
-                .distinct()
-        }.getOrDefault(emptyList())
+
+        val learnedPhrases = ArrayList<String>()
+        val learnedReplacements = LinkedHashMap<String, String>()
+        runCatching {
+            val model = EmaLearningStore.model(context)
+            val eligible = model.links().filter { it.confirmed || it.times >= 2 }
+            for (link in eligible) {
+                learnedPhrases += link.phrase
+                learnedPhrases += link.meaning
+                // Apply only unambiguous verified mappings (never single guesses or split ties).
+                if (!model.ambiguous(model.candidates(link.phrase))) {
+                    learnedReplacements[link.phrase] = link.meaning
+                }
+            }
+        }
+
         val contacts = if (includeContacts) {
             runCatching { ContactLookup.localNamesForSpeech(context) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
+
+        val cleanedScreen = if (screenLabels.isEmpty()) {
+            emptyList()
+        } else {
+            screenLabels.asSequence()
+                .map { it.trim().replace(Regex("\\s+"), " ") }
+                .filter { it.length in 2..48 && it.any(Char::isLetter) }
+                .distinctBy { it.lowercase(Locale.ROOT) }
+                .take(MAX_SCREEN_LABELS)
+                .toList()
+        }
+
         return EmaSpeechContext(
             shortcuts = shortcuts,
             ownerAliases = aliases,
-            learnedPhrases = learned,
+            learnedPhrases = learnedPhrases.distinct(),
             installedApps = apps,
-            contactNames = contacts
+            contactNames = contacts,
+            learnedReplacements = learnedReplacements,
+            screenLabels = cleanedScreen
         )
     }
 
@@ -166,7 +204,9 @@ object EmaSpeechRecognition {
         if (results == null) {
             return EmaSpeechRescorer.RescoredResult(emptyList(), FloatArray(0), emptyList(), emptyList())
         }
-        val strings = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+        val strings = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            ?: results.getStringArrayList(RecognizerIntent.EXTRA_RESULTS)
+            ?: arrayListOf()
         val confidences = results.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
             ?: results.getFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES)
         return EmaSpeechRescorer.rescoreStrings(
@@ -189,20 +229,30 @@ object EmaSpeechRecognition {
     ): Intent {
         val tag = language.toLanguageTag().ifBlank { "en-US" }
         val completeSilenceMs = when (profile) {
+            EmaRecognitionProfile.CONFIRMATION -> 650L
+            EmaRecognitionProfile.WEB_SEARCH -> 850L
             EmaRecognitionProfile.COMMAND -> 950L
             EmaRecognitionProfile.DICTATION -> 2_200L
         }
         val possibleSilenceMs = when (profile) {
+            EmaRecognitionProfile.CONFIRMATION -> 480L
+            EmaRecognitionProfile.WEB_SEARCH -> 650L
             EmaRecognitionProfile.COMMAND -> 700L
             EmaRecognitionProfile.DICTATION -> 1_400L
         }
         val minLengthMs = when (profile) {
+            EmaRecognitionProfile.CONFIRMATION -> 600L
+            EmaRecognitionProfile.WEB_SEARCH -> 900L
             EmaRecognitionProfile.COMMAND -> 1_100L
             EmaRecognitionProfile.DICTATION -> 2_500L
         }
+        val languageModel = if (profile == EmaRecognitionProfile.WEB_SEARCH) {
+            RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH
+        } else {
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        }
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            // EXTRA_LANGUAGE is defined by Android as an IETF BCP-47 String tag.
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, languageModel)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, tag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -215,10 +265,27 @@ object EmaSpeechRecognition {
             if (preferOffline) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && vocabulary.isNotEmpty()) {
-                putStringArrayListExtra(EXTRA_BIASING_STRINGS, ArrayList(vocabulary.take(MAX_BIASING_STRINGS)))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (profile == EmaRecognitionProfile.DICTATION) {
+                    putExtra(EXTRA_ENABLE_FORMATTING, EXTRA_FORMATTING_OPTIMIZE_QUALITY)
+                }
+                if (vocabulary.isNotEmpty()) {
+                    putStringArrayListExtra(EXTRA_BIASING_STRINGS, ArrayList(vocabulary.take(MAX_BIASING_STRINGS)))
+                }
             }
         }
+    }
+
+    /** Extract distinct short interactive labels from a structured screen text dump. */
+    fun extractScreenLabels(screenDump: String, limit: Int = MAX_SCREEN_LABELS): List<String> {
+        if (screenDump.isBlank()) return emptyList()
+        return screenDump.lineSequence()
+            .flatMap { it.splitToSequence('·', '|', '\t') }
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter { it.length in 3..42 && it.count { c -> c == ' ' } <= 5 && it.any(Char::isLetter) }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(limit)
+            .toList()
     }
 
     /** True when Android 12+ reports a platform on-device speech engine. */
@@ -303,10 +370,18 @@ object EmaSpeechRecognition {
         )
     }
 
+    /** Convert Android's `onRmsChanged(rmsdB)` value into a smooth UI level in `[0f, 1f]`. */
+    fun normalizeRmsLevel(rmsdB: Float): Float {
+        if (!rmsdB.isFinite()) return 0f
+        // EmaSpeechAudioProcessor emits [-2, +12] dB; platform recognizers emit roughly [-2, +10] dB.
+        return ((rmsdB + 2f) / 13f).coerceIn(0f, 1f)
+    }
+
     /** Listener for a managed [Session] turn. All callbacks run on the main thread. */
     interface SessionListener {
         fun onPreparingOfflineModel() {}
         fun onReadyForSpeech(kind: EmaRecognizerKind) {}
+        fun onInputRouteChanged(route: String) {}
         fun onBeginningOfSpeech(kind: EmaRecognizerKind) {}
         fun onRmsChanged(rmsdB: Float) {}
         fun onPartialTranscript(text: String, kind: EmaRecognizerKind) {}
@@ -323,9 +398,9 @@ object EmaSpeechRecognition {
 
     /**
      * Manages one spoken turn end-to-end across [EmaOfflineSpeechEngine],
-     * Android's on-device recognizer, and the system recognizer, including
-     * transient microphone handoff retry, automatic failover, and contextual
-     * N-best rescoring.
+     * Android's on-device recognizer and the system recognizer, including
+     * peripheral mic routing, transient microphone handoff retry, automatic
+     * failover, audio-quality diagnostic hints and contextual N-best rescoring.
      */
     class Session(
         context: Context,
@@ -340,6 +415,11 @@ object EmaSpeechRecognition {
         private var activeProfile = EmaRecognitionProfile.COMMAND
         private var activeLanguage: Locale = Locale.getDefault()
         private var activeMode: EmaSpeechMode = EmaSpeechMode.EMA_OFFLINE_FIRST
+        private var activeScreenLabels: List<String> = emptyList()
+        private var includePrivateContext = true
+        private var enableFormatting = true
+        private var maskOffensiveWords = false
+        private var maxResults = 6
         private var cachedContext: EmaSpeechContext? = null
         private var cachedVocabulary: List<String>? = null
         private var offlineEngine: EmaOfflineSpeechEngine? = null
@@ -355,13 +435,24 @@ object EmaSpeechRecognition {
         fun start(
             profile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND,
             modeOverride: EmaSpeechMode? = null,
-            language: Locale = Locale.getDefault()
+            language: Locale = Locale.getDefault(),
+            screenLabels: List<String> = emptyList(),
+            includeOwnerContacts: Boolean = true,
+            enableFormatting: Boolean = true,
+            maskOffensiveWords: Boolean = false,
+            maxResults: Int = 6
         ) {
             cancel()
             val gen = ++generation
             activeProfile = profile
             activeLanguage = language
             activeMode = modeOverride ?: speechMode(appContext)
+            activeScreenLabels = screenLabels
+            includePrivateContext = includeOwnerContacts
+            this.enableFormatting = enableFormatting
+            this.maskOffensiveWords = maskOffensiveWords
+            this.maxResults = maxResults.coerceIn(1, 10)
+            cachedContext = null
             plan = buildPlan(appContext, activeMode, language)
             stepIndex = 0
             audioRetriedOnStep = false
@@ -431,7 +522,11 @@ object EmaSpeechRecognition {
                 }
 
                 override fun onReadyForSpeech(params: Bundle) {
-                    if (gen == generation && active) listener.onReadyForSpeech(kind)
+                    if (gen == generation && active) {
+                        val route = params.getString(EmaOfflineSpeechEngine.EXTRA_INPUT_ROUTE).orEmpty()
+                        if (route.isNotBlank()) listener.onInputRouteChanged(route)
+                        listener.onReadyForSpeech(kind)
+                    }
                 }
 
                 override fun onBeginningOfSpeech() {
@@ -455,8 +550,6 @@ object EmaSpeechRecognition {
                     active = false
                     offlineEngine = null
                     cachedContext = null
-                    // Include raw alternatives alongside normalized alternatives so
-                    // EmaLearningModel can learn from decoder mishearings too.
                     val alts = (result.hypotheses.drop(1) + result.rawHypotheses)
                         .map { it.trim() }
                         .filter { it.isNotEmpty() && !it.equals(result.text, ignoreCase = true) }
@@ -467,19 +560,59 @@ object EmaSpeechRecognition {
                 override fun onError(errorCode: Int, message: String) {
                     if (gen != generation || !active) return
                     offlineEngine = null
-                    handleStepError(gen, kind, errorCode)
+                    handleStepError(gen, kind, errorCode, diagnosticDetail = message)
                 }
             })
             offlineEngine = engine
-            engine.start(
-                EmaOfflineSpeechEngine.Config(
-                    profile = activeProfile,
-                    languageTag = activeLanguage.toLanguageTag(),
-                    partialResults = true,
-                    maxResults = 6,
-                    speechContext = cachedContext
+            val seedContext = when {
+                cachedContext != null -> cachedContext
+                !includePrivateContext -> {
+                    val apps = runCatching { EmaAppActionEngine(appContext).installedAppLabels() }.getOrDefault(emptyList())
+                    EmaSpeechContext(installedApps = apps)
+                }
+                activeScreenLabels.isNotEmpty() -> {
+                    // Loaded lazily on engine worker thread with screen labels attached.
+                    null
+                }
+                else -> null
+            }
+            val screenSnapshot = activeScreenLabels
+            if (seedContext != null || screenSnapshot.isEmpty()) {
+                engine.start(
+                    EmaOfflineSpeechEngine.Config(
+                        profile = activeProfile,
+                        languageTag = activeLanguage.toLanguageTag(),
+                        partialResults = true,
+                        maxResults = maxResults,
+                        enableFormatting = enableFormatting,
+                        maskOffensiveWords = maskOffensiveWords,
+                        speechContext = seedContext
+                    )
                 )
-            )
+            } else {
+                // Build full context with current screen labels on a background thread, then start immediately.
+                Thread({
+                    val full = runCatching {
+                        speechContext(appContext, includeContacts = includePrivateContext, screenLabels = screenSnapshot)
+                    }.getOrNull()
+                    if (gen == generation && active) {
+                        engine.start(
+                            EmaOfflineSpeechEngine.Config(
+                                profile = activeProfile,
+                                languageTag = activeLanguage.toLanguageTag(),
+                                partialResults = true,
+                                maxResults = maxResults,
+                                enableFormatting = enableFormatting,
+                                maskOffensiveWords = maskOffensiveWords,
+                                speechContext = full
+                            )
+                        )
+                    }
+                }, "ema-speech-screen-ctx").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
         }
 
         private fun startPlatformEngine(gen: Int, kind: EmaRecognizerKind) {
@@ -489,9 +622,18 @@ object EmaSpeechRecognition {
                 return
             }
             platformRecognizer = sr
-            // Warm local context off the UI thread so platform onResults never blocks on ContentResolver.
+            val wantContacts = includePrivateContext
+            val screenSnapshot = if (includePrivateContext) activeScreenLabels else emptyList()
             Thread({
-                val loaded = runCatching { speechContext(appContext, includeContacts = true) }.getOrNull()
+                val loaded = runCatching {
+                    if (wantContacts) {
+                        speechContext(appContext, includeContacts = true, screenLabels = screenSnapshot)
+                    } else {
+                        EmaSpeechContext(
+                            installedApps = EmaAppActionEngine(appContext).installedAppLabels()
+                        )
+                    }
+                }.getOrNull()
                 if (loaded != null) {
                     mainHandler.post {
                         if (gen == generation && active) cachedContext = loaded
@@ -501,13 +643,17 @@ object EmaSpeechRecognition {
                 isDaemon = true
                 start()
             }
-            val vocab = cachedVocabulary ?: userVocabulary(appContext).also { cachedVocabulary = it }
+            val vocab = if (includePrivateContext) {
+                cachedVocabulary ?: userVocabulary(appContext).also { cachedVocabulary = it }
+            } else {
+                emptyList()
+            }
             val intent = buildIntent(
                 context = appContext,
                 preferOffline = kind == EmaRecognizerKind.ON_DEVICE,
                 profile = activeProfile,
                 vocabulary = vocab,
-                maxResults = 6,
+                maxResults = maxResults,
                 language = activeLanguage
             )
 
@@ -538,7 +684,17 @@ object EmaSpeechRecognition {
                         ?.trim()
                         .orEmpty()
                     if (raw.isNotEmpty()) {
-                        val normalized = EmaInverseTextNormalizer.normalizePartial(raw, activeProfile)
+                        val normalized = if (enableFormatting) {
+                            EmaInverseTextNormalizer.normalize(
+                                raw, activeProfile, EmaSpeechContext.EMPTY,
+                                enableFormatting = true, maskOffensiveWords = maskOffensiveWords
+                            )
+                        } else {
+                            EmaInverseTextNormalizer.normalize(
+                                raw, activeProfile, EmaSpeechContext.EMPTY,
+                                enableFormatting = false, maskOffensiveWords = maskOffensiveWords
+                            )
+                        }
                         listener.onPartialTranscript(normalized, kind)
                     }
                 }
@@ -549,18 +705,34 @@ object EmaSpeechRecognition {
                     if (gen != generation || !active) return
                     active = false
                     releasePlatform()
-                    val ctx = cachedContext ?: speechContext(appContext, includeContacts = false)
+                    val ctx = cachedContext ?: if (includePrivateContext) {
+                        speechContext(appContext, includeContacts = false, screenLabels = activeScreenLabels)
+                    } else {
+                        EmaSpeechContext.EMPTY
+                    }
                     cachedContext = null
-                    val outcome = resolveResults(results, ctx, activeProfile, maxResults = 6)
+                    val rawList = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
+                    val rawScores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+                        ?: results?.getFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES)
+                    val hyps = rawList.mapIndexedNotNull { idx, s ->
+                        val t = s.trim().takeIf { it.isNotEmpty() } ?: return@mapIndexedNotNull null
+                        val c = rawScores?.getOrNull(idx)?.takeIf { it.isFinite() && it > 0f }?.coerceIn(0.05f, 0.99f)
+                            ?: (0.82f - idx * 0.03f).coerceAtLeast(0.35f)
+                        EmaVoskJsonParser.Hypothesis(t, c, c.toDouble())
+                    }
+                    val outcome = EmaSpeechRescorer.rescore(
+                        decoded = hyps,
+                        context = ctx,
+                        profile = activeProfile,
+                        maxResults = maxResults,
+                        enableFormatting = enableFormatting,
+                        maskOffensiveWords = maskOffensiveWords
+                    )
                     val primary = outcome.primary
                     if (primary.isNullOrBlank()) {
                         listener.onFailure(
                             SpeechRecognizer.ERROR_NO_MATCH,
-                            EmaRecognizerFallback.userMessage(
-                                SpeechRecognizer.ERROR_NO_MATCH,
-                                kind,
-                                activeMode
-                            ),
+                            EmaRecognizerFallback.userMessage(SpeechRecognizer.ERROR_NO_MATCH, kind, activeMode),
                             kind
                         )
                         return
@@ -586,10 +758,14 @@ object EmaSpeechRecognition {
             }
         }
 
-        private fun handleStepError(gen: Int, kind: EmaRecognizerKind, errorCode: Int) {
+        private fun handleStepError(
+            gen: Int,
+            kind: EmaRecognizerKind,
+            errorCode: Int,
+            diagnosticDetail: String? = null
+        ) {
             if (!active || gen != generation) return
 
-            // Brief single retry when AudioRecord collides with wake-word shutdown.
             if (EmaRecognizerFallback.shouldRetrySameBackend(errorCode, audioRetriedOnStep)) {
                 audioRetriedOnStep = true
                 android.util.Log.i("EMA", "Retrying $kind after transient microphone busy ($errorCode)")
@@ -611,12 +787,19 @@ object EmaSpeechRecognition {
 
             active = false
             cachedContext = null
-            val message = EmaRecognizerFallback.userMessage(
+            val generic = EmaRecognizerFallback.userMessage(
                 errorCode = errorCode,
                 kind = kind,
                 mode = activeMode
             )
-            listener.onFailure(errorCode, message, kind)
+            // Prefer specific hardware/environment hints (muted mic, clipping, heavy noise) when detected.
+            val hasSpecificHint = !diagnosticDetail.isNullOrBlank() &&
+                (errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || errorCode == SpeechRecognizer.ERROR_NO_MATCH) &&
+                diagnosticDetail !in setOf(
+                    "No speech detected.", "No words recognized.", "Only background noise was heard."
+                )
+            val finalMessage = if (hasSpecificHint) diagnosticDetail!! else generic
+            listener.onFailure(errorCode, finalMessage, kind)
         }
 
         private fun releasePlatform() {

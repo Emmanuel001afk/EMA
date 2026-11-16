@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import org.vosk.Model
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,6 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  3. Good memory citizenship: when no recognizer holds a lease, the model is
  *     unloaded automatically after [IDLE_KEEP_WARM_MS] or immediately on
  *     Android low-memory callbacks.
+ *  4. Privacy-safe local telemetry: tracks load latency and turn count in
+ *     volatile memory (never spoken words) for honest diagnostics.
  */
 object EmaOfflineSpeechModel {
 
@@ -54,6 +57,13 @@ object EmaOfflineSpeechModel {
         val warmInMemory: Boolean
     )
 
+    data class Telemetry(
+        val completedTurns: Int,
+        val lastLoadMs: Long,
+        val avgFinalizeMs: Long,
+        val lastInputRoute: String
+    )
+
     class Lease internal constructor(
         val model: Model,
         val directory: File,
@@ -77,6 +87,7 @@ object EmaOfflineSpeechModel {
     private val loadLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val warming = AtomicBoolean(false)
+    private val warmupCallbacks = ArrayList<(Boolean) -> Unit>()
 
     private var cachedModel: Model? = null
     private var cachedDirectory: File? = null
@@ -85,11 +96,36 @@ object EmaOfflineSpeechModel {
     private var state: State = State.BUNDLED
     private var lastError: String? = null
 
+    // Volatile privacy-safe session performance stats (no speech text ever stored).
+    private var completedTurns = 0
+    private var lastLoadMs = 0L
+    private var emaFinalizeMs = 0.0
+    private var lastInputRoute = ""
+
     /** True while the native acoustic model is resident in memory. */
     fun isLoaded(): Boolean = synchronized(stateLock) { cachedModel != null }
 
     /** Last error summary, or null when healthy. */
     fun lastFailure(): String? = synchronized(stateLock) { lastError }
+
+    /** Privacy-safe performance snapshot for settings and diagnostics. */
+    fun telemetry(): Telemetry = synchronized(stateLock) {
+        Telemetry(
+            completedTurns = completedTurns,
+            lastLoadMs = lastLoadMs,
+            avgFinalizeMs = emaFinalizeMs.toLong(),
+            lastInputRoute = lastInputRoute
+        )
+    }
+
+    internal fun recordTurnTelemetry(finalizeMs: Long, inputRoute: String) {
+        synchronized(stateLock) {
+            completedTurns++
+            val clamped = finalizeMs.coerceAtLeast(1L).toDouble()
+            emaFinalizeMs = if (emaFinalizeMs <= 0.0) clamped else 0.7 * emaFinalizeMs + 0.3 * clamped
+            if (inputRoute.isNotBlank()) lastInputRoute = inputRoute
+        }
+    }
 
     /** Non-blocking snapshot of the engine state for Settings and diagnostics. */
     fun currentState(context: Context): State {
@@ -107,20 +143,29 @@ object EmaOfflineSpeechModel {
     }
 
     /** Plain, honest one-line status for Settings and voice status queries. */
-    fun statusSummary(context: Context): String = when (currentState(context)) {
-        State.READY ->
-            "Offline engine ready (loaded in memory · works with zero internet)."
-        State.INSTALLED_IDLE ->
-            "Offline engine installed on this phone (loads on speak · no internet needed)."
-        State.BUNDLED ->
-            "Offline engine built into EMA (prepares automatically on first use · no download)."
-        State.PREPARING ->
-            "Preparing built-in offline speech engine (first-time setup, stays on phone)…"
-        State.LOADING ->
-            "Loading built-in offline speech engine…"
-        State.FAILED -> {
-            val detail = lastFailure()?.let { ": $it" }.orEmpty()
-            "Offline speech engine paused$detail. Tap Prepare or Speak to retry."
+    fun statusSummary(context: Context): String {
+        val stats = telemetry()
+        return when (currentState(context)) {
+            State.READY -> {
+                val routeNote = if (stats.lastInputRoute.isNotBlank() && stats.lastInputRoute != "built-in mic") {
+                    " · ${stats.lastInputRoute}"
+                } else {
+                    ""
+                }
+                "Offline engine ready (warm in memory$routeNote · works with zero internet)."
+            }
+            State.INSTALLED_IDLE ->
+                "Offline engine installed on this phone (loads on speak · no internet needed)."
+            State.BUNDLED ->
+                "Offline engine built into EMA (prepares automatically on first use · no download)."
+            State.PREPARING ->
+                "Preparing built-in offline speech engine (first-time setup, stays on phone)…"
+            State.LOADING ->
+                "Loading built-in offline speech engine…"
+            State.FAILED -> {
+                val detail = lastFailure()?.let { ": $it" }.orEmpty()
+                "Offline speech engine paused$detail. Tap Prepare or Speak to retry."
+            }
         }
     }
 
@@ -150,8 +195,6 @@ object EmaOfflineSpeechModel {
         if (am != null) {
             val info = ActivityManager.MemoryInfo()
             runCatching { am.getMemoryInfo(info) }
-            // When the model is already warm (for example held by Hey EMA or a recent turn),
-            // creating a Recognizer requires only a small decoder buffer.
             val requiredBytes = when {
                 warm -> MIN_WARM_MEMORY_BYTES
                 am.isLowRamDevice -> MIN_LOW_RAM_COLD_MEMORY_BYTES
@@ -188,6 +231,7 @@ object EmaOfflineSpeechModel {
         val app = context.applicationContext
         synchronized(loadLock) {
             tryFastLease()?.let { return it }
+            val loadStarted = SystemClock.elapsedRealtime()
             try {
                 val alreadyReady = EmaWakeModel.ready(app)
                 if (!alreadyReady) {
@@ -203,10 +247,10 @@ object EmaOfflineSpeechModel {
                     lastError = null
                 }
                 if (alreadyReady) {
-                    // Only signal on cold disk->RAM load when not already signalled above.
                     runCatching { onPreparing?.invoke() }
                 }
                 val loaded = Model(directory.path)
+                val elapsed = (SystemClock.elapsedRealtime() - loadStarted).coerceAtLeast(1L)
                 synchronized(stateLock) {
                     cachedModel = loaded
                     cachedDirectory = directory
@@ -214,6 +258,7 @@ object EmaOfflineSpeechModel {
                     idleGeneration++
                     state = State.READY
                     lastError = null
+                    lastLoadMs = elapsed
                     return Lease(loaded, directory, ::releaseOne)
                 }
             } catch (error: Throwable) {
@@ -241,7 +286,16 @@ object EmaOfflineSpeechModel {
             onFinished?.let { cb -> mainHandler.post { cb(false) } }
             return
         }
-        if (!warming.compareAndSet(false, true)) return
+        val pendingCallbacks = synchronized(stateLock) {
+            if (cachedModel != null) {
+                onFinished?.let { cb -> mainHandler.post { runCatching { cb(true) } } }
+                return
+            }
+            if (onFinished != null) warmupCallbacks += onFinished
+            if (!warming.compareAndSet(false, true)) return
+            true
+        }
+        if (!pendingCallbacks) return
         Thread({
             var ok = false
             try {
@@ -250,8 +304,14 @@ object EmaOfflineSpeechModel {
             } catch (error: Throwable) {
                 android.util.Log.w("EMA", "Background offline speech warm-up deferred: ${error.javaClass.simpleName}")
             } finally {
-                warming.set(false)
-                onFinished?.let { cb -> mainHandler.post { runCatching { cb(ok) } } }
+                val listeners = synchronized(stateLock) {
+                    warming.set(false)
+                    warmupCallbacks.toList().also { warmupCallbacks.clear() }
+                }
+                if (listeners.isNotEmpty()) {
+                    val result = ok || isLoaded()
+                    mainHandler.post { listeners.forEach { cb -> runCatching { cb(result) } } }
+                }
             }
         }, "ema-offline-stt-warmup").apply {
             isDaemon = true

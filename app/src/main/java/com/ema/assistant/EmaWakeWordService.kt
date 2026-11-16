@@ -237,6 +237,14 @@ class EmaWakeWordService : Service() {
                                             continue
                                         }
                                         paused = true
+                                        // Release AudioRecord before activating the session so EMA's
+                                        // live command recognizer acquires the microphone with zero contention.
+                                        runCatching { audio.stop() }
+                                        runCatching { audio.release() }
+                                        captureLock.withLock {
+                                            recorder = null
+                                            captureReleased.signalAll()
+                                        }
                                         main.post { activate() }
                                         break@capture
                                     }

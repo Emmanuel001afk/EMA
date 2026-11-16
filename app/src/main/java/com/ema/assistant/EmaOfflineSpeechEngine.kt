@@ -5,11 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -23,13 +19,10 @@ import org.vosk.Recognizer
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /**
  * Structured output of EMA's offline speech-to-text engine.
@@ -41,9 +34,16 @@ data class EmaSpeechResult(
     val rawHypotheses: List<String> = emptyList(),
     val words: List<EmaVoskJsonParser.WordTiming> = emptyList(),
     val durationMs: Long = 0L,
-    val offline: Boolean = true
+    val offline: Boolean = true,
+    val inputRoute: String = "",
+    val wordsPerMinute: Int = 0,
+    val segmentCount: Int = 1,
+    val mimeType: String = "",
+    val audioQuality: EmaSpeechAudioProcessor.AudioQuality? = null
 ) {
-    /** Populate a standard Android [SpeechRecognizer] results [Bundle]. */
+    val primaryConfidence: Float get() = confidenceScores.firstOrNull() ?: 0f
+
+    /** Populate a standard Android [SpeechRecognizer] / [RecognizerIntent] results [Bundle]. */
     fun toRecognitionBundle(): Bundle = Bundle().apply {
         val list = ArrayList(hypotheses.ifEmpty { if (text.isNotBlank()) listOf(text) else emptyList() })
         val scores = if (confidenceScores.size == list.size) {
@@ -52,8 +52,7 @@ data class EmaSpeechResult(
             FloatArray(list.size) { idx -> confidenceScores.getOrElse(idx) { 0.75f } }
         }
         putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, list)
-        // Supply both keys: RecognitionListener reads SpeechRecognizer.CONFIDENCE_SCORES,
-        // while activity-result callers read RecognizerIntent.EXTRA_CONFIDENCE_SCORES.
+        putStringArrayList(RecognizerIntent.EXTRA_RESULTS, ArrayList(list))
         putFloatArray(SpeechRecognizer.CONFIDENCE_SCORES, scores)
         putFloatArray(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, scores)
     }
@@ -71,24 +70,31 @@ data class EmaSpeechResult(
 /**
  * EMA's own built-in offline speech-to-text and live speech recognition engine.
  *
- * Complete on-device pipeline:
- *  1. Microphone capture (with sample-rate / source fallback + hardware noise
- *     suppression & echo cancellation where supported) or external PCM/WAV stream.
- *  2. [EmaSpeechAudioProcessor]: 75 Hz high-pass rumble/DC filter, speech-gated
- *     smooth AGC with C1 soft-knee limiting, multi-cue adaptive VAD, 360 ms
- *     pre-roll preservation and continuation-aware smart endpointing.
+ * Full on-device pipeline:
+ *  1. [EmaAudioCaptureRouter]: exclusive transient assistant audio focus,
+ *     Bluetooth BLE/SCO / USB / wired-headset mic selection, OEM-safe sample-rate
+ *     fallback and hardware NS/AEC/AGC attachment — or streaming audio pipe /
+ *     universal local file decoding via [EmaOfflineAudioDecoder] (`.wav`, `.m4a`,
+ *     `.mp3`, `.ogg`, `.opus`, `.flac`, `.aac`, `.amr`, `.3gp`, `.webm`, `.mp4`).
+ *  2. [EmaSpeechAudioProcessor]: 75 Hz high-pass rumble/DC filter, exact-reconstruction
+ *     3-band adaptive Wiener noise suppressor, speech-gated smooth AGC with C1
+ *     soft-knee limiter, Hann-windowed sinc anti-aliased resampling, multi-cue
+ *     adaptive VAD, 360 ms pre-roll, cadence/hesitation-aware smart endpointing
+ *     and audio-quality diagnostics (muted mic, clipping, low SNR).
  *  3. Shared warm [EmaOfflineSpeechModel] + lattice N-best decoding with word
  *     timings and MBR partial posteriors.
- *  4. [EmaUtteranceAssembler]: multi-segment accumulation so brief pauses never
- *     truncate multi-step commands or dictation.
+ *  4. [EmaUtteranceAssembler]: multi-segment accumulation, boundary-echo
+ *     deduplication, pause-aware paragraph punctuation and Android 13/14
+ *     continuous segmented-session delivery.
  *  5. [EmaSpeechRescorer] + [EmaInverseTextNormalizer] + [EmaPhoneticMatcher]:
- *     inverse text normalization (times, numbers, percentages, compounds,
- *     dictation punctuation), unambiguous phonetic slot grounding against
- *     installed apps and contacts, and domain-aware hypothesis ranking.
+ *     MBR/ROVER N-best consensus, verified owner speech corrections, spoken
+ *     times/numbers/phones/emails/domains, disfluency & `"scratch that"` cleanup,
+ *     phonetic slot grounding (apps, contacts, screen controls) and calibrated
+ *     confidences.
  *
- * Privacy guarantee: PCM exists only inside the active read/pre-roll buffer, is
- * never written to disk and is never transmitted over any network. Logs record
- * only shape via [EmaPrivacy].
+ * Privacy guarantee: PCM exists only inside active bounded buffers, is never
+ * written to disk and is never transmitted over any network. Logs record only
+ * shape via [EmaPrivacy].
  */
 class EmaOfflineSpeechEngine(
     context: Context,
@@ -103,6 +109,10 @@ class EmaOfflineSpeechEngine(
         fun onRmsChanged(rmsdB: Float) {}
         fun onBufferReceived(buffer: ByteArray) {}
         fun onPartialResults(text: String, rawText: String, confidence: Float) {}
+        /** Invoked for each finalized utterance when [Config.segmentedSession] is true. */
+        fun onSegmentResults(result: EmaSpeechResult) {}
+        /** Invoked once when a continuous [Config.segmentedSession] ends cleanly. */
+        fun onEndOfSegmentedSession() {}
         fun onEndOfSpeech() {}
         fun onResults(result: EmaSpeechResult)
         fun onError(errorCode: Int, message: String)
@@ -114,6 +124,11 @@ class EmaOfflineSpeechEngine(
         val partialResults: Boolean = true,
         val maxResults: Int = 5,
         val deliverAudioBuffers: Boolean = false,
+        val enableFormatting: Boolean = true,
+        val maskOffensiveWords: Boolean = false,
+        val segmentedSession: Boolean = false,
+        val segmentedStopOnSilence: Boolean = false,
+        val requestAudioFocus: Boolean = true,
         val biasingStrings: List<String> = emptyList(),
         val grammarPhrases: List<String> = emptyList(),
         val speechContext: EmaSpeechContext? = null,
@@ -136,18 +151,38 @@ class EmaOfflineSpeechEngine(
             private const val EXTRA_AUDIO_SOURCE_CHANNELS_KEY = "android.speech.extra.AUDIO_SOURCE_CHANNEL_COUNT"
             private const val EXTRA_AUDIO_SOURCE_ENCODING_KEY = "android.speech.extra.AUDIO_SOURCE_ENCODING"
             private const val EXTRA_GET_AUDIO_KEY = "android.speech.extra.GET_AUDIO"
+            private const val EXTRA_SEGMENTED_SESSION_KEY = "android.speech.extra.SEGMENTED_SESSION"
+            private const val EXTRA_ENABLE_FORMATTING_KEY = "android.speech.extra.ENABLE_FORMATTING"
+            private const val EXTRA_MASK_OFFENSIVE_KEY = "android.speech.extra.MASK_OFFENSIVE_WORDS"
 
-            /** Extract all standard Android [RecognizerIntent] options safely. */
+            /** Extract all standard Android 8–15 [RecognizerIntent] options safely. */
+            @Suppress("DEPRECATION")
             fun fromIntent(intent: Intent?): Config {
                 if (intent == null) return Config()
                 val extras = intent.extras
                 val lang = readLanguageTag(extras)
                 val profileExtra = intent.getStringExtra(EXTRA_PROFILE)
-                val profile = if (!profileExtra.isNullOrBlank()) {
-                    EmaRecognitionProfile.fromKey(profileExtra)
-                } else {
-                    EmaRecognitionProfile.COMMAND
+                val langModel = intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL)
+                val segmentedKey = intent.getStringExtra(EXTRA_SEGMENTED_SESSION_KEY)
+                val isSegmented = !segmentedKey.isNullOrBlank()
+                val stopOnSilence = segmentedKey == RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS
+
+                val formattingRaw = runCatching { extras?.get(EXTRA_ENABLE_FORMATTING_KEY) }.getOrNull()
+                val enableFormatting = when (formattingRaw) {
+                    is Boolean -> formattingRaw
+                    is String -> formattingRaw.isNotBlank() && !formattingRaw.equals("none", ignoreCase = true)
+                    else -> true
                 }
+                val wantsDictationFormatting = formattingRaw is String && formattingRaw.isNotBlank()
+                val maskOffensive = intent.getBooleanExtra(EXTRA_MASK_OFFENSIVE_KEY, false)
+
+                val profile = when {
+                    !profileExtra.isNullOrBlank() -> EmaRecognitionProfile.fromKey(profileExtra)
+                    langModel == RecognizerIntent.LANGUAGE_MODEL_WEB_SEARCH -> EmaRecognitionProfile.WEB_SEARCH
+                    isSegmented || wantsDictationFormatting -> EmaRecognitionProfile.DICTATION
+                    else -> EmaRecognitionProfile.COMMAND
+                }
+
                 val maxRes = intent.getIntExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5).coerceIn(1, 10)
                 val partials = intent.getBooleanExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 val biasing = intent.getStringArrayListExtra(EmaSpeechRecognition.EXTRA_BIASING_STRINGS)
@@ -188,6 +223,10 @@ class EmaOfflineSpeechEngine(
                     partialResults = partials,
                     maxResults = maxRes,
                     deliverAudioBuffers = wantBuffers,
+                    enableFormatting = enableFormatting,
+                    maskOffensiveWords = maskOffensive,
+                    segmentedSession = isSegmented,
+                    segmentedStopOnSilence = stopOnSilence,
                     biasingStrings = biasing,
                     grammarPhrases = grammar,
                     minSpeechMs = minLen,
@@ -231,7 +270,7 @@ class EmaOfflineSpeechEngine(
 
     @Volatile private var stopRequested = false
     @Volatile private var cancelled = false
-    @Volatile private var activeRecorder: AudioRecord? = null
+    @Volatile private var activeCapture: EmaAudioCaptureRouter.OpenedCapture? = null
     @Volatile private var activeStream: InputStream? = null
     @Volatile private var worker: Thread? = null
 
@@ -261,7 +300,7 @@ class EmaOfflineSpeechEngine(
      */
     fun stopListening() {
         stopRequested = true
-        runCatching { activeRecorder?.stop() }
+        runCatching { activeCapture?.recorder?.stop() }
     }
 
     /** Immediately abort recognition and discard any pending callbacks. */
@@ -270,7 +309,7 @@ class EmaOfflineSpeechEngine(
         stopRequested = true
         sessionSeq.incrementAndGet()
         running.set(false)
-        runCatching { activeRecorder?.stop() }
+        runCatching { activeCapture?.recorder?.stop() }
         runCatching { activeStream?.close() }
         worker?.interrupt()
     }
@@ -300,7 +339,6 @@ class EmaOfflineSpeechEngine(
                 return
             }
 
-            // Build local context in parallel with wake-word release.
             val baseContext = config.speechContext ?: EmaSpeechRecognition.speechContext(appContext)
             val speechContext = if (config.biasingStrings.isEmpty()) {
                 baseContext
@@ -320,6 +358,8 @@ class EmaOfflineSpeechEngine(
                 createRecognizer(lease.model, config).use { decoder ->
                     if (usingStream) {
                         recognizeStream(token, decoder, config, speechContext)
+                    } else if (config.segmentedSession) {
+                        recognizeSegmentedMicrophone(token, decoder, config, speechContext)
                     } else {
                         recognizeMicrophone(token, decoder, config, speechContext)
                     }
@@ -352,36 +392,30 @@ class EmaOfflineSpeechEngine(
     ) {
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
 
-        // Ensure Hey EMA releases AudioRecord before opening capture.
         if (EmaWakeWordService.isCapturing()) {
             EmaWakeWordService.pauseForSpeech()
             EmaWakeWordService.awaitCaptureReleased(650L)
         }
         if (!isAlive(token)) return
 
-        val opened = openMicrophone()
-        if (opened == null) {
-            emitError(token, SpeechRecognizer.ERROR_AUDIO, "Microphone could not be initialized.")
+        val capture = EmaAudioCaptureRouter.openAndStart(appContext, requestFocus = config.requestAudioFocus)
+        if (capture == null) {
+            emitError(token, SpeechRecognizer.ERROR_AUDIO, "Microphone is busy or could not be opened.")
             return
         }
+        activeCapture = capture
 
-        val audio = opened.recorder
-        val captureRate = opened.sampleRate
-        activeRecorder = audio
-        val effects = attachAudioEffects(audio.audioSessionId)
         var endSignalled = false
-
         try {
-            audio.startRecording()
-            if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                emitError(token, SpeechRecognizer.ERROR_AUDIO, "Microphone is in use by another app.")
-                return
-            }
+            val audio = capture.recorder
+            val captureRate = capture.sampleRate
+            val inputRoute = capture.inputRoute
 
             val processor = EmaSpeechAudioProcessor(
                 EmaSpeechAudioProcessor.Config.forProfile(
                     profile = config.profile,
-                    enableAgc = !effects.hardwareAgcActive,
+                    enableNoiseSuppression = true,
+                    enableAgc = !capture.hardwareAgcActive,
                     minSpeechMsOverride = config.minSpeechMs,
                     completeSilenceMsOverride = config.completeSilenceMs,
                     possiblyCompleteSilenceMsOverride = config.possiblyCompleteSilenceMs,
@@ -389,15 +423,18 @@ class EmaOfflineSpeechEngine(
                     maxDurationMsOverride = config.maxDurationMs
                 )
             )
-            val assembler = EmaUtteranceAssembler(maxAlternatives = maxOf(config.maxResults, 6))
+            val assembler = EmaUtteranceAssembler(
+                maxAlternatives = maxOf(config.maxResults, 6),
+                formatPausePunctuation = config.profile == EmaRecognitionProfile.DICTATION && config.enableFormatting
+            )
 
             val readyBundle = Bundle().apply {
                 putBoolean(EXTRA_ENGINE_OFFLINE, true)
+                putString(EXTRA_INPUT_ROUTE, inputRoute)
                 putString(RecognizerIntent.EXTRA_LANGUAGE, EmaSpeechMode.canonicalOfflineTag(config.languageTag))
             }
             emit(token) { listener.onReadyForSpeech(readyBundle) }
 
-            // 32 ms frames: responsive partials and smooth RMS metering with low overhead.
             val frameSamples = (captureRate * 32 / 1000).coerceAtLeast(256)
             val readBuffer = ByteArray(frameSamples * 2)
             val startedMs = SystemClock.elapsedRealtime()
@@ -471,7 +508,7 @@ class EmaOfflineSpeechEngine(
                     if (segmentCompleted) {
                         if (config.partialResults) {
                             val preview = assembler.currentPreview()
-                            val pretty = EmaInverseTextNormalizer.normalizePartial(preview, config.profile)
+                            val pretty = formatPreview(preview, config)
                             if (pretty.isNotEmpty() && pretty != lastEmittedPartial) {
                                 lastEmittedPartial = pretty
                                 emit(token) { listener.onPartialResults(pretty, preview, 0.80f) }
@@ -487,7 +524,7 @@ class EmaOfflineSpeechEngine(
                                 emit(token) { listener.onBeginningOfSpeech() }
                             }
                             if (config.partialResults) {
-                                val pretty = EmaInverseTextNormalizer.normalizePartial(partial.text, config.profile)
+                                val pretty = formatPreview(partial.text, config)
                                 if (pretty.isNotEmpty() && pretty != lastEmittedPartial) {
                                     lastEmittedPartial = pretty
                                     val conf = partial.confidence
@@ -505,9 +542,10 @@ class EmaOfflineSpeechEngine(
                 }
             }
 
-            // Release microphone immediately so any follow-up turn never sees a busy device.
-            releaseRecorderAndEffects(audio, effects)
-            activeRecorder = null
+            // Release microphone and audio focus immediately so follow-up turns or TTS never stall.
+            val finalizeStartedMs = SystemClock.elapsedRealtime()
+            capture.close()
+            activeCapture = null
 
             if (!isAlive(token)) return
 
@@ -516,12 +554,14 @@ class EmaOfflineSpeechEngine(
                 emit(token) { listener.onEndOfSpeech() }
             }
 
+            val quality = processor.qualitySummary()
+
             if (timedOutWithoutSpeech && !assembler.hasAnyText()) {
-                emitError(token, SpeechRecognizer.ERROR_SPEECH_TIMEOUT, "No speech detected.")
+                val hint = quality.diagnosticHint()
+                emitError(token, SpeechRecognizer.ERROR_SPEECH_TIMEOUT, hint ?: "No speech detected.")
                 return
             }
 
-            // Append a tiny trailing silence frame so Kaldi closes the last word cleanly.
             if (speechAnnounced || assembler.hasAnyText()) {
                 runCatching { decoder.acceptWaveForm(TRAILING_FLUSH_SILENCE, TRAILING_FLUSH_SILENCE.size) }
             }
@@ -530,12 +570,14 @@ class EmaOfflineSpeechEngine(
 
             if (assembled.hypotheses.isEmpty()) {
                 val code = if (speechAnnounced) SpeechRecognizer.ERROR_NO_MATCH else SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                emitError(token, code, if (speechAnnounced) "No words recognized." else "No speech detected.")
+                val hint = quality.diagnosticHint()
+                emitError(token, code, hint ?: if (speechAnnounced) "No words recognized." else "No speech detected.")
                 return
             }
 
             if (EmaVoskJsonParser.isNoiseHallucination(assembled.hypotheses, processor.voicedDurationMs)) {
-                emitError(token, SpeechRecognizer.ERROR_NO_MATCH, "Only background noise was heard.")
+                val hint = quality.diagnosticHint()
+                emitError(token, SpeechRecognizer.ERROR_NO_MATCH, hint ?: "Only background noise was heard.")
                 return
             }
 
@@ -543,18 +585,23 @@ class EmaOfflineSpeechEngine(
                 decoded = assembled.hypotheses,
                 context = speechContext,
                 profile = config.profile,
-                maxResults = config.maxResults
+                maxResults = config.maxResults,
+                enableFormatting = config.enableFormatting,
+                maskOffensiveWords = config.maskOffensiveWords
             )
             val primary = rescored.primary
             if (primary.isNullOrBlank()) {
-                emitError(token, SpeechRecognizer.ERROR_NO_MATCH, "No words recognized.")
+                emitError(token, SpeechRecognizer.ERROR_NO_MATCH, quality.diagnosticHint() ?: "No words recognized.")
                 return
             }
 
             if (!endSignalled) {
                 emit(token) { listener.onEndOfSpeech() }
             }
-            val durationMs = SystemClock.elapsedRealtime() - startedMs
+            val nowDone = SystemClock.elapsedRealtime()
+            val durationMs = nowDone - startedMs
+            EmaOfflineSpeechModel.recordTurnTelemetry(nowDone - finalizeStartedMs, inputRoute)
+
             val result = EmaSpeechResult(
                 text = primary,
                 hypotheses = rescored.hypotheses,
@@ -562,18 +609,198 @@ class EmaOfflineSpeechEngine(
                 rawHypotheses = rescored.rawHypotheses,
                 words = assembled.hypotheses.first().words,
                 durationMs = durationMs,
-                offline = true
+                offline = true,
+                inputRoute = inputRoute,
+                wordsPerMinute = assembled.estimatedWpm,
+                segmentCount = assembled.segmentCount,
+                audioQuality = quality
             )
             android.util.Log.i(
                 "EMA",
-                "Offline STT ok (${EmaPrivacy.describe(primary)}, alts=${result.hypotheses.size}, segs=${assembled.segmentCount}, ${durationMs}ms)"
+                "Offline STT ok (${EmaPrivacy.describe(primary)}, alts=${result.hypotheses.size}, " +
+                    "segs=${assembled.segmentCount}, route=$inputRoute, snr=${quality.estimatedSnrDb.toInt()}dB, ${durationMs}ms)"
             )
             emit(token) { listener.onResults(result) }
         } finally {
-            activeRecorder?.let { rec ->
-                releaseRecorderAndEffects(rec, effects)
-                activeRecorder = null
+            activeCapture?.close()
+            activeCapture = null
+        }
+    }
+
+    /**
+     * Continuous multi-utterance live capture (Android 13/14 `EXTRA_SEGMENTED_SESSION`):
+     * delivers each completed sentence via [Listener.onSegmentResults] without
+     * closing the microphone, keeping the noise floor adapted across pauses
+     * until `stopListening()` or the configured session boundary is reached.
+     */
+    private fun recognizeSegmentedMicrophone(
+        token: Long,
+        decoder: Recognizer,
+        config: Config,
+        speechContext: EmaSpeechContext
+    ) {
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
+        if (EmaWakeWordService.isCapturing()) {
+            EmaWakeWordService.pauseForSpeech()
+            EmaWakeWordService.awaitCaptureReleased(650L)
+        }
+        if (!isAlive(token)) return
+
+        val capture = EmaAudioCaptureRouter.openAndStart(appContext, requestFocus = config.requestAudioFocus)
+        if (capture == null) {
+            emitError(token, SpeechRecognizer.ERROR_AUDIO, "Microphone is busy or could not be opened.")
+            return
+        }
+        activeCapture = capture
+
+        try {
+            val audio = capture.recorder
+            val captureRate = capture.sampleRate
+            val processor = EmaSpeechAudioProcessor(
+                EmaSpeechAudioProcessor.Config.forProfile(
+                    profile = config.profile,
+                    enableNoiseSuppression = true,
+                    enableAgc = !capture.hardwareAgcActive,
+                    completeSilenceMsOverride = config.completeSilenceMs ?: 1_300L,
+                    possiblyCompleteSilenceMsOverride = config.possiblyCompleteSilenceMs ?: 950L,
+                    noSpeechTimeoutMsOverride = config.noSpeechTimeoutMs ?: 12_000L,
+                    maxDurationMsOverride = config.maxDurationMs ?: MAX_SEGMENTED_SESSION_MS
+                )
+            )
+            val segAssembler = EmaUtteranceAssembler(maxAlternatives = maxOf(config.maxResults, 6))
+
+            emit(token) {
+                listener.onReadyForSpeech(
+                    Bundle().apply {
+                        putBoolean(EXTRA_ENGINE_OFFLINE, true)
+                        putString(EXTRA_INPUT_ROUTE, capture.inputRoute)
+                        putString(RecognizerIntent.EXTRA_LANGUAGE, EmaSpeechMode.canonicalOfflineTag(config.languageTag))
+                    }
+                )
             }
+
+            val frameSamples = (captureRate * 32 / 1000).coerceAtLeast(256)
+            val readBuffer = ByteArray(frameSamples * 2)
+            val sessionStart = SystemClock.elapsedRealtime()
+            var speechAnnounced = false
+            var lastRmsMs = 0L
+            var lastPartialMs = 0L
+            var lastPartial = ""
+            var emittedSegments = 0
+
+            fun flushCurrentSegment() {
+                runCatching { decoder.acceptWaveForm(TRAILING_FLUSH_SILENCE, TRAILING_FLUSH_SILENCE.size) }
+                val assembled = segAssembler.finish(runCatching { decoder.finalResult }.getOrDefault(""))
+                segAssembler.reset()
+                lastPartial = ""
+                runCatching { decoder.reset() }
+                if (assembled.hypotheses.isEmpty()) return
+                if (EmaVoskJsonParser.isNoiseHallucination(assembled.hypotheses, processor.voicedDurationMs)) return
+                val rescored = EmaSpeechRescorer.rescore(
+                    decoded = assembled.hypotheses,
+                    context = speechContext,
+                    profile = config.profile,
+                    maxResults = config.maxResults,
+                    enableFormatting = config.enableFormatting,
+                    maskOffensiveWords = config.maskOffensiveWords
+                )
+                val primary = rescored.primary ?: return
+                emittedSegments++
+                val segResult = EmaSpeechResult(
+                    text = primary,
+                    hypotheses = rescored.hypotheses,
+                    confidenceScores = rescored.confidenceScores,
+                    rawHypotheses = rescored.rawHypotheses,
+                    words = assembled.hypotheses.first().words,
+                    durationMs = processor.voicedDurationMs,
+                    offline = true,
+                    inputRoute = capture.inputRoute,
+                    wordsPerMinute = assembled.estimatedWpm,
+                    segmentCount = emittedSegments
+                )
+                emit(token) { listener.onSegmentResults(segResult) }
+            }
+
+            while (isAlive(token) && !stopRequested &&
+                SystemClock.elapsedRealtime() - sessionStart < MAX_SEGMENTED_SESSION_MS
+            ) {
+                val read = audio.read(readBuffer, 0, readBuffer.size)
+                if (read <= 0) break
+                val even = read - (read % 2)
+                if (even <= 0) continue
+
+                val pcm16k = if (captureRate == EmaSpeechAudioProcessor.TARGET_SAMPLE_RATE) {
+                    readBuffer
+                } else {
+                    EmaSpeechAudioProcessor.resampleBytesToMono16k(readBuffer, even, captureRate, channels = 1)
+                }
+                val pcmLen = if (captureRate == EmaSpeechAudioProcessor.TARGET_SAMPLE_RATE) even else pcm16k.size
+                if (pcmLen <= 0) continue
+
+                val decision = processor.process(pcm16k, pcmLen)
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastRmsMs >= RMS_INTERVAL_MS) {
+                    lastRmsMs = now
+                    val db = decision.rmsDb
+                    emit(token) { listener.onRmsChanged(db) }
+                }
+                if (decision.speechJustStarted && !speechAnnounced) {
+                    speechAnnounced = true
+                    emit(token) { listener.onBeginningOfSpeech() }
+                }
+                for (chunk in decision.audioToDecode) {
+                    if (config.deliverAudioBuffers) {
+                        val copy = chunk.copyOf()
+                        emit(token) { listener.onBufferReceived(copy) }
+                    }
+                    if (decoder.acceptWaveForm(chunk, chunk.size)) {
+                        val acc = segAssembler.onSegment(decoder.result)
+                        if (acc.isNotEmpty()) processor.onDecoderTranscript(acc)
+                    } else if (config.partialResults && now - lastPartialMs >= PARTIAL_INTERVAL_MS) {
+                        lastPartialMs = now
+                        val p = segAssembler.onPartial(decoder.partialResult)
+                        if (p.text.isNotEmpty()) {
+                            processor.onDecoderTranscript(p.text)
+                            val pretty = formatPreview(p.text, config)
+                            if (pretty.isNotEmpty() && pretty != lastPartial) {
+                                lastPartial = pretty
+                                val conf = p.confidence
+                                emit(token) { listener.onPartialResults(pretty, p.text, conf) }
+                            }
+                        }
+                    }
+                }
+
+                when (decision.action) {
+                    EmaSpeechAudioProcessor.Action.ENDPOINT_COMPLETE -> {
+                        flushCurrentSegment()
+                        processor.resetForNextSegment()
+                        if (config.segmentedStopOnSilence) break
+                    }
+                    EmaSpeechAudioProcessor.Action.TIMEOUT_NO_SPEECH -> {
+                        if (emittedSegments > 0 || config.segmentedStopOnSilence) break
+                        processor.resetForNextSegment()
+                    }
+                    EmaSpeechAudioProcessor.Action.MAX_DURATION_REACHED -> break
+                    EmaSpeechAudioProcessor.Action.WAIT_FOR_SPEECH,
+                    EmaSpeechAudioProcessor.Action.DECODE -> Unit
+                }
+            }
+
+            capture.close()
+            activeCapture = null
+            if (!isAlive(token)) return
+
+            if (segAssembler.hasAnyText()) {
+                flushCurrentSegment()
+            }
+            if (speechAnnounced) {
+                emit(token) { listener.onEndOfSpeech() }
+            }
+            emit(token) { listener.onEndOfSegmentedSession() }
+        } finally {
+            activeCapture?.close()
+            activeCapture = null
         }
     }
 
@@ -604,38 +831,94 @@ class EmaOfflineSpeechEngine(
             listener.onReadyForSpeech(Bundle().apply { putBoolean(EXTRA_ENGINE_OFFLINE, true) })
         }
 
-        val assembler = EmaUtteranceAssembler(maxAlternatives = maxOf(config.maxResults, 6))
+        val streamConditioner = EmaSpeechAudioProcessor()
+        val assembler = EmaUtteranceAssembler(
+            maxAlternatives = maxOf(config.maxResults, 6),
+            formatPausePunctuation = config.profile == EmaRecognitionProfile.DICTATION && config.enableFormatting
+        )
         var speechAnnounced = false
         var lastPartial = ""
+        var emittedSegCount = 0
 
-        if (EmaSpeechAudioProcessor.hasWavHeader(probe, probeLen)) {
-            val wav = EmaSpeechAudioProcessor.decodeWav(buffered)
-            val conditioned = EmaSpeechAudioProcessor().conditionBatch(wav.pcm16kMono)
-            if (conditioned.isNotEmpty()) {
+        fun processMono16kChunk(mono16k: ShortArray) {
+            if (mono16k.isEmpty() || !isAlive(token) || stopRequested) return
+            if (!speechAnnounced) {
                 speechAnnounced = true
                 emit(token) { listener.onBeginningOfSpeech() }
             }
-            feedConditionedBytes(token, decoder, assembler, conditioned, config) { pretty, raw, conf ->
-                if (pretty != lastPartial) {
-                    lastPartial = pretty
-                    emit(token) { listener.onPartialResults(pretty, raw, conf) }
+            val conditioned = streamConditioner.conditionStreamChunk(mono16k)
+            if (config.deliverAudioBuffers && conditioned.isNotEmpty()) {
+                val copy = conditioned.copyOf()
+                emit(token) { listener.onBufferReceived(copy) }
+            }
+            val step = 6400 // 200 ms at 16 kHz PCM16 mono
+            var offset = 0
+            while (offset < conditioned.size && isAlive(token) && !stopRequested) {
+                val len = min(step, conditioned.size - offset).let { it - (it % 2) }
+                if (len <= 0) break
+                val slice = conditioned.copyOfRange(offset, offset + len)
+                if (decoder.acceptWaveForm(slice, slice.size)) {
+                    val segHyps = assembler.onSegmentWithHypotheses(decoder.result)
+                    if (config.segmentedSession && segHyps.isNotEmpty()) {
+                        val segRescored = EmaSpeechRescorer.rescore(
+                            decoded = segHyps,
+                            context = speechContext,
+                            profile = config.profile,
+                            maxResults = config.maxResults,
+                            enableFormatting = config.enableFormatting,
+                            maskOffensiveWords = config.maskOffensiveWords
+                        )
+                        val segText = segRescored.primary
+                        if (!segText.isNullOrBlank()) {
+                            emittedSegCount++
+                            val r = EmaSpeechResult(
+                                text = segText,
+                                hypotheses = segRescored.hypotheses,
+                                confidenceScores = segRescored.confidenceScores,
+                                rawHypotheses = segRescored.rawHypotheses,
+                                words = segHyps.first().words,
+                                offline = true,
+                                segmentCount = emittedSegCount
+                            )
+                            emit(token) { listener.onSegmentResults(r) }
+                        }
+                    } else if (config.partialResults) {
+                        val acc = assembler.currentPreview()
+                        val pretty = formatPreview(acc, config)
+                        if (pretty.isNotEmpty() && pretty != lastPartial) {
+                            lastPartial = pretty
+                            emit(token) { listener.onPartialResults(pretty, acc, 0.80f) }
+                        }
+                    }
+                } else if (config.partialResults) {
+                    val p = assembler.onPartial(decoder.partialResult)
+                    if (p.text.isNotEmpty()) {
+                        val pretty = formatPreview(p.text, config)
+                        if (pretty.isNotEmpty() && pretty != lastPartial) {
+                            lastPartial = pretty
+                            val conf = p.confidence
+                            emit(token) { listener.onPartialResults(pretty, p.text, conf) }
+                        }
+                    }
                 }
+                offset += len
+            }
+        }
+
+        if (EmaSpeechAudioProcessor.hasWavHeader(probe, probeLen)) {
+            val wav = EmaSpeechAudioProcessor.decodeWav(buffered)
+            var pos = 0
+            while (pos < wav.pcm16kMono.size && isAlive(token) && !stopRequested) {
+                val end = min(pos + 4_000, wav.pcm16kMono.size)
+                processMono16kChunk(wav.pcm16kMono.copyOfRange(pos, end))
+                pos = end
             }
         } else {
-            val processor = EmaSpeechAudioProcessor(
-                EmaSpeechAudioProcessor.Config(
-                    enableHighPass = true,
-                    enableAgc = true,
-                    maxDurationMs = 120_000L
-                )
-            )
-            val bytesPerSample = when (config.audioSourceEncoding) {
-                AudioFormat.ENCODING_PCM_8BIT -> 1
-                AudioFormat.ENCODING_PCM_FLOAT -> 4
-                else -> 2
-            }
+            val (bits, isFloat) = encodingToBitsAndFloat(config.audioSourceEncoding)
+            val bytesPerSample = (bits / 8).coerceAtLeast(1)
             val frameAlign = (bytesPerSample * config.audioSourceChannels).coerceAtLeast(1)
-            val chunkBytes = ((config.audioSourceSampleRate * frameAlign) / 10).coerceIn(frameAlign, 32_768)
+            val chunkBytes = ((config.audioSourceSampleRate * frameAlign) / 8)
+                .coerceIn(frameAlign, 32_768)
                 .let { it - (it % frameAlign) }
             val buf = ByteArray(chunkBytes)
             var totalBytes = 0L
@@ -651,40 +934,20 @@ class EmaOfflineSpeechEngine(
                     continue
                 }
                 totalBytes += usable
-                if (totalBytes > EmaSpeechAudioProcessor.MAX_BATCH_BYTES) break
+                if (totalBytes > MAX_STREAM_PIPE_BYTES) break
 
-                val pcm16Native = convertEncodingToPcm16(buf, usable, config.audioSourceEncoding)
-                val pcm16k = EmaSpeechAudioProcessor.shortsToBytes(
-                    EmaSpeechAudioProcessor.resampleToMono16k(
-                        pcm16Native,
-                        config.audioSourceSampleRate,
-                        config.audioSourceChannels
-                    )
-                )
-                // Save unaligned trailing bytes for next read.
+                val nativeShorts = EmaSpeechAudioProcessor.decodeRawPcmToShorts(buf, usable, bits, isFloat)
                 val rem = avail - usable
                 if (rem > 0) System.arraycopy(buf, usable, buf, 0, rem)
                 carry = rem
 
-                if (pcm16k.isEmpty()) continue
-                if (!speechAnnounced) {
-                    speechAnnounced = true
-                    emit(token) { listener.onBeginningOfSpeech() }
-                }
-                val decision = processor.process(pcm16k, pcm16k.size)
-                val toFeed = if (decision.audioToDecode.isNotEmpty()) decision.audioToDecode else listOf(pcm16k)
-                for (frame in toFeed) {
-                    if (decoder.acceptWaveForm(frame, frame.size)) {
-                        assembler.onSegment(decoder.result)
-                    } else if (config.partialResults) {
-                        val partial = assembler.onPartial(decoder.partialResult)
-                        val pretty = EmaInverseTextNormalizer.normalizePartial(partial.text, config.profile)
-                        if (pretty.isNotEmpty() && pretty != lastPartial) {
-                            lastPartial = pretty
-                            emit(token) { listener.onPartialResults(pretty, partial.text, partial.confidence) }
-                        }
-                    }
-                }
+                if (nativeShorts.isEmpty()) continue
+                val mono16k = EmaSpeechAudioProcessor.resampleToMono16k(
+                    nativeShorts,
+                    config.audioSourceSampleRate,
+                    config.audioSourceChannels
+                )
+                processMono16kChunk(mono16k)
             }
         }
 
@@ -692,12 +955,45 @@ class EmaOfflineSpeechEngine(
         emit(token) { listener.onEndOfSpeech() }
 
         runCatching { decoder.acceptWaveForm(TRAILING_FLUSH_SILENCE, TRAILING_FLUSH_SILENCE.size) }
-        val assembled = assembler.finish(runCatching { decoder.finalResult }.getOrDefault(""))
+        val finalJson = runCatching { decoder.finalResult }.getOrDefault("")
+
+        if (config.segmentedSession) {
+            val tailHyps = EmaVoskJsonParser.parseResult(finalJson, maxAlternatives = config.maxResults)
+            if (tailHyps.isNotEmpty()) {
+                val tailRescored = EmaSpeechRescorer.rescore(
+                    decoded = tailHyps,
+                    context = speechContext,
+                    profile = config.profile,
+                    maxResults = config.maxResults,
+                    enableFormatting = config.enableFormatting,
+                    maskOffensiveWords = config.maskOffensiveWords
+                )
+                tailRescored.primary?.takeIf { it.isNotBlank() }?.let { tailText ->
+                    emittedSegCount++
+                    val r = EmaSpeechResult(
+                        text = tailText,
+                        hypotheses = tailRescored.hypotheses,
+                        confidenceScores = tailRescored.confidenceScores,
+                        rawHypotheses = tailRescored.rawHypotheses,
+                        words = tailHyps.first().words,
+                        offline = true,
+                        segmentCount = emittedSegCount
+                    )
+                    emit(token) { listener.onSegmentResults(r) }
+                }
+            }
+            emit(token) { listener.onEndOfSegmentedSession() }
+            return
+        }
+
+        val assembled = assembler.finish(finalJson)
         val rescored = EmaSpeechRescorer.rescore(
             decoded = assembled.hypotheses,
             context = speechContext,
             profile = config.profile,
-            maxResults = config.maxResults
+            maxResults = config.maxResults,
+            enableFormatting = config.enableFormatting,
+            maskOffensiveWords = config.maskOffensiveWords
         )
         val primary = rescored.primary
         if (primary.isNullOrBlank()) {
@@ -717,38 +1013,33 @@ class EmaOfflineSpeechEngine(
                     rawHypotheses = rescored.rawHypotheses,
                     words = assembled.hypotheses.first().words,
                     durationMs = SystemClock.elapsedRealtime() - startedMs,
-                    offline = true
+                    offline = true,
+                    inputRoute = "audio stream",
+                    wordsPerMinute = assembled.estimatedWpm,
+                    segmentCount = assembled.segmentCount
                 )
             )
         }
     }
 
-    private fun feedConditionedBytes(
-        token: Long,
-        decoder: Recognizer,
-        assembler: EmaUtteranceAssembler,
-        pcm16kLe: ByteArray,
-        config: Config,
-        onPartial: (String, String, Float) -> Unit
-    ) {
-        val step = 6400 // 200 ms at 16 kHz PCM16 mono
-        var offset = 0
-        while (offset < pcm16kLe.size && isAlive(token) && !stopRequested) {
-            val len = min(step, pcm16kLe.size - offset).let { it - (it % 2) }
-            if (len <= 0) break
-            val slice = pcm16kLe.copyOfRange(offset, offset + len)
-            if (decoder.acceptWaveForm(slice, slice.size)) {
-                val acc = assembler.onSegment(decoder.result)
-                if (config.partialResults && acc.isNotEmpty()) {
-                    onPartial(EmaInverseTextNormalizer.normalizePartial(acc, config.profile), acc, 0.80f)
-                }
-            } else if (config.partialResults) {
-                val p = assembler.onPartial(decoder.partialResult)
-                if (p.text.isNotEmpty()) {
-                    onPartial(EmaInverseTextNormalizer.normalizePartial(p.text, config.profile), p.text, p.confidence)
-                }
-            }
-            offset += len
+    private fun formatPreview(raw: String, config: Config): String {
+        if (raw.isBlank()) return ""
+        return if (config.enableFormatting) {
+            EmaInverseTextNormalizer.normalize(
+                raw = raw,
+                profile = config.profile,
+                context = EmaSpeechContext.EMPTY,
+                enableFormatting = true,
+                maskOffensiveWords = config.maskOffensiveWords
+            )
+        } else {
+            EmaInverseTextNormalizer.normalize(
+                raw = raw,
+                profile = config.profile,
+                context = EmaSpeechContext.EMPTY,
+                enableFormatting = false,
+                maskOffensiveWords = config.maskOffensiveWords
+            )
         }
     }
 
@@ -771,65 +1062,6 @@ class EmaOfflineSpeechEngine(
         return recognizer
     }
 
-    private data class OpenedMic(val recorder: AudioRecord, val sampleRate: Int)
-
-    /** Try preferred voice-recognition capture first, falling back across OEM-safe configurations. */
-    private fun openMicrophone(): OpenedMic? {
-        val candidates = listOf(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION to 16_000,
-            MediaRecorder.AudioSource.MIC to 16_000,
-            MediaRecorder.AudioSource.VOICE_RECOGNITION to 48_000,
-            MediaRecorder.AudioSource.VOICE_RECOGNITION to 44_100,
-            MediaRecorder.AudioSource.MIC to 44_100
-        )
-        for ((source, rate) in candidates) {
-            val minBuf = runCatching {
-                AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            }.getOrDefault(-1)
-            if (minBuf <= 0) continue
-            // ~500 ms ring buffer prevents kernel overruns during short GC pauses.
-            val bufferBytes = maxOf(minBuf * 2, rate)
-            val record = runCatching {
-                AudioRecord(source, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferBytes)
-            }.getOrNull() ?: continue
-            if (record.state == AudioRecord.STATE_INITIALIZED) {
-                return OpenedMic(record, rate)
-            }
-            runCatching { record.release() }
-        }
-        return null
-    }
-
-    private data class AttachedEffects(
-        val noiseSuppressor: NoiseSuppressor?,
-        val echoCanceler: AcousticEchoCanceler?,
-        val gainControl: AutomaticGainControl?,
-        val hardwareAgcActive: Boolean
-    )
-
-    private fun attachAudioEffects(sessionId: Int): AttachedEffects {
-        if (sessionId <= 0) return AttachedEffects(null, null, null, false)
-        val ns = runCatching {
-            if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(sessionId)?.apply { enabled = true } else null
-        }.getOrNull()
-        val aec = runCatching {
-            if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(sessionId)?.apply { enabled = true } else null
-        }.getOrNull()
-        val agc = runCatching {
-            if (AutomaticGainControl.isAvailable()) AutomaticGainControl.create(sessionId) else null
-        }.getOrNull()
-        val hwAgc = runCatching { agc?.enabled == true }.getOrDefault(false)
-        return AttachedEffects(ns, aec, agc, hwAgc)
-    }
-
-    private fun releaseRecorderAndEffects(recorder: AudioRecord, effects: AttachedEffects) {
-        runCatching { effects.noiseSuppressor?.release() }
-        runCatching { effects.echoCanceler?.release() }
-        runCatching { effects.gainControl?.release() }
-        runCatching { recorder.stop() }
-        runCatching { recorder.release() }
-    }
-
     private fun isAlive(token: Long): Boolean = !cancelled && sessionSeq.get() == token
 
     private fun emit(token: Long, action: () -> Unit) {
@@ -845,39 +1077,79 @@ class EmaOfflineSpeechEngine(
 
     companion object {
         const val EXTRA_ENGINE_OFFLINE = "com.ema.assistant.extra.ENGINE_IS_OFFLINE"
+        const val EXTRA_INPUT_ROUTE = "com.ema.assistant.extra.INPUT_ROUTE"
 
-        private const val RMS_INTERVAL_MS = 55L
-        private const val PARTIAL_INTERVAL_MS = 85L
+        private const val RMS_INTERVAL_MS = 50L
+        private const val PARTIAL_INTERVAL_MS = 80L
+        private const val MAX_SEGMENTED_SESSION_MS = 5L * 60L * 1_000L
+        private const val MAX_STREAM_PIPE_BYTES = 128L * 1024L * 1024L
 
         // 240 ms of digital silence (16 kHz mono PCM16) to flush final decoder transitions cleanly.
         private val TRAILING_FLUSH_SILENCE = ByteArray(16_000 * 2 * 240 / 1000)
 
         /**
-         * Offline file speech-to-text: transcribe a local RIFF/WAVE recording
-         * directly on the device with zero network access.
+         * Universal offline file speech-to-text: transcribe any local recording
+         * (`.wav`, `.m4a`, `.mp3`, `.ogg`, `.opus`, `.flac`, `.aac`, `.amr`,
+         * `.3gp`, `.webm`, `.mp4`, `.mkv`) in constant memory completely on the
+         * phone with zero network traffic.
          *
          * Worker-thread-only.
+         */
+        fun transcribeFile(
+            context: Context,
+            audioFile: File,
+            profile: EmaRecognitionProfile = EmaRecognitionProfile.DICTATION,
+            contextHints: EmaSpeechContext? = null,
+            isCancelled: () -> Boolean = { false },
+            onProgress: ((progress: Float, livePreview: String) -> Unit)? = null
+        ): EmaSpeechResult {
+            return transcribeDecodedStream(
+                context = context,
+                profile = profile,
+                contextHints = contextHints,
+                isCancelled = isCancelled,
+                onProgress = onProgress
+            ) { feedChunk ->
+                EmaOfflineAudioDecoder.decodeFile(audioFile, isCancelled, feedChunk)
+            }
+        }
+
+        /**
+         * Universal offline URI speech-to-text: transcribe a user-chosen
+         * `content://` or `file://` audio recording (document picker, shared
+         * WhatsApp/Telegram voice note, voice recorder clip) completely offline.
+         *
+         * Worker-thread-only.
+         */
+        fun transcribeUri(
+            context: Context,
+            uri: Uri,
+            profile: EmaRecognitionProfile = EmaRecognitionProfile.DICTATION,
+            contextHints: EmaSpeechContext? = null,
+            isCancelled: () -> Boolean = { false },
+            onProgress: ((progress: Float, livePreview: String) -> Unit)? = null
+        ): EmaSpeechResult {
+            return transcribeDecodedStream(
+                context = context,
+                profile = profile,
+                contextHints = contextHints,
+                isCancelled = isCancelled,
+                onProgress = onProgress
+            ) { feedChunk ->
+                EmaOfflineAudioDecoder.decodeUri(context.applicationContext, uri, isCancelled, feedChunk)
+            }
+        }
+
+        /**
+         * Offline WAV file speech-to-text (supports PCM 8/16/24/32, IEEE float,
+         * G.711 A-law/μ-law and `WAVE_FORMAT_EXTENSIBLE`). Worker-thread-only.
          */
         fun transcribeWav(
             context: Context,
             wavFile: File,
             profile: EmaRecognitionProfile = EmaRecognitionProfile.DICTATION,
             contextHints: EmaSpeechContext? = null
-        ): EmaSpeechResult {
-            require(wavFile.isFile && wavFile.canRead()) { "Audio file cannot be read" }
-            require(wavFile.length() in 44L..EmaSpeechAudioProcessor.MAX_BATCH_BYTES.toLong()) {
-                "Audio file size is outside the supported offline transcription range"
-            }
-            val decoded = wavFile.inputStream().buffered().use { EmaSpeechAudioProcessor.decodeWav(it) }
-            return transcribePcm(
-                context = context,
-                samples = decoded.pcm16kMono,
-                sampleRate = EmaSpeechAudioProcessor.TARGET_SAMPLE_RATE,
-                channels = 1,
-                profile = profile,
-                contextHints = contextHints
-            ).copy(durationMs = decoded.durationMs)
-        }
+        ): EmaSpeechResult = transcribeFile(context, wavFile, profile, contextHints)
 
         /**
          * Offline buffer speech-to-text: transcribe interleaved PCM16 samples
@@ -903,7 +1175,10 @@ class EmaOfflineSpeechEngine(
 
             val conditioned = EmaSpeechAudioProcessor().conditionBatch(mono16k)
             val speechContext = contextHints ?: EmaSpeechRecognition.speechContext(app)
-            val assembler = EmaUtteranceAssembler(maxAlternatives = maxOf(maxResults, 6))
+            val assembler = EmaUtteranceAssembler(
+                maxAlternatives = maxOf(maxResults, 6),
+                formatPausePunctuation = profile == EmaRecognitionProfile.DICTATION
+            )
 
             EmaOfflineSpeechModel.acquire(app).use { lease ->
                 Recognizer(lease.model, EmaSpeechAudioProcessor.TARGET_SAMPLE_RATE.toFloat()).use { decoder ->
@@ -911,7 +1186,7 @@ class EmaOfflineSpeechEngine(
                     runCatching { decoder.setWords(true) }
                     runCatching { decoder.setPartialWords(true) }
 
-                    val step = 6400 // 200 ms frames
+                    val step = 6400
                     var offset = 0
                     while (offset < conditioned.size) {
                         val len = min(step, conditioned.size - offset).let { it - (it % 2) }
@@ -939,27 +1214,95 @@ class EmaOfflineSpeechEngine(
                         rawHypotheses = rescored.rawHypotheses,
                         words = assembled.hypotheses.firstOrNull()?.words.orEmpty(),
                         durationMs = durationMs,
-                        offline = true
+                        offline = true,
+                        inputRoute = "pcm buffer",
+                        wordsPerMinute = assembled.estimatedWpm,
+                        segmentCount = assembled.segmentCount,
+                        mimeType = "audio/pcm"
                     )
                 }
             }
         }
 
-        private fun convertEncodingToPcm16(bytes: ByteArray, length: Int, encoding: Int): ShortArray =
-            when (encoding) {
-                AudioFormat.ENCODING_PCM_8BIT -> ShortArray(length) { i ->
-                    (((bytes[i].toInt() and 0xff) - 128) shl 8).toShort()
-                }
-                AudioFormat.ENCODING_PCM_FLOAT -> {
-                    val count = length / 4
-                    val bb = ByteBuffer.wrap(bytes, 0, count * 4).order(ByteOrder.LITTLE_ENDIAN)
-                    ShortArray(count) {
-                        val f = bb.float
-                        val v = if (f.isFinite()) (f.coerceIn(-1f, 1f) * 32_767f).roundToInt() else 0
-                        v.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        private fun transcribeDecodedStream(
+            context: Context,
+            profile: EmaRecognitionProfile,
+            contextHints: EmaSpeechContext?,
+            isCancelled: () -> Boolean,
+            onProgress: ((Float, String) -> Unit)?,
+            decodeInto: (onChunk: (ShortArray, Float) -> Unit) -> EmaOfflineAudioDecoder.StreamMetadata
+        ): EmaSpeechResult {
+            val app = context.applicationContext
+            val speechContext = contextHints ?: EmaSpeechRecognition.speechContext(app)
+            val conditioner = EmaSpeechAudioProcessor()
+            val assembler = EmaUtteranceAssembler(
+                maxAlternatives = 6,
+                formatPausePunctuation = profile == EmaRecognitionProfile.DICTATION
+            )
+            var lastProgressEmitMs = 0L
+
+            EmaOfflineSpeechModel.acquire(app).use { lease ->
+                Recognizer(lease.model, EmaSpeechAudioProcessor.TARGET_SAMPLE_RATE.toFloat()).use { decoder ->
+                    runCatching { decoder.setMaxAlternatives(6) }
+                    runCatching { decoder.setWords(true) }
+                    runCatching { decoder.setPartialWords(true) }
+
+                    val meta = decodeInto { samples16k, progress ->
+                        if (samples16k.isEmpty() || isCancelled()) return@decodeInto
+                        val conditioned = conditioner.conditionStreamChunk(samples16k)
+                        if (decoder.acceptWaveForm(conditioned, conditioned.size)) {
+                            assembler.onSegment(decoder.result)
+                        } else if (onProgress != null) {
+                            assembler.onPartial(decoder.partialResult)
+                        }
+                        if (onProgress != null) {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastProgressEmitMs >= 220L) {
+                                lastProgressEmitMs = now
+                                runCatching { onProgress(progress.coerceIn(0f, 0.99f), assembler.currentPreview()) }
+                            }
+                        }
                     }
+
+                    if (isCancelled()) {
+                        return EmaSpeechResult("", emptyList(), FloatArray(0), durationMs = meta.durationMs, offline = true)
+                    }
+
+                    decoder.acceptWaveForm(TRAILING_FLUSH_SILENCE, TRAILING_FLUSH_SILENCE.size)
+                    val assembled = assembler.finish(decoder.finalResult)
+                    val rescored = EmaSpeechRescorer.rescore(
+                        decoded = assembled.hypotheses,
+                        context = speechContext,
+                        profile = profile,
+                        maxResults = 5
+                    )
+                    val text = rescored.primary.orEmpty()
+                    onProgress?.let { cb -> runCatching { cb(1f, text) } }
+                    return EmaSpeechResult(
+                        text = text,
+                        hypotheses = rescored.hypotheses,
+                        confidenceScores = rescored.confidenceScores,
+                        rawHypotheses = rescored.rawHypotheses,
+                        words = assembled.hypotheses.firstOrNull()?.words.orEmpty(),
+                        durationMs = meta.durationMs,
+                        offline = true,
+                        inputRoute = "offline file",
+                        wordsPerMinute = assembled.estimatedWpm,
+                        segmentCount = assembled.segmentCount,
+                        mimeType = meta.mimeType
+                    )
                 }
-                else -> EmaSpeechAudioProcessor.bytesToShorts(bytes, length)
             }
+        }
+
+        private fun encodingToBitsAndFloat(encoding: Int): Pair<Int, Boolean> {
+            if (encoding == AudioFormat.ENCODING_PCM_8BIT) return 8 to false
+            if (encoding == AudioFormat.ENCODING_PCM_FLOAT) return 32 to true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (encoding == AudioFormat.ENCODING_PCM_24BIT_PACKED) return 24 to false
+                if (encoding == AudioFormat.ENCODING_PCM_32BIT) return 32 to false
+            }
+            return 16 to false
+        }
     }
 }

@@ -3,6 +3,7 @@ package com.ema.assistant
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Pure-Kotlin parser, confidence calibrator, hallucination guard and
@@ -120,6 +121,16 @@ object EmaVoskJsonParser {
         return false
     }
 
+    /** Estimate speaking rate in words-per-minute from word timings when available. */
+    fun estimateWordsPerMinute(words: List<WordTiming>): Int {
+        if (words.size < 2) return 0
+        val start = words.first().startSec
+        val end = words.last().endSec
+        val spanSec = end - start
+        if (!spanSec.isFinite() || spanSec < 0.35f) return 0
+        return ((words.size / spanSec) * 60f).roundToInt().coerceIn(20, 400)
+    }
+
     private fun parseAlternatives(
         rawList: List<*>,
         observedWordConf: Map<String, Float>,
@@ -175,21 +186,17 @@ object EmaVoskJsonParser {
             FloatArray(candidates.size) { i ->
                 val alt = candidates[i]
                 val softmaxProb = (weights[i] / sum).toFloat()
-                // Softmax across 5 close phrasing variants ("youtube" vs "you tube")
-                // splits probability mass; lift relative to top mass when word conf is strong.
                 val wordConf = meanWordConfidence(alt.text, alt.words, observedWordConf)
+                val relativeToTop = (weights[i] / weights[0]).toFloat()
                 val blended = if (wordConf != null) {
-                    val relativeToTop = (weights[i] / weights[0]).toFloat()
-                    (0.55f * softmaxProb + 0.45f * (wordConf * (0.45f + 0.55f * relativeToTop)))
+                    0.55f * softmaxProb + 0.45f * (wordConf * (0.45f + 0.55f * relativeToTop))
                 } else {
-                    val relativeToTop = (weights[i] / weights[0]).toFloat()
-                    (0.60f * softmaxProb + 0.40f * (0.80f * relativeToTop))
+                    0.60f * softmaxProb + 0.40f * (0.80f * relativeToTop)
                 }
                 val unkPenalty = (alt.unkCount * 0.10f).coerceAtMost(0.35f)
                 (blended - unkPenalty).coerceIn(0.05f, 0.99f)
             }
         } else {
-            // Rank-decay fallback when no numeric score was present.
             FloatArray(candidates.size) { i ->
                 val base = (0.82f - i * 0.11f).coerceAtLeast(0.15f)
                 val unkPenalty = (candidates[i].unkCount * 0.10f).coerceAtMost(0.35f)
@@ -237,7 +244,6 @@ object EmaVoskJsonParser {
         if (knownFromWords.isNotEmpty()) {
             val mean = knownFromWords.sum() / knownFromWords.size
             val weakest = knownFromWords.min()
-            // Blend mean with the weakest word so one garbled word lowers confidence honestly.
             return (0.75f * mean + 0.25f * weakest).coerceIn(0.05f, 0.99f)
         }
         if (observedWordConf.isEmpty()) return null
@@ -266,21 +272,36 @@ object EmaVoskJsonParser {
 
 /**
  * Joins one or more intermediate Vosk segments (fired on brief breathing or
- * thinking pauses) into a single complete utterance with ranked N-best
- * alternatives and continuous live partial previews.
+ * thinking pauses, or across a multi-minute offline audio recording) into a
+ * single complete utterance with ranked N-best alternatives, pause-aware
+ * sentence/paragraph punctuation, boundary-echo deduplication and continuous
+ * live partial previews.
  */
 class EmaUtteranceAssembler(
-    private val maxAlternatives: Int = 6
+    private val maxAlternatives: Int = 6,
+    private val formatPausePunctuation: Boolean = false
 ) {
     data class Assembled(
         val hypotheses: List<EmaVoskJsonParser.Hypothesis>,
-        val segmentCount: Int
+        val segmentCount: Int,
+        val wordCount: Int = 0,
+        val estimatedWpm: Int = 0
     )
 
-    private val committedSegments = ArrayList<List<EmaVoskJsonParser.Hypothesis>>()
+    private data class SegmentEntry(
+        val hypotheses: List<EmaVoskJsonParser.Hypothesis>,
+        val pauseBeforeMs: Long
+    )
+
+    // For very long recordings (20 minutes = dozens of segments), older segments
+    // fold into frozenPrefix so memory and beam-merge latency remain strictly O(1).
+    private var frozenPrefix: EmaVoskJsonParser.Hypothesis? = null
+    private var frozenSegmentCount = 0
+    private val activeSegments = ArrayList<SegmentEntry>()
     private val currentSegmentWordConf = LinkedHashMap<String, Float>()
     private var livePartialText = ""
     private var livePartialConf = 0f
+    private var lastSegmentEndSec = -1f
 
     /** Feed a streaming partial JSON frame; returns the full utterance preview so far. */
     fun onPartial(partialJson: String): EmaVoskJsonParser.PartialDecode {
@@ -289,7 +310,6 @@ class EmaUtteranceAssembler(
             if (w.confidence in 0f..1f) {
                 val key = w.word.lowercase()
                 val prev = currentSegmentWordConf[key]
-                // Track latest MBR word confidence, gently smoothed if repeated.
                 currentSegmentWordConf[key] = if (prev == null) w.confidence else (0.4f * prev + 0.6f * w.confidence)
             }
         }
@@ -299,11 +319,12 @@ class EmaUtteranceAssembler(
         val combined = when {
             prefix.isEmpty() -> parsed.text
             parsed.text.isEmpty() -> prefix
-            else -> "$prefix ${parsed.text}"
+            else -> joinSegmentText(prefix, parsed.text, pauseMs = 0L, punctuate = false)
         }
         val conf = when {
             parsed.text.isNotEmpty() -> parsed.confidence
-            committedSegments.isNotEmpty() -> committedSegments.last().first().confidence
+            activeSegments.isNotEmpty() -> activeSegments.last().hypotheses.first().confidence
+            frozenPrefix != null -> frozenPrefix!!.confidence
             else -> 0f
         }
         return EmaVoskJsonParser.PartialDecode(combined, conf, parsed.words)
@@ -311,9 +332,9 @@ class EmaUtteranceAssembler(
 
     /**
      * Feed a finalized intermediate segment JSON (`acceptWaveForm == true`).
-     * Returns the full accumulated primary transcript so far.
+     * Returns both the newly committed segment hypotheses and the full preview.
      */
-    fun onSegment(resultJson: String): String {
+    fun onSegmentWithHypotheses(resultJson: String, explicitPauseMs: Long = 0L): List<EmaVoskJsonParser.Hypothesis> {
         val parsed = EmaVoskJsonParser.parseResult(
             json = resultJson,
             observedWordConf = currentSegmentWordConf,
@@ -322,9 +343,31 @@ class EmaUtteranceAssembler(
         currentSegmentWordConf.clear()
         livePartialText = ""
         livePartialConf = 0f
-        if (parsed.isNotEmpty()) {
-            committedSegments += parsed
+        if (parsed.isEmpty()) return emptyList()
+
+        val topWords = parsed.first().words
+        val inferredPauseMs = if (explicitPauseMs > 0L) {
+            explicitPauseMs
+        } else if (lastSegmentEndSec >= 0f && topWords.isNotEmpty() && topWords.first().startSec > lastSegmentEndSec) {
+            ((topWords.first().startSec - lastSegmentEndSec) * 1_000f).toLong()
+        } else {
+            0L
         }
+        if (topWords.isNotEmpty() && topWords.last().endSec > 0f) {
+            lastSegmentEndSec = topWords.last().endSec
+        }
+
+        activeSegments += SegmentEntry(parsed, inferredPauseMs)
+        compactOldSegmentsIfNeeded()
+        return parsed
+    }
+
+    /**
+     * Feed a finalized intermediate segment JSON (`acceptWaveForm == true`).
+     * Returns the full accumulated primary transcript so far.
+     */
+    fun onSegment(resultJson: String, explicitPauseMs: Long = 0L): String {
+        onSegmentWithHypotheses(resultJson, explicitPauseMs)
         return committedBestText()
     }
 
@@ -334,66 +377,101 @@ class EmaUtteranceAssembler(
         return when {
             prefix.isEmpty() -> livePartialText
             livePartialText.isEmpty() -> prefix
-            else -> "$prefix $livePartialText"
+            else -> joinSegmentText(prefix, livePartialText, pauseMs = 0L, punctuate = false)
         }
     }
 
     /** True once any non-blank word has been committed or seen in the current partial. */
-    fun hasAnyText(): Boolean = committedSegments.isNotEmpty() || livePartialText.isNotBlank()
+    fun hasAnyText(): Boolean =
+        frozenPrefix != null || activeSegments.isNotEmpty() || livePartialText.isNotBlank()
+
+    /** Total number of committed segments so far. */
+    fun committedSegmentCount(): Int = frozenSegmentCount + activeSegments.size
 
     /**
      * Commit the decoder's `finalResult` JSON and return beam-merged N-best
      * hypotheses across the entire utterance.
      */
-    fun finish(finalJson: String): Assembled {
+    fun finish(finalJson: String, explicitPauseMs: Long = 0L): Assembled {
         val tail = EmaVoskJsonParser.parseResult(
             json = finalJson,
             observedWordConf = currentSegmentWordConf,
             maxAlternatives = maxAlternatives
         )
-        val allSegments = ArrayList<List<EmaVoskJsonParser.Hypothesis>>(committedSegments.size + 1)
-        allSegments.addAll(committedSegments)
+        val entries = ArrayList<SegmentEntry>(activeSegments.size + 2)
+        frozenPrefix?.let { entries += SegmentEntry(listOf(it), 0L) }
+        entries.addAll(activeSegments)
+        val totalSegCount: Int
         if (tail.isNotEmpty()) {
-            allSegments += tail
+            val tailWords = tail.first().words
+            val pause = if (explicitPauseMs > 0L) {
+                explicitPauseMs
+            } else if (lastSegmentEndSec >= 0f && tailWords.isNotEmpty() && tailWords.first().startSec > lastSegmentEndSec) {
+                ((tailWords.first().startSec - lastSegmentEndSec) * 1_000f).toLong()
+            } else {
+                0L
+            }
+            entries += SegmentEntry(tail, pause)
+            totalSegCount = frozenSegmentCount + activeSegments.size + 1
         } else if (livePartialText.isNotBlank()) {
-            // Rare edge case: stopListening interrupted before final lattice flush;
-            // salvage the last stable partial rather than losing spoken words.
-            allSegments += listOf(
-                EmaVoskJsonParser.Hypothesis(
-                    text = livePartialText,
-                    confidence = max(0.35f, livePartialConf * 0.85f),
-                    rawScore = livePartialConf.toDouble()
-                )
+            entries += SegmentEntry(
+                listOf(
+                    EmaVoskJsonParser.Hypothesis(
+                        text = livePartialText,
+                        confidence = max(0.35f, livePartialConf * 0.85f),
+                        rawScore = livePartialConf.toDouble()
+                    )
+                ),
+                explicitPauseMs
             )
+            totalSegCount = frozenSegmentCount + activeSegments.size + 1
+        } else {
+            totalSegCount = frozenSegmentCount + activeSegments.size
         }
+
         currentSegmentWordConf.clear()
         livePartialText = ""
         livePartialConf = 0f
 
-        if (allSegments.isEmpty()) return Assembled(emptyList(), 0)
-        if (allSegments.size == 1) {
-            return Assembled(allSegments[0].take(maxAlternatives), 1)
+        if (entries.isEmpty()) return Assembled(emptyList(), 0, 0, 0)
+        if (entries.size == 1) {
+            val top = entries[0].hypotheses.take(maxAlternatives)
+            val primary = top.firstOrNull()
+            val wc = primary?.let { countWords(it.text) } ?: 0
+            val wpm = primary?.let { EmaVoskJsonParser.estimateWordsPerMinute(it.words) } ?: 0
+            return Assembled(top, max(1, totalSegCount), wc, wpm)
         }
 
-        // Beam-combine segments cleanly with length-weighted confidence.
         val beamLimit = max(maxAlternatives, 6)
-        var beam = allSegments[0].take(beamLimit)
-        for (segIdx in 1 until allSegments.size) {
-            val nextSeg = allSegments[segIdx].take(min(4, beamLimit))
+        var beam = entries[0].hypotheses.take(beamLimit)
+        for (segIdx in 1 until entries.size) {
+            val entry = entries[segIdx]
+            val nextSeg = entry.hypotheses.take(min(4, beamLimit))
             val merged = LinkedHashMap<String, EmaVoskJsonParser.Hypothesis>()
             for (prefix in beam) {
-                val pWords = max(1, prefix.text.count { it == ' ' } + 1)
+                val pWords = max(1, countWords(prefix.text))
                 for (suffix in nextSeg) {
-                    val sWords = max(1, suffix.text.count { it == ' ' } + 1)
-                    val joinedText = joinSegmentText(prefix.text, suffix.text)
+                    val sWords = max(1, countWords(suffix.text))
+                    val joinedText = joinSegmentText(
+                        left = prefix.text,
+                        right = suffix.text,
+                        pauseMs = entry.pauseBeforeMs,
+                        punctuate = formatPausePunctuation
+                    )
                     val totalWords = pWords + sWords
                     val weightedConf = ((prefix.confidence * pWords + suffix.confidence * sWords) / totalWords)
                         .coerceIn(0.05f, 0.99f)
+                    // Cap retained word-timing array on huge multi-minute transcripts.
+                    val mergedWords = if (prefix.words.size + suffix.words.size <= 600) {
+                        prefix.words + suffix.words
+                    } else {
+                        suffix.words
+                    }
                     val candidate = EmaVoskJsonParser.Hypothesis(
                         text = joinedText,
                         confidence = weightedConf,
                         rawScore = prefix.rawScore + suffix.rawScore,
-                        words = prefix.words + suffix.words,
+                        words = mergedWords,
                         unknownCount = prefix.unknownCount + suffix.unknownCount
                     )
                     val key = joinedText.lowercase()
@@ -410,30 +488,126 @@ class EmaUtteranceAssembler(
                 )
                 .take(beamLimit)
         }
-        return Assembled(beam.take(maxAlternatives), allSegments.size)
+
+        val top = beam.take(maxAlternatives)
+        val primary = top.firstOrNull()
+        val wc = primary?.let { countWords(it.text) } ?: 0
+        val wpm = primary?.let { EmaVoskJsonParser.estimateWordsPerMinute(it.words) } ?: 0
+        return Assembled(top, totalSegCount, wc, wpm)
     }
 
     fun reset() {
-        committedSegments.clear()
+        frozenPrefix = null
+        frozenSegmentCount = 0
+        activeSegments.clear()
         currentSegmentWordConf.clear()
         livePartialText = ""
         livePartialConf = 0f
+        lastSegmentEndSec = -1f
+    }
+
+    private fun compactOldSegmentsIfNeeded() {
+        while (activeSegments.size > MAX_ACTIVE_BEAM_SEGMENTS) {
+            val oldest = activeSegments.removeAt(0)
+            val best = oldest.hypotheses.first()
+            val cur = frozenPrefix
+            frozenPrefix = if (cur == null) {
+                best
+            } else {
+                val pWords = max(1, countWords(cur.text))
+                val sWords = max(1, countWords(best.text))
+                val joined = joinSegmentText(cur.text, best.text, oldest.pauseBeforeMs, formatPausePunctuation)
+                val conf = ((cur.confidence * pWords + best.confidence * sWords) / (pWords + sWords))
+                    .coerceIn(0.05f, 0.99f)
+                EmaVoskJsonParser.Hypothesis(
+                    text = joined,
+                    confidence = conf,
+                    rawScore = cur.rawScore + best.rawScore,
+                    words = emptyList(), // Reclaim per-word list on deeply archived prefix segments.
+                    unknownCount = cur.unknownCount + best.unknownCount
+                )
+            }
+            frozenSegmentCount++
+        }
     }
 
     private fun committedBestText(): String {
-        if (committedSegments.isEmpty()) return ""
-        var acc = committedSegments[0].first().text
-        for (i in 1 until committedSegments.size) {
-            acc = joinSegmentText(acc, committedSegments[i].first().text)
+        var acc = frozenPrefix?.text.orEmpty()
+        for (entry in activeSegments) {
+            val segText = entry.hypotheses.first().text
+            acc = if (acc.isEmpty()) {
+                segText
+            } else {
+                joinSegmentText(acc, segText, entry.pauseBeforeMs, formatPausePunctuation)
+            }
         }
         return acc
     }
 
-    private fun joinSegmentText(left: String, right: String): String {
-        val a = left.trim()
-        val b = right.trim()
-        if (a.isEmpty()) return b
-        if (b.isEmpty()) return a
-        return "$a $b"
+    companion object {
+        private const val MAX_ACTIVE_BEAM_SEGMENTS = 8
+        private const val SENTENCE_PAUSE_MS = 950L
+        private const val PARAGRAPH_PAUSE_MS = 2_400L
+
+        /** Words that naturally double across a pause ("no, no", "bye bye") and should not be deduplicated. */
+        private val ALLOWED_BOUNDARY_DOUBLES = setOf("no", "yes", "bye", "very", "so", "really", "wait")
+
+        /** Words ending a clause that show the speaker is continuing the same sentence across a pause. */
+        private val OPEN_CLAUSE_TAILS = setOf(
+            "and", "or", "but", "so", "because", "to", "for", "with", "on", "in",
+            "at", "from", "by", "of", "the", "a", "an", "my", "our", "your", "that", "which", "who"
+        )
+
+        internal fun joinSegmentText(
+            left: String,
+            right: String,
+            pauseMs: Long = 0L,
+            punctuate: Boolean = false
+        ): String {
+            val a = left.trim()
+            var b = right.trim()
+            if (a.isEmpty()) return b
+            if (b.isEmpty()) return a
+
+            // Strip accidental single-word boundary echo when pause was negligible ("open youtube" + "youtube and...").
+            if (pauseMs < 250L) {
+                val lastSpace = a.lastIndexOf(' ')
+                val lastWord = (if (lastSpace >= 0) a.substring(lastSpace + 1) else a)
+                    .trimEnd('.', ',', '!', '?', ';', ':').lowercase()
+                val firstSpace = b.indexOf(' ')
+                val firstWord = (if (firstSpace >= 0) b.substring(0, firstSpace) else b).lowercase()
+                if (lastWord.length >= 3 && lastWord == firstWord && lastWord !in ALLOWED_BOUNDARY_DOUBLES) {
+                    b = if (firstSpace >= 0) b.substring(firstSpace + 1).trimStart() else ""
+                    if (b.isEmpty()) return a
+                }
+            }
+
+            if (punctuate) {
+                val lastChar = a.last()
+                val alreadyPunctuated = lastChar == '.' || lastChar == '!' || lastChar == '?' || lastChar == '\n'
+                val tailWord = a.substringAfterLast(' ').lowercase()
+                if (pauseMs >= PARAGRAPH_PAUSE_MS && tailWord !in OPEN_CLAUSE_TAILS) {
+                    return if (alreadyPunctuated) "$a\n\n$b" else "$a.\n\n$b"
+                }
+                if (pauseMs >= SENTENCE_PAUSE_MS && !alreadyPunctuated && tailWord !in OPEN_CLAUSE_TAILS) {
+                    return "$a. $b"
+                }
+            }
+            return "$a $b"
+        }
+
+        private fun countWords(text: String): Int {
+            var count = 0
+            var inWord = false
+            for (ch in text) {
+                if (ch.isWhitespace()) {
+                    inWord = false
+                } else if (!inWord) {
+                    inWord = true
+                    count++
+                }
+            }
+            return count
+        }
     }
 }

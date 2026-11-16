@@ -4,18 +4,23 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Domain-aware contextual N-best hypothesis rescorer for EMA's speech
- * recognition stack.
+ * Domain-aware contextual and Minimum-Bayes-Risk (MBR/ROVER) N-best hypothesis
+ * rescorer for EMA's speech recognition stack.
  *
- * Acoustic models hear phonemes; EMA knows what lives on this phone and what a
- * valid request looks like. Given a ranked N-best list from [EmaVoskJsonParser]
- * (or from an Android platform recognizer), [EmaSpeechRescorer]:
- *  1. Normalizes each candidate through [EmaInverseTextNormalizer].
- *  2. Combines calibrated acoustic confidence with owner-taught shortcuts,
- *     owner aliases, learned links, installed app labels, contact names (in
- *     contact slots) and deterministic command/knowledge parseability.
- *  3. Returns deduplicated, ranked hypotheses with calibrated `[0.05, 0.99]`
- *     confidences.
+ * Acoustic models hear phonemes; EMA knows what lives on this phone, what is
+ * on screen, what the owner has taught it and what a well-formed request looks
+ * like. Given a ranked N-best list from [EmaVoskJsonParser] (or an Android
+ * platform recognizer), [EmaSpeechRescorer]:
+ *  1. Computes posterior-weighted word-level consensus across the N-best list
+ *     (ROVER/MBR smoothing so agreed-upon words outrank single-path flukes).
+ *  2. Normalizes each candidate through [EmaInverseTextNormalizer].
+ *  3. Injects verified owner-confirmed mishearing corrections when a lattice
+ *     candidate matches a known personal correction cleanly.
+ *  4. Scores each candidate against shortcuts, owner aliases, learned links,
+ *     installed app labels, contact slots, visible screen controls and
+ *     profile-specific command/confirmation/search/dictation validity.
+ *  5. Returns deduplicated, ranked hypotheses with calibrated `[0.05, 0.99]`
+ *     confidences and runner-up margin metadata.
  *
  * Pure Kotlin, zero Android runtime dependencies, fully unit tested.
  */
@@ -36,6 +41,16 @@ object EmaSpeechRescorer {
     ) {
         val primary: String? get() = hypotheses.firstOrNull()
         val primaryConfidence: Float get() = confidenceScores.firstOrNull() ?: 0f
+        val marginOverRunnerUp: Float
+            get() = if (ranked.size >= 2) {
+                (ranked[0].combinedScore - ranked[1].combinedScore).coerceAtLeast(0f)
+            } else if (ranked.size == 1) {
+                ranked[0].confidence
+            } else {
+                0f
+            }
+        val isHighConfidence: Boolean
+            get() = primaryConfidence >= 0.72f && (ranked.size == 1 || marginOverRunnerUp >= 0.08f)
     }
 
     // Small rank preference keeps the acoustic model's own #1 choice on exact ties.
@@ -44,13 +59,33 @@ object EmaSpeechRescorer {
     // Additive domain evidence weights (bounded so genuine speech always governs).
     private const val EXACT_SHORTCUT_BONUS = 0.60f
     private const val CONTAINED_SHORTCUT_BONUS = 0.30f
+    private const val LEARNED_REPLACEMENT_BONUS = 0.48f
     private const val LEARNED_PHRASE_BONUS = 0.32f
-    private const val OWNER_ALIAS_BONUS = 0.24f
+    private const val CONFIRMATION_REPLY_BONUS = 0.34f
     private const val INSTALLED_APP_BONUS = 0.28f
+    private const val SCREEN_LABEL_BONUS = 0.26f
+    private const val OWNER_ALIAS_BONUS = 0.24f
     private const val CONTACT_SLOT_BONUS = 0.22f
     private const val PARSEABLE_COMMAND_BONUS = 0.18f
     private const val PARSEABLE_KNOWLEDGE_BONUS = 0.18f
+    private const val MAX_MBR_CONSENSUS_BONUS = 0.08f
     private const val LEXICON_INTENT_BONUS = 0.07f
+
+    private val CONFIRMATION_EXACT_REPLIES = setOf(
+        "yes", "yeah", "yep", "sure", "okay", "ok", "confirm", "confirmed",
+        "yes please", "yes go ahead", "go ahead", "do it", "send it", "call",
+        "call now", "proceed", "continue", "that's right", "correct", "right",
+        "no", "nope", "cancel", "stop", "don't", "do not", "never mind",
+        "cancel it", "stop it", "abort", "not now", "wrong one",
+        "sim 1", "sim 2", "first", "second", "third",
+        "the first one", "the second one", "the third one",
+        "first one", "second one", "third one",
+        "option 1", "option 2", "option 3", "1", "2", "3"
+    )
+
+    private val CONFIRMATION_LEAD_WORDS = setOf(
+        "yes", "yeah", "sure", "confirm", "no", "cancel", "stop", "option", "sim", "use", "pick", "choose"
+    )
 
     /**
      * Normalize and rescore N-best decoder hypotheses for EMA's offline engine.
@@ -59,47 +94,97 @@ object EmaSpeechRescorer {
         decoded: List<EmaVoskJsonParser.Hypothesis>,
         context: EmaSpeechContext = EmaSpeechContext.EMPTY,
         profile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND,
-        maxResults: Int = 5
+        maxResults: Int = 5,
+        enableFormatting: Boolean = true,
+        maskOffensiveWords: Boolean = false
     ): RescoredResult {
         if (decoded.isEmpty()) {
             return RescoredResult(emptyList(), FloatArray(0), emptyList(), emptyList())
         }
 
         val prep = PreparedContext.from(context)
+        val wordPosteriors = computeWordConsensusPosteriors(decoded)
         val byNormalizedKey = LinkedHashMap<String, RankedHypothesis>()
         val rawDistinct = LinkedHashSet<String>()
+
+        fun considerCandidate(candidate: RankedHypothesis) {
+            val dedupKey = candidate.text.lowercase()
+            val prev = byNormalizedKey[dedupKey]
+            if (prev == null || candidate.combinedScore > prev.combinedScore) {
+                byNormalizedKey[dedupKey] = candidate
+            }
+        }
 
         decoded.forEachIndexed { rankIndex, hyp ->
             val rawClean = hyp.text.trim()
             if (rawClean.isEmpty()) return@forEachIndexed
             rawDistinct += rawClean
 
-            val normalized = EmaInverseTextNormalizer.normalize(rawClean, profile, context)
+            val normalized = EmaInverseTextNormalizer.normalize(
+                raw = rawClean,
+                profile = profile,
+                context = context,
+                enableFormatting = enableFormatting,
+                maskOffensiveWords = maskOffensiveWords
+            )
             if (normalized.isBlank()) return@forEachIndexed
 
-            val domainBonus = if (profile == EmaRecognitionProfile.DICTATION) {
-                dictationQualityAdjustment(normalized)
+            val consensusBonus = if (decoded.size >= 2) {
+                mbrConsensusBonus(rawClean, wordPosteriors)
             } else {
-                commandDomainScore(normalized, prep) + fluencyAdjustment(normalized, hyp.unknownCount)
+                0f
             }
 
+            val domainBonus = when (profile) {
+                EmaRecognitionProfile.DICTATION -> dictationQualityAdjustment(normalized, hyp.unknownCount)
+                EmaRecognitionProfile.WEB_SEARCH -> webSearchDomainScore(normalized, prep, hyp.unknownCount)
+                EmaRecognitionProfile.CONFIRMATION -> confirmationDomainScore(normalized, prep, hyp.unknownCount)
+                EmaRecognitionProfile.COMMAND -> commandDomainScore(normalized, prep) +
+                    fluencyAdjustment(normalized, hyp.unknownCount)
+            }
+
+            val totalBonus = domainBonus + consensusBonus
             val acoustic = hyp.confidence.coerceIn(0.05f, 0.99f)
             val rankPrior = -(rankIndex * RANK_DECAY).coerceAtMost(0.12f)
-            val combined = acoustic + rankPrior + domainBonus
-            val boostedConfidence = (acoustic + (domainBonus * 0.35f).coerceIn(-0.20f, 0.22f))
+            val combined = acoustic + rankPrior + totalBonus
+            val boostedConfidence = (acoustic + (totalBonus * 0.35f).coerceIn(-0.20f, 0.22f))
                 .coerceIn(0.05f, 0.99f)
 
-            val candidate = RankedHypothesis(
-                text = normalized,
-                rawText = rawClean,
-                confidence = boostedConfidence,
-                combinedScore = combined
+            considerCandidate(
+                RankedHypothesis(
+                    text = normalized,
+                    rawText = rawClean,
+                    confidence = boostedConfidence,
+                    combinedScore = combined
+                )
             )
 
-            val dedupKey = normalized.lowercase()
-            val prev = byNormalizedKey[dedupKey]
-            if (prev == null || candidate.combinedScore > prev.combinedScore) {
-                byNormalizedKey[dedupKey] = candidate
+            // Owner-verified personal speech correction ("open for me" -> "open Phormi"):
+            // applied only to whole-utterance commands, never inside dictation or message bodies.
+            if (profile == EmaRecognitionProfile.COMMAND && prep.learnedReplacements.isNotEmpty()) {
+                val matchedMeaning = prep.learnedReplacements[EmaAppResolver.normalize(rawClean)]
+                    ?: prep.learnedReplacements[EmaAppResolver.normalize(normalized)]
+                if (!matchedMeaning.isNullOrBlank()) {
+                    val personalized = if (maskOffensiveWords) {
+                        EmaInverseTextNormalizer.normalize(
+                            matchedMeaning, profile, EmaSpeechContext.EMPTY,
+                            enableFormatting = false, maskOffensiveWords = true
+                        )
+                    } else {
+                        matchedMeaning.trim()
+                    }
+                    if (personalized.isNotBlank() && !personalized.equals(normalized, ignoreCase = true)) {
+                        val personalConf = (acoustic + 0.18f).coerceIn(0.25f, 0.98f)
+                        considerCandidate(
+                            RankedHypothesis(
+                                text = personalized,
+                                rawText = rawClean,
+                                confidence = personalConf,
+                                combinedScore = acoustic + rankPrior + LEARNED_REPLACEMENT_BONUS + consensusBonus
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -124,7 +209,7 @@ object EmaSpeechRescorer {
 
         // Preserve distinct raw runner-ups when room remains so EmaLearning's
         // mishearing tracker can still inspect un-rewritten alternatives.
-        if (texts.size < limit) {
+        if (texts.size < limit && !maskOffensiveWords) {
             val seen = texts.mapTo(HashSet()) { it.lowercase() }
             for (raw in rawDistinct) {
                 if (texts.size >= limit) break
@@ -191,7 +276,6 @@ object EmaSpeechRescorer {
         val prep = PreparedContext.from(context)
         val hasAnyContext = prep.hasVocabulary
 
-        // Without context or meaningful acoustic differentiation, keep the recognizer's first choice.
         if (!hasAnyContext && (confidenceScores == null || confidenceScores.isEmpty())) {
             return cleaned[0]
         }
@@ -204,17 +288,16 @@ object EmaSpeechRescorer {
             val norm = EmaAppResolver.normalize(text)
             var bonus = 0f
 
-            // Owner shortcuts outrank partial container sentences (preserves shortcut biasing contract).
             when {
                 norm in prep.shortcuts -> bonus += EXACT_SHORTCUT_BONUS
                 prep.shortcuts.any { s -> containsWholePhrase(norm, s) } -> bonus += CONTAINED_SHORTCUT_BONUS
             }
-            if (norm in prep.learnedPhrases) bonus += LEARNED_PHRASE_BONUS
+            if (norm in prep.learnedPhrases || norm in prep.learnedReplacements) bonus += LEARNED_PHRASE_BONUS
             if (prep.ownerAliases.any { a -> containsWholePhrase(norm, a) }) bonus += OWNER_ALIAS_BONUS
             if (prep.installedApps.any { a -> containsWholePhrase(norm, a) }) bonus += INSTALLED_APP_BONUS
+            if (matchesScreenLabelInSlot(norm, prep.screenLabels)) bonus += SCREEN_LABEL_BONUS
             if (matchesContactInSlot(norm, prep.contacts)) bonus += CONTACT_SLOT_BONUS
 
-            // When choosing among close acoustic candidates, prefer wording EMA's deterministic grammar understands.
             if (idx == 0 || rawConf != null || hasAnyContext) {
                 bonus += understandabilityBonus(text) * 0.55f
             }
@@ -226,6 +309,43 @@ object EmaSpeechRescorer {
             }
         }
         return cleaned[bestIndex]
+    }
+
+    /**
+     * Posterior-weighted unigram agreement across the N-best list (bag-of-words
+     * Minimum Bayes Risk / ROVER consensus).
+     */
+    private fun computeWordConsensusPosteriors(
+        decoded: List<EmaVoskJsonParser.Hypothesis>
+    ): Map<String, Float> {
+        if (decoded.size < 2) return emptyMap()
+        val mass = HashMap<String, Float>()
+        var totalWeight = 0f
+        for (hyp in decoded) {
+            val w = hyp.confidence.coerceIn(0.05f, 0.99f)
+            totalWeight += w
+            val uniqueWords = hyp.text.lowercase().split(Regex("\\s+"))
+                .filter { it.length >= 2 }
+                .toSet()
+            for (tok in uniqueWords) {
+                mass[tok] = (mass[tok] ?: 0f) + w
+            }
+        }
+        if (totalWeight <= 0f) return emptyMap()
+        return mass.mapValues { (_, v) -> (v / totalWeight).coerceIn(0f, 1f) }
+    }
+
+    private fun mbrConsensusBonus(rawText: String, wordPosteriors: Map<String, Float>): Float {
+        if (wordPosteriors.isEmpty()) return 0f
+        val words = rawText.lowercase().split(Regex("\\s+")).filter { it.length >= 2 }
+        if (words.isEmpty()) return 0f
+        var sum = 0f
+        for (w in words) {
+            sum += wordPosteriors[w] ?: 0f
+        }
+        val avgAgreement = sum / words.size
+        // Centered around 0.5 so strong multi-path consensus adds up to +0.08f.
+        return ((avgAgreement - 0.35f) * 0.12f).coerceIn(0f, MAX_MBR_CONSENSUS_BONUS)
     }
 
     private fun commandDomainScore(text: String, prep: PreparedContext): Float {
@@ -240,9 +360,40 @@ object EmaSpeechRescorer {
         if (norm in prep.learnedPhrases) bonus += LEARNED_PHRASE_BONUS
         if (prep.ownerAliases.any { a -> containsWholePhrase(norm, a) }) bonus += OWNER_ALIAS_BONUS
         if (prep.installedApps.any { a -> containsWholePhrase(norm, a) }) bonus += INSTALLED_APP_BONUS
+        if (matchesScreenLabelInSlot(norm, prep.screenLabels)) bonus += SCREEN_LABEL_BONUS
         if (matchesContactInSlot(norm, prep.contacts)) bonus += CONTACT_SLOT_BONUS
 
         bonus += understandabilityBonus(text)
+        return bonus
+    }
+
+    private fun confirmationDomainScore(text: String, prep: PreparedContext, unknownCount: Int): Float {
+        val lower = text.trim().lowercase()
+        val norm = EmaAppResolver.normalize(text)
+        var bonus = fluencyAdjustment(text, unknownCount)
+        when {
+            lower in CONFIRMATION_EXACT_REPLIES || norm in CONFIRMATION_EXACT_REPLIES ->
+                bonus += CONFIRMATION_REPLY_BONUS
+            norm.split(' ').firstOrNull() in CONFIRMATION_LEAD_WORDS ->
+                bonus += CONFIRMATION_REPLY_BONUS * 0.65f
+            prep.contacts.any { c -> norm == c || containsWholePhrase(norm, c) } ->
+                bonus += CONTACT_SLOT_BONUS
+            prep.installedApps.any { a -> norm == a || containsWholePhrase(norm, a) } ->
+                bonus += INSTALLED_APP_BONUS
+            else ->
+                // Owner may also issue a fresh command instead of answering the question.
+                bonus += commandDomainScore(text, prep) * 0.8f
+        }
+        return bonus
+    }
+
+    private fun webSearchDomainScore(text: String, prep: PreparedContext, unknownCount: Int): Float {
+        val norm = EmaAppResolver.normalize(text)
+        var bonus = fluencyAdjustment(text, unknownCount)
+        if (prep.installedApps.any { a -> containsWholePhrase(norm, a) }) bonus += 0.12f
+        if (Regex("\\b[a-z0-9-]+\\.(?:com|org|net|edu|gov|io|ai|app|dev|ng)\\b").containsMatchIn(text.lowercase())) {
+            bonus += 0.14f
+        }
         return bonus
     }
 
@@ -251,26 +402,19 @@ object EmaSpeechRescorer {
         if (trimmed.isEmpty()) return 0f
         val lower = trimmed.lowercase()
 
-        // 1. Literal device commands & structured device settings ("turn on flashlight", "set brightness to 75%").
         if (runCatching { EmaSystemCommandVocabulary.recognises(lower) }.getOrDefault(false)) {
             return PARSEABLE_COMMAND_BONUS
         }
         if (runCatching { EmaSystemCommandVocabulary.parseDeviceSetting(trimmed) != null }.getOrDefault(false)) {
             return PARSEABLE_COMMAND_BONUS
         }
-
-        // 2. Deterministic offline calculations, conversions & date answers.
         if (runCatching { EmaKnowledge.answer(trimmed) != null }.getOrDefault(false)) {
             return PARSEABLE_KNOWLEDGE_BONUS
         }
-
-        // 3. Deterministic command grammar (alarms, timers, reminders, calls, messages, media, apps, search).
         val parsed = runCatching { EmaCommandGrammar.interpret(trimmed) }.getOrNull()
         if (parsed != null && isWellFormedCommand(parsed)) {
             return PARSEABLE_COMMAND_BONUS
         }
-
-        // 4. Recognized opening intent verb from the lexicon.
         val firstWord = EmaLexicon.stripLeadings(lower).split(' ').firstOrNull { it.isNotBlank() }
         if (firstWord != null && EmaLexicon.intentForVerb(firstWord) != null) {
             return LEXICON_INTENT_BONUS
@@ -278,7 +422,6 @@ object EmaSpeechRescorer {
         return 0f
     }
 
-    /** Ensure time-bearing commands actually carry a parseable time/duration before awarding full bonus. */
     private fun isWellFormedCommand(command: EmaCommand): Boolean = when (command) {
         is EmaCommand.SetAlarm -> EmaAlarmRequest.parse(command.timeText) != null ||
             EmaTimeParser.parse(command.timeText) != null
@@ -298,14 +441,11 @@ object EmaSpeechRescorer {
         if (tokens.isEmpty()) return -0.30f
         var adj = -(unknownCount * 0.06f).coerceAtMost(0.24f)
 
-        // Penalize adjacent stuttered identical words ("open open", "the the").
         for (i in 1 until tokens.size) {
             if (tokens[i].equals(tokens[i - 1], ignoreCase = true)) {
                 adj -= 0.08f
             }
         }
-        // Penalize stray single-character alphabetic tokens other than "I" and "a"
-        // (unless part of explicit spelling).
         if (!text.contains("package spelling", ignoreCase = true)) {
             val straySingles = tokens.count { tok ->
                 tok.length == 1 && tok[0].isLetter() && tok != "I" && !tok.equals("a", ignoreCase = true)
@@ -315,13 +455,21 @@ object EmaSpeechRescorer {
         return max(-0.30f, adj)
     }
 
-    private fun dictationQualityAdjustment(text: String): Float {
+    private fun dictationQualityAdjustment(text: String, unknownCount: Int): Float {
         val tokens = text.split(Regex("\\s+")).filter { it.isNotBlank() }
-        var adj = 0f
+        var adj = -(unknownCount * 0.05f).coerceAtMost(0.20f)
         for (i in 1 until tokens.size) {
             if (tokens[i].equals(tokens[i - 1], ignoreCase = true)) adj -= 0.07f
         }
         return adj
+    }
+
+    private fun matchesScreenLabelInSlot(normalizedUtterance: String, screenLabels: Set<String>): Boolean {
+        if (screenLabels.isEmpty()) return false
+        val isScreenAction = Regex("\\b(?:tap|click|press|select|choose|open)\\b")
+            .containsMatchIn(normalizedUtterance)
+        if (!isScreenAction) return false
+        return screenLabels.any { l -> l.length >= 3 && containsWholePhrase(normalizedUtterance, l) }
     }
 
     private fun matchesContactInSlot(normalizedUtterance: String, normalizedContacts: Set<String>): Boolean {
@@ -352,11 +500,15 @@ object EmaSpeechRescorer {
         val ownerAliases: Set<String>,
         val learnedPhrases: Set<String>,
         val installedApps: Set<String>,
-        val contacts: Set<String>
+        val contacts: Set<String>,
+        val learnedReplacements: Map<String, String>,
+        val screenLabels: Set<String>
     ) {
         val hasVocabulary: Boolean =
             shortcuts.isNotEmpty() || ownerAliases.isNotEmpty() ||
-                learnedPhrases.isNotEmpty() || installedApps.isNotEmpty() || contacts.isNotEmpty()
+                learnedPhrases.isNotEmpty() || installedApps.isNotEmpty() ||
+                contacts.isNotEmpty() || learnedReplacements.isNotEmpty() ||
+                screenLabels.isNotEmpty()
 
         companion object {
             fun from(context: EmaSpeechContext): PreparedContext {
@@ -369,12 +521,39 @@ object EmaSpeechRescorer {
                     }
                     return out
                 }
+                val replacements = if (context.learnedReplacements.isEmpty()) {
+                    emptyMap()
+                } else {
+                    val m = LinkedHashMap<String, String>(context.learnedReplacements.size)
+                    for ((k, v) in context.learnedReplacements) {
+                        val nk = EmaAppResolver.normalize(k)
+                        val tv = v.trim()
+                        if (nk.length >= 2 && tv.isNotEmpty()) m[nk] = tv
+                    }
+                    m
+                }
+                val contacts = if (context.contactNames.isEmpty()) {
+                    emptySet()
+                } else {
+                    val out = LinkedHashSet<String>(context.contactNames.size * 2)
+                    for (name in context.contactNames) {
+                        val full = EmaAppResolver.normalize(name)
+                        if (full.length >= 3) out += full
+                        // Include first/given name (>= 4 chars) so "call Tunde" gets slot reward
+                        // when contact is saved as "Tunde Okafor".
+                        val given = full.substringBefore(' ')
+                        if (given.length >= 4) out += given
+                    }
+                    out
+                }
                 return PreparedContext(
                     shortcuts = normSet(context.shortcuts, minLen = 2),
                     ownerAliases = normSet(context.ownerAliases, minLen = 2),
                     learnedPhrases = normSet(context.learnedPhrases, minLen = 2),
                     installedApps = normSet(context.installedApps, minLen = 2),
-                    contacts = normSet(context.contactNames, minLen = 3)
+                    contacts = contacts,
+                    learnedReplacements = replacements,
+                    screenLabels = normSet(context.screenLabels, minLen = 3)
                 )
             }
         }

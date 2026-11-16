@@ -96,9 +96,24 @@ class EmaRecognizerFallbackTest {
         assertTrue(EmaSpeechMode.supportsOfflineLanguage(null, defaultLanguageTag = "en-US"))
         assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-US"))
         assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-NG"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-GH"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-KE"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-ZA"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-IN"))
+        assertTrue(EmaSpeechMode.supportsOfflineLanguage("en-SG"))
         assertTrue(EmaSpeechMode.supportsOfflineLanguage("en_GB"))
+        assertTrue(EmaSpeechMode.SUPPORTED_OFFLINE_LOCALES.size >= 18)
+        assertEquals("en-NG", EmaSpeechMode.canonicalOfflineTag("en_ng"))
         assertFalse(EmaSpeechMode.supportsOfflineLanguage("fr-FR"))
         assertEquals(EmaRecognizerKind.EMA_OFFLINE, EmaRecognizerKind.fromStored("VOSK_OFFLINE"))
+        assertEquals(EmaRecognitionProfile.WEB_SEARCH, EmaRecognitionProfile.fromKey("web_search"))
+        assertEquals(EmaRecognitionProfile.CONFIRMATION, EmaRecognitionProfile.fromKey("confirmation"))
+        assertEquals(0f, EmaSpeechRecognition.normalizeRmsLevel(-2f), 0.01f)
+        assertEquals(1f, EmaSpeechRecognition.normalizeRmsLevel(12f), 0.01f)
+        assertEquals(
+            listOf("Sign In", "Continue"),
+            EmaSpeechRecognition.extractScreenLabels("Sign In · Continue · 12")
+        )
     }
 
     // --------------------------------------------------- legacy compatibility

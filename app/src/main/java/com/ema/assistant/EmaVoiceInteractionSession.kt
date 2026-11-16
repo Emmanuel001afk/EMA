@@ -544,6 +544,15 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
         }
 
         speechSession?.cancel()
+        var currentRoute = ""
+        var smoothedOrb = 0f
+        val resetOrb = {
+            smoothedOrb = 0f
+            if (::pulse.isInitialized) {
+                pulse.scaleX = 1f
+                pulse.scaleY = 1f
+            }
+        }
         val session = EmaSpeechRecognition.Session(context, object : EmaSpeechRecognition.SessionListener {
             override fun onPreparingOfflineModel() {
                 if (!sessionVisible) return
@@ -551,12 +560,31 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 setState("Preparing", "Loading EMA's offline speech engine…")
             }
 
+            override fun onInputRouteChanged(route: String) {
+                currentRoute = route
+            }
+
             override fun onReadyForSpeech(kind: EmaRecognizerKind) {
                 android.util.Log.i("EMA", "Speech session ready via $kind")
                 if (!sessionVisible) return
-                val badge = if (kind.isStrictlyOffline) "Speak now · Offline" else "Speak now"
-                setState("Listening", "I'm listening…")
+                val routeSuffix = if (currentRoute.isNotBlank() && currentRoute != "built-in mic") {
+                    " · $currentRoute"
+                } else {
+                    ""
+                }
+                val badge = (if (kind.isStrictlyOffline) "Speak now · Offline" else "Speak now") + routeSuffix
+                val prompt = if (commandRouter.hasPendingQuestion()) "Listening for your answer…" else "I'm listening…"
+                setState("Listening", prompt)
                 transcript.text = badge
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {
+                if (!sessionVisible || !::pulse.isInitialized) return
+                val level = EmaSpeechRecognition.normalizeRmsLevel(rmsdB)
+                smoothedOrb = if (level > smoothedOrb) 0.45f * smoothedOrb + 0.55f * level else 0.75f * smoothedOrb + 0.25f * level
+                val scale = 1f + 0.45f * smoothedOrb
+                pulse.scaleX = scale
+                pulse.scaleY = scale
             }
 
             override fun onBeginningOfSpeech(kind: EmaRecognizerKind) {
@@ -573,6 +601,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
             override fun onEndOfSpeech(kind: EmaRecognizerKind) {
                 android.util.Log.i("EMA", "Speech session end of speech ($kind)")
+                resetOrb()
                 if (sessionVisible) {
                     setState("Thinking", "Processing…")
                     scheduleSessionTimeout()
@@ -596,12 +625,19 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
                 kind: EmaRecognizerKind
             ) {
                 speechSession = null
+                resetOrb()
                 if (!sessionVisible) return
-                val request = wakeGate.accept(
-                    primary,
-                    prefs.getBoolean("require_wake_phrase", false),
-                    android.os.SystemClock.elapsedRealtime()
-                )
+                val pendingReply = commandRouter.hasPendingQuestion()
+                val request = if (pendingReply) {
+                    // Direct reply to EMA's own question never requires repeating "Hey EMA".
+                    primary
+                } else {
+                    wakeGate.accept(
+                        primary,
+                        prefs.getBoolean("require_wake_phrase", false),
+                        android.os.SystemClock.elapsedRealtime()
+                    )
+                }
                 when {
                     request == null -> {
                         setState("Waiting for Hey EMA", "Say Hey EMA, followed by your request.")
@@ -617,6 +653,7 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
 
             override fun onFailure(errorCode: Int, userMessage: String, lastKind: EmaRecognizerKind?) {
                 speechSession = null
+                resetOrb()
                 if (!sessionVisible) return
                 val terminal = errorCode == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
                     lastKind == null
@@ -630,9 +667,16 @@ class EmaVoiceInteractionSession(context: Context) : VoiceInteractionSession(con
             }
         })
         speechSession = session
+        val profile = if (commandRouter.hasPendingQuestion()) {
+            EmaRecognitionProfile.CONFIRMATION
+        } else {
+            EmaRecognitionProfile.COMMAND
+        }
+        val screenLabels = EmaSpeechRecognition.extractScreenLabels(screenText)
         session.start(
-            profile = EmaRecognitionProfile.COMMAND,
-            language = Locale.getDefault()
+            profile = profile,
+            language = Locale.getDefault(),
+            screenLabels = screenLabels
         )
     }
 

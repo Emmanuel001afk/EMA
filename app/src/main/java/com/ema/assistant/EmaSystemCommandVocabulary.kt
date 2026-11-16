@@ -68,7 +68,11 @@ object EmaSystemCommandVocabulary {
         "use system speech", "use system speech first", "use android speech",
         "disable offline speech", "turn off offline speech",
         "prepare offline speech", "warm up offline speech", "load offline speech",
-        "prepare speech engine"
+        "prepare speech engine",
+        "transcribe last recording", "transcribe latest recording",
+        "transcribe my last recording", "transcribe my latest recording",
+        "transcribe latest voice note", "transcribe last voice note",
+        "transcribe my last voice note"
     )
 
     /** Commands matched by their opening words, the rest being the argument. */

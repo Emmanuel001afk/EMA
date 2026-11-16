@@ -4,6 +4,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -16,9 +17,12 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Pure JVM tests for EMA's offline speech front-end: DC/rumble removal, AGC,
- * soft limiting, adaptive VAD, pre-roll retention, continuation-aware
- * endpointing, multi-rate resampling and bounded RIFF/WAVE decoding.
+ * Pure JVM tests for EMA's offline speech front-end: 75 Hz DC/rumble removal,
+ * exact-reconstruction 3-band adaptive Wiener noise suppression, AGC + C1 soft
+ * limiter, adaptive VAD, pre-roll retention, cadence/hesitation/continuation
+ * smart endpointing, segmented reset, AudioQuality diagnostics, streaming O(1)
+ * conditioning, Hann-windowed sinc anti-aliased resampling and universal WAV
+ * (PCM 8/16/24/32, IEEE float, G.711 A-law/μ-law) decoding.
  */
 class EmaSpeechAudioProcessorTest {
 
@@ -52,20 +56,44 @@ class EmaSpeechAudioProcessorTest {
     @Test
     fun highPassRejectsLargeDcOffsetWhilePreservingVoiceTone() {
         val processor = EmaSpeechAudioProcessor(
-            EmaSpeechAudioProcessor.Config(enableHighPass = true, enableAgc = false)
+            EmaSpeechAudioProcessor.Config(enableHighPass = true, enableNoiseSuppression = false, enableAgc = false)
         )
-        // Pure +9000 DC bias should decay to near zero after ~150 ms.
         val dc = ShortArray(16_000 / 2) { 9_000 }
         val filteredDc = EmaSpeechAudioProcessor.bytesToShorts(processor.conditionBatch(dc))
         val tailMean = (4_000 until filteredDc.size).map { abs(filteredDc[it].toInt()) }.average()
         assertTrue("DC bias must be suppressed (got $tailMean)", tailMean < 40.0)
 
-        // 800 Hz speech-band tone should pass nearly unattenuated.
         processor.reset()
         val voice = sineShorts(16_000, 800.0, 5_000.0, durationMs = 400, dcOffset = 6_000.0)
         val filteredVoice = EmaSpeechAudioProcessor.bytesToShorts(processor.conditionBatch(voice))
         val outRms = rms(filteredVoice, from = 2_000)
         assertTrue("Voice tone energy must be preserved (got $outRms)", outRms in 3_200.0..3_900.0)
+    }
+
+    @Test
+    fun wienerNoiseSuppressorAttenuatesStationaryHumWhilePreservingSpeech() {
+        val processor = EmaSpeechAudioProcessor(
+            EmaSpeechAudioProcessor.Config(
+                enableHighPass = true,
+                enableNoiseSuppression = true,
+                enableAgc = false
+            )
+        )
+        // 500 ms of stationary low-frequency 140 Hz room hum (non-speech).
+        val humChunk = sineShorts(16_000, 140.0, amplitude = 160.0, durationMs = 500)
+        val humOut = EmaSpeechAudioProcessor.bytesToShorts(processor.conditionStreamChunk(humChunk))
+        val inHumRms = rms(humChunk, from = 4_000)
+        val outHumRms = rms(humOut, from = 4_000)
+        assertTrue(
+            "Wiener denoiser should attenuate steady low-band hum ($inHumRms -> $outHumRms)",
+            outHumRms < inHumRms * 0.72
+        )
+
+        // Follow immediately with clean 900 Hz speech-band voice: formants pass unharmed.
+        val voiceChunk = sineShorts(16_000, 900.0, amplitude = 5_200.0, durationMs = 400)
+        val voiceOut = EmaSpeechAudioProcessor.bytesToShorts(processor.conditionStreamChunk(voiceChunk))
+        val outVoiceRms = rms(voiceOut, from = 1_500)
+        assertTrue("Voiced speech band must remain strong (got $outVoiceRms)", outVoiceRms > 3_100.0)
     }
 
     @Test
@@ -94,7 +122,6 @@ class EmaSpeechAudioProcessorTest {
                 noSpeechTimeoutMs = 2_000L
             )
         )
-        // 500 ms of quiet ambient hum -> never opens the gate.
         repeat(10) {
             val d = processor.process(silenceBytes(50, amplitude = 40))
             assertFalse(d.isVoiced)
@@ -103,7 +130,6 @@ class EmaSpeechAudioProcessorTest {
             assertEquals(EmaSpeechAudioProcessor.Action.WAIT_FOR_SPEECH, d.action)
         }
 
-        // Now deliver speech-band audio: onset fires and includes pre-roll frames.
         val speechFrame = EmaSpeechAudioProcessor.shortsToBytes(
             sineShorts(16_000, 620.0, amplitude = 4_500.0, durationMs = 50)
         )
@@ -117,15 +143,13 @@ class EmaSpeechAudioProcessorTest {
             }
         }
         assertTrue("Speech onset must be detected", started)
-        // Single 50 ms frame is 1600 bytes; pre-roll must include several prior frames too.
         assertTrue("Pre-roll must precede onset frame (bytes=$decodedBytesOnStart)", decodedBytesOnStart >= 6_400)
     }
 
     @Test
-    fun continuationAwareEndpointerHoldsLongerOnIncompleteClause() {
-        fun silenceUntilEndpoint(partialText: String): Long {
-            val p = EmaSpeechAudioProcessor(EmaSpeechAudioProcessor.Config.forProfile(EmaRecognitionProfile.COMMAND))
-            // Warm background then speak for 500 ms.
+    fun smartEndpointerAdaptsAcrossSnappyCompleteIncompleteAndHesitationClauses() {
+        fun silenceUntilEndpoint(partialText: String, profile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND): Long {
+            val p = EmaSpeechAudioProcessor(EmaSpeechAudioProcessor.Config.forProfile(profile))
             repeat(4) { p.process(silenceBytes(50)) }
             val speech = EmaSpeechAudioProcessor.shortsToBytes(
                 sineShorts(16_000, 500.0, amplitude = 5_000.0, durationMs = 50)
@@ -142,10 +166,15 @@ class EmaSpeechAudioProcessorTest {
             return elapsedSilenceMs
         }
 
-        val completeWait = silenceUntilEndpoint("turn on flashlight")
+        val snappyWait = silenceUntilEndpoint("stop")
+        val completeWait = silenceUntilEndpoint("turn on the flashlight in the bedroom")
         val incompleteWait = silenceUntilEndpoint("send a message to")
         val compoundWait = silenceUntilEndpoint("open whatsapp and")
+        val hesitationWait = silenceUntilEndpoint("set an alarm for um")
+        val confirmWait = silenceUntilEndpoint("yes", EmaRecognitionProfile.CONFIRMATION)
 
+        assertTrue("Snappy 1-word command ($snappyWait ms) finishes promptly", snappyWait <= completeWait)
+        assertTrue("Confirmation profile ($confirmWait ms) is faster than command ($completeWait ms)", confirmWait < completeWait)
         assertTrue(
             "Incomplete slot ($incompleteWait ms) must wait noticeably longer than complete command ($completeWait ms)",
             incompleteWait >= completeWait + 450L
@@ -155,13 +184,49 @@ class EmaSpeechAudioProcessorTest {
             compoundWait >= completeWait + 450L
         )
         assertTrue(
-            "isIncompleteClause flags open slots",
-            EmaSpeechAudioProcessor.isIncompleteClause("set an alarm for")
+            "Spoken hesitation ($hesitationWait ms) must hold even longer than complete command ($completeWait ms)",
+            hesitationWait >= completeWait + 600L
         )
-        assertFalse(
-            "isIncompleteClause accepts finished commands",
-            EmaSpeechAudioProcessor.isIncompleteClause("set an alarm for six thirty am")
+        assertTrue(EmaSpeechAudioProcessor.isIncompleteClause("set an alarm for"))
+        assertTrue(EmaSpeechAudioProcessor.isHesitationTail("call daniel uh"))
+        assertTrue(EmaSpeechAudioProcessor.isSnappyShortCommand("stop"))
+        assertFalse(EmaSpeechAudioProcessor.isIncompleteClause("set an alarm for six thirty am"))
+    }
+
+    @Test
+    fun qualityDiagnosticsAndSegmentedSessionResetBehaveAccurately() {
+        // 1. Dead/muted microphone detection.
+        val muted = EmaSpeechAudioProcessor(EmaSpeechAudioProcessor.Config(noSpeechTimeoutMs = 1_200L))
+        repeat(24) { muted.process(ByteArray(1_600)) }
+        val mutedQuality = muted.qualitySummary()
+        assertEquals(0, mutedQuality.peakAmplitude)
+        val muteHint = mutedQuality.diagnosticHint()
+        assertNotNull(muteHint)
+        assertTrue(muteHint!!.contains("silent", ignoreCase = true))
+
+        // 2. Heavy clipping detection.
+        val clipped = EmaSpeechAudioProcessor()
+        val fullScale = EmaSpeechAudioProcessor.shortsToBytes(
+            ShortArray(800) { i -> if (i % 2 == 0) 32_767 else -32_767 }
         )
+        repeat(8) { clipped.process(fullScale) }
+        val clipHint = clipped.qualitySummary().diagnosticHint()
+        assertNotNull(clipHint)
+        assertTrue(clipHint!!.contains("clipping", ignoreCase = true))
+
+        // 3. Segmented session reset allows back-to-back utterances while preserving noise adaptation.
+        val segmented = EmaSpeechAudioProcessor(EmaSpeechAudioProcessor.Config.forProfile(EmaRecognitionProfile.CONFIRMATION))
+        val voice = EmaSpeechAudioProcessor.shortsToBytes(sineShorts(16_000, 650.0, 5_000.0, durationMs = 50))
+        repeat(8) { segmented.process(voice) }
+        assertTrue(segmented.hasSpeechStarted)
+        segmented.resetForNextSegment()
+        assertFalse(segmented.hasSpeechStarted)
+        assertEquals(0L, segmented.voicedDurationMs)
+        var secondStarted = false
+        repeat(4) {
+            if (segmented.process(voice).speechJustStarted) secondStarted = true
+        }
+        assertTrue("Second segment must detect fresh speech onset cleanly", secondStarted)
     }
 
     @Test
@@ -178,23 +243,30 @@ class EmaSpeechAudioProcessorTest {
     }
 
     @Test
-    fun resamplerHandles48k44k18kAndStereoAccurately() {
-        // 48 kHz mono -> exact 3:1 decimation to 16 kHz.
+    fun sincResamplerPreservesPassbandAndRejectsUltrasonicAliasing() {
+        // 48 kHz mono 1 kHz voice -> flat passband.
         val s48 = sineShorts(48_000, 1_000.0, 8_000.0, durationMs = 200)
         val out48 = EmaSpeechAudioProcessor.resampleToMono16k(s48, 48_000, channels = 1)
         assertEquals(3_200, out48.size)
-        assertTrue("1 kHz energy preserved from 48 kHz", rms(out48, 200) > 4_800.0)
+        assertTrue("1 kHz energy preserved from 48 kHz", rms(out48, 200) > 5_200.0)
+
+        // 48 kHz ultrasonic 14.5 kHz interference -> killed by sinc anti-aliasing filter.
+        val ultra = sineShorts(48_000, 14_500.0, 10_000.0, durationMs = 200)
+        val ultraOut = EmaSpeechAudioProcessor.resampleToMono16k(ultra, 48_000, channels = 1)
+        val aliasRms = rms(ultraOut, 200)
+        assertTrue("Out-of-band 14.5 kHz must be strongly rejected (got $aliasRms)", aliasRms < 400.0)
 
         // 44.1 kHz mono -> ~3200 samples for 200 ms.
         val s44 = sineShorts(44_100, 750.0, 8_000.0, durationMs = 200)
         val out44 = EmaSpeechAudioProcessor.resampleToMono16k(s44, 44_100, channels = 1)
         assertTrue("Expected ~3200 samples, got ${out44.size}", out44.size in 3_195..3_205)
-        assertTrue("750 Hz energy preserved from 44.1 kHz", rms(out44, 200) > 4_800.0)
+        assertTrue("750 Hz energy preserved from 44.1 kHz", rms(out44, 200) > 5_200.0)
 
-        // 8 kHz mono -> 2x upsample to 16 kHz.
+        // 8 kHz telephony mono -> smooth cubic 2x upsample to 16 kHz.
         val s8 = sineShorts(8_000, 500.0, 8_000.0, durationMs = 200)
         val out8 = EmaSpeechAudioProcessor.resampleToMono16k(s8, 8_000, channels = 1)
         assertEquals(3_200, out8.size)
+        assertTrue("500 Hz preserved on cubic upsample", rms(out8, 100) > 5_000.0)
 
         // 16 kHz stereo -> averages left and right cleanly.
         val stereo = ShortArray(200) { i -> if (i % 2 == 0) 6_000 else 2_000 }
@@ -204,9 +276,9 @@ class EmaSpeechAudioProcessorTest {
     }
 
     @Test
-    fun wavDecoderParsesPcm16StereoAndFloatWithExtraChunks() {
+    fun wavDecoderParsesPcm16Pcm24FloatAndG711TelephonyFormats() {
+        // 1. Stereo 48 kHz PCM16 with odd-sized JUNK metadata chunk.
         val src = sineShorts(48_000, 600.0, 10_000.0, durationMs = 250)
-        // Build stereo 48 kHz PCM16 WAV with a JUNK metadata chunk before data.
         val stereoBytes = ByteArray(src.size * 4)
         val bb = ByteBuffer.wrap(stereoBytes).order(ByteOrder.LITTLE_ENDIAN)
         for (s in src) {
@@ -220,9 +292,9 @@ class EmaSpeechAudioProcessorTest {
         assertEquals(2, decoded.originalChannels)
         assertEquals(4_000, decoded.pcm16kMono.size)
         assertEquals(250L, decoded.durationMs)
-        assertTrue(rms(decoded.pcm16kMono, 200) > 5_500.0)
+        assertTrue(rms(decoded.pcm16kMono, 200) > 6_000.0)
 
-        // IEEE 32-bit float mono 16 kHz WAV.
+        // 2. IEEE 32-bit float mono 16 kHz WAV.
         val floatBytes = ByteBuffer.allocate(1_600 * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
             for (i in 0 until 1_600) putFloat((0.5 * sin(2.0 * PI * 440.0 * i / 16_000)).toFloat())
         }.array()
@@ -230,6 +302,34 @@ class EmaSpeechAudioProcessorTest {
         val floatDecoded = EmaSpeechAudioProcessor.decodeWav(ByteArrayInputStream(floatWav))
         assertEquals(1_600, floatDecoded.pcm16kMono.size)
         assertTrue(rms(floatDecoded.pcm16kMono, 100) > 10_000.0)
+
+        // 3. ITU-T G.711 μ-law (format 7) & A-law (format 6) 8 kHz telephony WAVs.
+        assertEquals(0, EmaSpeechAudioProcessor.ulawToPcm16(0xFF.toByte()).toInt())
+        assertTrue(EmaSpeechAudioProcessor.ulawToPcm16(0x80.toByte()) > 30_000)
+        assertTrue(abs(EmaSpeechAudioProcessor.alawToPcm16(0xD5.toByte()).toInt()) <= 16)
+        assertTrue(EmaSpeechAudioProcessor.alawToPcm16(0xAA.toByte()) > 30_000)
+
+        val ulawWav = buildWav(format = 7, channels = 1, sampleRate = 8_000, bitsPerSample = 8, data = ByteArray(800) { 0xFF.toByte() }, withJunk = false)
+        val ulawDecoded = EmaSpeechAudioProcessor.decodeWav(ulawWav)
+        assertEquals(1_600, ulawDecoded.pcm16kMono.size)
+        assertEquals(100L, ulawDecoded.durationMs)
+
+        val alawWav = buildWav(format = 6, channels = 1, sampleRate = 8_000, bitsPerSample = 8, data = ByteArray(800) { 0xD5.toByte() }, withJunk = false)
+        val alawDecoded = EmaSpeechAudioProcessor.decodeWav(alawWav)
+        assertEquals(1_600, alawDecoded.pcm16kMono.size)
+
+        // 4. Raw 24-bit signed PCM decoding & multi-format extension table.
+        val pcm24 = byteArrayOf(0x00, 0x20, 0x40, 0x00, 0xE0.toByte(), 0xBF.toByte())
+        val s24 = EmaSpeechAudioProcessor.decodeRawPcmToShorts(pcm24, pcm24.size, bitsPerSample = 24)
+        assertEquals(2, s24.size)
+        assertTrue(s24[0] > 16_000 && s24[1] < -16_000)
+
+        assertTrue(EmaOfflineAudioDecoder.isSupportedAudioFileName("meeting.m4a"))
+        assertTrue(EmaOfflineAudioDecoder.isSupportedAudioFileName("WhatsApp-Voice.OPUS"))
+        assertTrue(EmaOfflineAudioDecoder.isSupportedAudioFileName("lecture.mp3"))
+        assertTrue(EmaOfflineAudioDecoder.isSupportedAudioFileName("studio.flac"))
+        assertFalse(EmaOfflineAudioDecoder.isSupportedAudioFileName("invoice.pdf"))
+        assertFalse(EmaOfflineAudioDecoder.isSupportedAudioFileName("photo.png"))
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -273,7 +373,7 @@ class EmaSpeechAudioProcessorTest {
         i16(bitsPerSample)
         if (withJunk) {
             out.write("JUNK".toByteArray())
-            i32(9) // odd size to verify RIFF word-alignment pad skipping
+            i32(9)
             out.write(ByteArray(10))
         }
         out.write("data".toByteArray())

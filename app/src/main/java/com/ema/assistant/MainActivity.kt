@@ -33,9 +33,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var commandInput: EditText
     private lateinit var speakButton: Button
     private lateinit var dictateButton: Button
+    private lateinit var transcribeButton: Button
+    private lateinit var voiceLevelBar: android.widget.ProgressBar
     private var speechSession: EmaSpeechRecognition.Session? = null
     private var activeVoiceProfile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND
+    private var activeInputRoute: String = ""
+    private var smoothedVoiceLevel: Float = 0f
     private var dictationPrefix: String = ""
+    @Volatile private var cancelFileTranscription: Boolean = false
+    @Volatile private var fileTranscriptionRunning: Boolean = false
     private lateinit var router: EmaCommandRouter
     private lateinit var modeExplanation: TextView
     private lateinit var speechModeExplanation: TextView
@@ -161,7 +167,26 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             setOnClickListener { toggleVoiceCapture(EmaRecognitionProfile.DICTATION) }
         }
         actions.addView(dictateButton)
+        transcribeButton = Button(this).apply {
+            text = "Audio"
+            isAllCaps = false
+            contentDescription = "Transcribe an audio file or voice note offline"
+            setOnClickListener { toggleFileTranscriptionPicker() }
+        }
+        actions.addView(transcribeButton)
         root.addView(actions)
+
+        voiceLevelBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            visibility = View.GONE
+            contentDescription = "Live voice input level"
+            setPadding(dp(4), dp(4), dp(4), 0)
+        }
+        root.addView(voiceLevelBar, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
 
         // Setup and system notices (permissions, assistant role). Replies go to the conversation.
         status = TextView(this).apply {
@@ -386,6 +411,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             }
         })
+        root.addView(Button(this).apply {
+            text = "Transcribe audio file offline"
+            isAllCaps = false
+            setOnClickListener { toggleFileTranscriptionPicker() }
+        })
 
         root.addView(TextView(this).apply {
             text = "Assistant session timeout"
@@ -442,8 +472,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addView(home)
         })
         if (intent.getBooleanExtra("wake_capture", false)) {
-            commandInput.postDelayed({ listenOnce() }, 400)
+            commandInput.postDelayed({ listenOnce() }, 220)
             intent.removeExtra("wake_capture")
+        } else {
+            handleIncomingSharedAudio(intent)
         }
     }
 
@@ -840,6 +872,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent != null) {
+            setIntent(intent)
+            handleIncomingSharedAudio(intent)
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_ASSISTANT) {
@@ -849,13 +889,144 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 status.text = "The assistant role was not granted. Use the system assistant settings to select EMA."
                 openAssistantSettings()
             }
+        } else if (requestCode == REQUEST_TRANSCRIBE_AUDIO && resultCode == Activity.RESULT_OK) {
+            val uri = data?.data
+            if (uri != null) {
+                startOfflineUriTranscription(uri)
+            }
+        }
+    }
+
+    private fun toggleFileTranscriptionPicker() {
+        if (fileTranscriptionRunning) {
+            cancelFileTranscription = true
+            status.text = "Cancelling audio transcription…"
+            return
+        }
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+        }
+        runCatching {
+            startActivityForResult(picker, REQUEST_TRANSCRIBE_AUDIO)
+        }.onFailure {
+            status.text = "Could not open the audio file picker on this phone."
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handleIncomingSharedAudio(src: Intent?) {
+        if (src?.action != Intent.ACTION_SEND) return
+        val mime = src.type.orEmpty().lowercase(Locale.ROOT)
+        if (!mime.startsWith("audio/")) return
+        val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { src.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) }.getOrNull()
+        } else {
+            runCatching { src.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) }.getOrNull()
+        }
+        if (uri != null) {
+            // Clear action so configuration changes never re-trigger the same transcription.
+            src.action = Intent.ACTION_MAIN
+            startOfflineUriTranscription(uri)
+        }
+    }
+
+    private fun startOfflineUriTranscription(uri: Uri) {
+        if (fileTranscriptionRunning) {
+            status.text = "Already transcribing an audio recording — tap Stop to cancel it first."
+            return
+        }
+        val availability = EmaOfflineSpeechModel.checkAvailability(this, ignoreLanguage = true)
+        if (!availability.available) {
+            status.text = availability.reason
+            return
+        }
+        speechSession?.cancel()
+        speechSession = null
+        resetVoiceButtons()
+        runCatching { tts.stop() }
+
+        fileTranscriptionRunning = true
+        cancelFileTranscription = false
+        if (::transcribeButton.isInitialized) transcribeButton.text = "Stop"
+        if (::voiceLevelBar.isInitialized) {
+            voiceLevelBar.progress = 2
+            voiceLevelBar.visibility = View.VISIBLE
+        }
+        conversation.addUser("Transcribe selected audio recording offline")
+        conversation.setState(EmaConversationView.State.WORKING, "offline transcription")
+        status.text = "Decoding and transcribing audio offline on this phone…"
+
+        Thread({
+            val outcome = runCatching {
+                EmaOfflineSpeechEngine.transcribeUri(
+                    context = applicationContext,
+                    uri = uri,
+                    profile = EmaRecognitionProfile.DICTATION,
+                    isCancelled = { cancelFileTranscription },
+                    onProgress = { progress, preview ->
+                        val pct = (progress * 100f).toInt().coerceIn(1, 99)
+                        runOnUiThread {
+                            if (!fileTranscriptionRunning) return@runOnUiThread
+                            if (::voiceLevelBar.isInitialized) voiceLevelBar.progress = pct
+                            conversation.setState(EmaConversationView.State.WORKING, "$pct% offline")
+                            if (preview.isNotBlank()) {
+                                val tail = if (preview.length > 96) "…" + preview.takeLast(96) else preview
+                                status.text = "Transcribing ($pct%): “$tail”"
+                            }
+                        }
+                    }
+                )
+            }
+            val wasCancelled = cancelFileTranscription
+            runOnUiThread {
+                fileTranscriptionRunning = false
+                cancelFileTranscription = false
+                if (::transcribeButton.isInitialized) transcribeButton.text = "Audio"
+                hideVoiceMeter()
+                if (wasCancelled) {
+                    conversation.setState(EmaConversationView.State.READY)
+                    status.text = "Audio transcription cancelled."
+                    return@runOnUiThread
+                }
+                outcome.onSuccess { result ->
+                    if (result.text.isBlank()) {
+                        conversation.addAssistant(
+                            "I decoded that audio recording offline, but didn't detect any spoken words in it.",
+                            EmaOutcomeStatus.FAILED
+                        )
+                        status.text = "No spoken words detected in recording."
+                    } else {
+                        val clipboard = getSystemService(CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        clipboard?.setPrimaryClip(
+                            android.content.ClipData.newPlainText("EMA Offline Transcript", result.text)
+                        )
+                        val secs = (result.durationMs / 1000L).coerceAtLeast(1L)
+                        val header = "Offline transcript (${secs}s · copied to clipboard):\n\n"
+                        conversation.addAssistant(header + result.text, EmaOutcomeStatus.SUCCESS)
+                        status.text = "Transcribed offline and copied to clipboard."
+                    }
+                }.onFailure { err ->
+                    val detail = err.message ?: "unsupported audio format"
+                    conversation.addAssistant(
+                        "I couldn't transcribe that audio offline: $detail.",
+                        EmaOutcomeStatus.FAILED
+                    )
+                    status.text = "Transcription failed: $detail"
+                }
+            }
+        }, "ema-uri-transcribe").apply {
+            isDaemon = true
+            start()
         }
     }
 
     private fun toggleVoiceCapture(profile: EmaRecognitionProfile) {
         val current = speechSession
         if (current != null && current.isListening) {
-            if (activeVoiceProfile == profile) {
+            val sameButton = (profile == EmaRecognitionProfile.DICTATION && activeVoiceProfile == EmaRecognitionProfile.DICTATION) ||
+                (profile != EmaRecognitionProfile.DICTATION && activeVoiceProfile != EmaRecognitionProfile.DICTATION)
+            if (sameButton) {
                 // Flush everything spoken so far rather than throwing it away.
                 status.text = "Finishing what you said…"
                 current.stopListening()
@@ -864,8 +1035,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             current.cancel()
             speechSession = null
             resetVoiceButtons()
+            hideVoiceMeter()
         }
-        listenOnce(profile)
+        val effectiveProfile = if (profile == EmaRecognitionProfile.COMMAND && router.hasPendingQuestion()) {
+            EmaRecognitionProfile.CONFIRMATION
+        } else {
+            profile
+        }
+        listenOnce(effectiveProfile)
     }
 
     private fun listenOnce(profile: EmaRecognitionProfile = EmaRecognitionProfile.COMMAND) {
@@ -884,6 +1061,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         speechSession?.cancel()
 
         activeVoiceProfile = profile
+        activeInputRoute = ""
+        smoothedVoiceLevel = 0f
         dictationPrefix = if (profile == EmaRecognitionProfile.DICTATION) {
             commandInput.text.toString().trim()
         } else {
@@ -897,14 +1076,41 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 status.text = "Preparing EMA's built-in offline speech engine…"
             }
 
+            override fun onInputRouteChanged(route: String) {
+                activeInputRoute = route
+            }
+
             override fun onReadyForSpeech(kind: EmaRecognizerKind) {
-                conversation.setState(EmaConversationView.State.LISTENING)
-                val tag = if (kind.isStrictlyOffline) "offline" else kind.shortLabel
-                status.text = if (profile == EmaRecognitionProfile.DICTATION) {
-                    "Dictating ($tag) — speak naturally, tap Done when finished."
+                val routeNote = if (activeInputRoute.isNotBlank() && activeInputRoute != "built-in mic") {
+                    " · $activeInputRoute"
                 } else {
-                    "Listening ($tag)…"
+                    ""
                 }
+                val tag = (if (kind.isStrictlyOffline) "offline" else kind.shortLabel) + routeNote
+                conversation.setState(EmaConversationView.State.LISTENING, tag)
+                if (::voiceLevelBar.isInitialized) {
+                    voiceLevelBar.progress = 4
+                    voiceLevelBar.visibility = View.VISIBLE
+                }
+                status.text = when (profile) {
+                    EmaRecognitionProfile.DICTATION ->
+                        "Dictating ($tag) — speak punctuation or 'scratch that'; tap Done when finished."
+                    EmaRecognitionProfile.CONFIRMATION ->
+                        "Listening for your answer ($tag)…"
+                    else ->
+                        "Listening ($tag)…"
+                }
+            }
+
+            override fun onRmsChanged(rmsdB: Float) {
+                if (!::voiceLevelBar.isInitialized || voiceLevelBar.visibility != View.VISIBLE) return
+                val level = EmaSpeechRecognition.normalizeRmsLevel(rmsdB)
+                smoothedVoiceLevel = if (level > smoothedVoiceLevel) {
+                    0.45f * smoothedVoiceLevel + 0.55f * level
+                } else {
+                    0.75f * smoothedVoiceLevel + 0.25f * level
+                }
+                voiceLevelBar.progress = (smoothedVoiceLevel * 100f).toInt().coerceIn(3, 100)
             }
 
             override fun onBeginningOfSpeech(kind: EmaRecognizerKind) {
@@ -923,6 +1129,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
 
             override fun onEndOfSpeech(kind: EmaRecognizerKind) {
+                hideVoiceMeter()
                 conversation.setState(EmaConversationView.State.UNDERSTANDING)
                 status.text = "Processing…"
             }
@@ -943,6 +1150,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             ) {
                 speechSession = null
                 resetVoiceButtons()
+                hideVoiceMeter()
                 EmaWakeWordService.resumeAfterSession()
                 if (profile == EmaRecognitionProfile.DICTATION) {
                     val combined = combineDictation(dictationPrefix, primary)
@@ -963,6 +1171,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             override fun onFailure(errorCode: Int, userMessage: String, lastKind: EmaRecognizerKind?) {
                 speechSession = null
                 resetVoiceButtons()
+                hideVoiceMeter()
                 conversation.setState(EmaConversationView.State.READY)
                 status.text = userMessage
                 EmaWakeWordService.resumeAfterSession()
@@ -979,13 +1188,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val clean = spoken.trim()
         if (prefix.isBlank()) return clean
         if (clean.isBlank()) return prefix
-        val needsSpace = !prefix.endsWith(" ") && !clean.first().let { it in ",.;:!?" }
+        val needsSpace = !prefix.endsWith(" ") && !prefix.endsWith("\n") && !clean.first().let { it in ",.;:!?" }
         return if (needsSpace) "$prefix $clean" else "$prefix$clean"
     }
 
     private fun updateVoiceButtonsListening(profile: EmaRecognitionProfile) {
+        val isSpeak = profile != EmaRecognitionProfile.DICTATION
         if (::speakButton.isInitialized) {
-            speakButton.text = if (profile == EmaRecognitionProfile.COMMAND) "Done" else "Speak"
+            speakButton.text = if (isSpeak) "Done" else "Speak"
         }
         if (::dictateButton.isInitialized) {
             dictateButton.text = if (profile == EmaRecognitionProfile.DICTATION) "Done" else "Dictate"
@@ -995,6 +1205,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun resetVoiceButtons() {
         if (::speakButton.isInitialized) speakButton.text = "Speak"
         if (::dictateButton.isInitialized) dictateButton.text = "Dictate"
+    }
+
+    private fun hideVoiceMeter() {
+        smoothedVoiceLevel = 0f
+        if (::voiceLevelBar.isInitialized) {
+            voiceLevelBar.progress = 0
+            voiceLevelBar.visibility = View.GONE
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -1029,6 +1247,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
+        cancelFileTranscription = true
+        fileTranscriptionRunning = false
         speechSession?.cancel()
         speechSession = null
         wakeUiHandler.removeCallbacksAndMessages(null)
@@ -1044,5 +1264,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         private const val REQUEST_CORE_PERMISSIONS = 12
         private const val REQUEST_NOTIFICATIONS = 11
         private const val REQUEST_ASSISTANT = 20
+        private const val REQUEST_TRANSCRIBE_AUDIO = 25
     }
 }
