@@ -1,0 +1,120 @@
+package com.ema.assistant
+
+import android.content.ClipboardManager
+import android.content.Context
+import java.util.Locale
+
+/** Android adapter; reasoning engines remain pure Kotlin and never invoke AI. */
+class EmaProductivityEngine(private val context: Context) {
+    fun briefing(): String {
+        val now = java.time.ZonedDateTime.now()
+        val workspace = EmaPersonalWorkspaceStore.load(context)
+        val todos = workspace.openTodoItems()
+        val reminders = EmaReminderScheduler.pending(context).map { it.text }
+        val notifications = if (EmaNotificationListenerService.isConnected())
+            EmaNotificationDigest.summarize(EmaNotificationListenerService.digestItems(), brief = true)
+        else "Notifications unavailable: EMA notification access is not connected"
+        return EmaNamedRoutines.composeBriefing(EmaNamedRoutines.BriefingInput(
+            hourOfDay = now.hour,
+            formattedTime = now.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")),
+            formattedDate = now.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM")),
+            upcomingReminders = reminders, openTodoCount = todos.first, topTodoItems = todos.second,
+            notificationSummary = notifications, parkingSpot = workspace.parking?.location
+        ))
+    }
+
+    fun answer(command: String): String? {
+        val lower = command.trim().trimEnd('.', '?', '!').lowercase(Locale.ROOT)
+        val snapshot = EmaDialogueState.snapshot()
+        EmaWorkspace.parse(command, snapshot.activeList?.name)?.let { op ->
+            // Destructive bulk operations require a second, explicit utterance.
+            if (op is EmaWorkspace.Op.ClearNotes || op is EmaWorkspace.Op.ClearList) {
+                return "For safety, bulk deletion by voice is not enabled. Remove individual items or notes instead."
+            }
+            val before = EmaPersonalWorkspaceStore.load(context)
+            val result = before.apply(op)
+            if (result.changed) {
+                if (!EmaPersonalWorkspaceStore.save(context, result.workspace)) {
+                    return "I couldn't save that change. Your workspace has not been confirmed as updated."
+                }
+                EmaDialogueState.pushUndo(EmaDialogueState.UndoEntry.WorkspaceSnapshot(
+                    before, result.undoSummary ?: "restored your workspace", System.currentTimeMillis()))
+            }
+            result.activeListName?.let { EmaDialogueState.recordActiveList(it) }
+            return result.reply
+        }
+        when (lower) {
+            "undo", "undo that" -> {
+                val entry = EmaDialogueState.popUndo()
+                    ?: return "There is no recent reversible workspace change to undo."
+                if (entry !is EmaDialogueState.UndoEntry.WorkspaceSnapshot) {
+                    return "That action cannot be undone here."
+                }
+                return if (EmaPersonalWorkspaceStore.save(context, entry.previous)) "Undone: ${entry.summary}."
+                else {
+                    EmaDialogueState.pushUndo(entry)
+                    "I couldn't save the undo. Please try again."
+                }
+            }
+            "start stopwatch", "start the stopwatch", "resume stopwatch" -> return EmaDialogueState.stopwatchStart()
+            "stop stopwatch", "pause stopwatch" -> return EmaDialogueState.stopwatchPauseOrStop()
+            "reset stopwatch" -> return EmaDialogueState.stopwatchReset()
+            "lap", "stopwatch lap" -> return EmaDialogueState.stopwatchLap()
+            "stopwatch", "stopwatch status" -> return EmaDialogueState.stopwatchStatus()
+            "repeat that", "repeat your answer" -> return snapshot.lastReply?.text ?: "There is no recent reply to repeat."
+            "summarize notifications", "notification digest", "priority notifications" -> {
+                if (!EmaNotificationListenerService.isConnected()) return "Enable EMA notification access in Android Settings first."
+                return EmaNotificationDigest.summarize(EmaNotificationListenerService.digestItems(), lower == "priority notifications")
+            }
+        }
+        EmaWritingTools.parseCommand(command)?.let { writing ->
+            fun target(target: EmaWritingTools.Target): String = when (target) {
+                EmaWritingTools.Target.SCREEN -> EmaAccessibilityService.currentScreenText()
+                EmaWritingTools.Target.CLIPBOARD -> context.getSystemService(ClipboardManager::class.java)
+                    ?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                EmaWritingTools.Target.LAST_DOCUMENT -> snapshot.document?.text.orEmpty()
+            }
+            var source = ""
+            val answer = when (writing) {
+                is EmaWritingTools.Command.TransformInline -> {
+                    source = writing.text
+                    EmaWritingTools.rewrite(source, writing.tone).let { it.transformed.ifBlank { it.summary } }
+                }
+                is EmaWritingTools.Command.TransformTarget -> {
+                    source = target(writing.target)
+                    EmaWritingTools.rewrite(source, writing.tone).let { it.transformed.ifBlank { it.summary } }
+                }
+                is EmaWritingTools.Command.StatsInline -> {
+                    source = writing.text
+                    EmaWritingTools.analyze(source).describe()
+                }
+                is EmaWritingTools.Command.StatsTarget -> {
+                    source = target(writing.target)
+                    EmaWritingTools.analyze(source).describe()
+                }
+                is EmaWritingTools.Command.Draft -> return EmaWritingTools.draft(writing.request)?.let {
+                    "Draft only — not sent:\n${it.transformed}"
+                }
+            }
+            if (source.isBlank()) return "There is no readable source text. Read a screen first or provide text after a colon."
+            EmaDialogueState.recordDocument("writing source", source)
+            return answer
+        }
+        val summary = lower in setOf("summarize this screen", "summarize screen", "summarize this page", "summarize it", "summarize that")
+        val entities = lower in setOf("extract entities from this screen", "find details on this screen")
+        val question = Regex("(?i)^ask (?:about )?(?:this |the )?screen:\\s*(.+)$").matchEntire(command.trim())
+        val documentQuestion = Regex("(?i)^ask (?:about )?(?:the )?document:\\s*(.+)$").matchEntire(command.trim())
+        if (summary || entities || question != null || documentQuestion != null) {
+            val usePrevious = lower in setOf("summarize it", "summarize that") || documentQuestion != null
+            val source = if (usePrevious) snapshot.document?.text.orEmpty() else EmaAccessibilityService.currentScreenText()
+            if (source.isBlank()) return "There is no readable source text. For screen questions, enable EMA Accessibility access first."
+            EmaDialogueState.recordDocument(if (usePrevious) "document" else "screen", source)
+            return when {
+                summary -> EmaScreenIntelligence.summarize(source).ifBlank { "No substantive text was found." }
+                entities -> EmaScreenIntelligence.formatEntitiesSummary(EmaScreenIntelligence.extractEntities(source))
+                else -> EmaScreenIntelligence.answerAboutText((question ?: documentQuestion)!!.groupValues[1], source).text
+            }
+        }
+        return null
+    }
+}
