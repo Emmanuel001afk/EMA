@@ -85,7 +85,7 @@ object EmaSpeechRecognition {
      * are never attached to an external recognizer intent.
      */
     fun userVocabulary(context: Context): List<String> {
-        val apps = runCatching { EmaAppActionEngine.installedAppLabels(context) }.getOrDefault(emptyList())
+        val apps = runCatching { EmaAppActionEngine(context).installedAppLabels() }.getOrDefault(emptyList())
         val shortcuts = runCatching { EmaMemoryStore.load(context).shortcuts.keys }.getOrDefault(emptySet())
         return (shortcuts + apps)
             .map { it.trim() }
@@ -98,7 +98,7 @@ object EmaSpeechRecognition {
      * phonetic grounding. Kept in process memory only; never exported.
      */
     fun speechContext(context: Context, includeContacts: Boolean = true): EmaSpeechContext {
-        val apps = runCatching { EmaAppActionEngine.installedAppLabels(context) }.getOrDefault(emptyList())
+        val apps = runCatching { EmaAppActionEngine(context).installedAppLabels() }.getOrDefault(emptyList())
         val memory = runCatching { EmaMemoryStore.load(context) }.getOrNull()
         val shortcuts = memory?.shortcuts?.keys?.toList().orEmpty()
         val aliases = memory?.aliases?.keys?.toList().orEmpty()

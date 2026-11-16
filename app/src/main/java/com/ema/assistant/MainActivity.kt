@@ -893,7 +893,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         val session = EmaSpeechRecognition.Session(this, object : EmaSpeechRecognition.SessionListener {
             override fun onPreparingOfflineModel() {
-                conversation.setState(EmaConversationView.State.THINKING)
+                conversation.setState(EmaConversationView.State.WORKING)
                 status.text = "Preparing EMA's built-in offline speech engine…"
             }
 
@@ -923,7 +923,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
 
             override fun onEndOfSpeech(kind: EmaRecognizerKind) {
-                conversation.setState(EmaConversationView.State.THINKING)
+                conversation.setState(EmaConversationView.State.UNDERSTANDING)
                 status.text = "Processing…"
             }
 
