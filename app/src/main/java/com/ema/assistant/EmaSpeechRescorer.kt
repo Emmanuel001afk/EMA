@@ -66,10 +66,10 @@ object EmaSpeechRescorer {
     private const val SCREEN_LABEL_BONUS = 0.26f
     private const val OWNER_ALIAS_BONUS = 0.24f
     private const val CONTACT_SLOT_BONUS = 0.22f
-    private const val PARSEABLE_COMMAND_BONUS = 0.18f
-    private const val PARSEABLE_KNOWLEDGE_BONUS = 0.18f
+    private const val PARSEABLE_COMMAND_BONUS = 0.22f
+    private const val PARSEABLE_KNOWLEDGE_BONUS = 0.20f
     private const val MAX_MBR_CONSENSUS_BONUS = 0.08f
-    private const val LEXICON_INTENT_BONUS = 0.07f
+    private const val LEXICON_INTENT_BONUS = 0.06f
 
     private val CONFIRMATION_EXACT_REPLIES = setOf(
         "yes", "yeah", "yep", "sure", "okay", "ok", "confirm", "confirmed",

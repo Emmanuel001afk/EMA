@@ -181,7 +181,7 @@ class EmaInverseTextNormalizerTest {
             EmaInverseTextNormalizer.normalize("seem two", EmaRecognitionProfile.CONFIRMATION, context)
         )
         assertEquals(
-            "GitHub offline speech android",
+            "GitHub offline speech Android",
             EmaInverseTextNormalizer.normalize("github offline speech android", EmaRecognitionProfile.WEB_SEARCH, context)
         )
 
