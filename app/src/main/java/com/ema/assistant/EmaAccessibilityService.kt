@@ -150,14 +150,14 @@ class EmaAccessibilityService : AccessibilityService() {
         fun sendVerified(packageName: String, recipient: String, body: String): Boolean {
             val service = instance ?: return false
             if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
-            val screen = service.screenModelInternal(500, packageName).snapshot
+            val screen = service.screenModelInternal(1200, packageName).snapshot
             if (!EmaActionEvidence.maySend(screen, packageName, recipient, body)) return false
             return service.trySnapshotSend(packageName)
         }
 
         fun selectContactInTarget(packageName: String, name: String): Boolean {
             val service = instance ?: return false
-            val model = service.screenModelInternal(500, packageName)
+            val model = service.screenModelInternal(1200, packageName)
             val matches = model.snapshot.nodes.filter {
                 it.visible && it.enabled && !it.editable && it.actionable &&
                     (EmaNodeSnapshot.normalize(it.text) == EmaNodeSnapshot.normalize(name) ||
@@ -170,7 +170,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun selectMediaResult(packageName: String, query: String): Boolean {
             val service = instance ?: return false
-            val model = service.screenModelInternal(500, packageName)
+            val model = service.screenModelInternal(1200, packageName)
             // A query echoed in a search box or toolbar isn't a result. Rows
             // combine title and artist child labels under their click target.
             val result = EmaResultExtractor.extract(model.snapshot, query)
@@ -190,7 +190,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
         fun playInTarget(packageName: String): Boolean {
             val service = instance ?: return false
-            val model = service.screenModelInternal(500, packageName)
+            val model = service.screenModelInternal(1200, packageName)
             val play = model.snapshot.nodes.firstOrNull {
                 it.visible && it.enabled && it.actionable &&
                     EmaNodeSnapshot.normalize(it.label) in setOf("play", "play song", "play video", "play track", "resume playback")
@@ -292,12 +292,12 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         fun targetSnapshot(packageName: String): EmaScreenSnapshot =
-            instance?.screenModelInternal(500, packageName)?.snapshot ?: EmaScreenSnapshot("", emptyList())
+            instance?.screenModelInternal(1200, packageName)?.snapshot ?: EmaScreenSnapshot("", emptyList())
 
         fun typeMessageVerified(packageName: String, recipient: String, body: String): Boolean {
             val service = instance ?: return false
             if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
-            val model = service.screenModelInternal(500, packageName)
+            val model = service.screenModelInternal(1200, packageName)
             if (!EmaActionEvidence.recipientHeaderMatches(model.snapshot, packageName, recipient)) return false
             val field = model.snapshot.focusedNode ?: model.snapshot.firstEditable ?: return false
             return model.nodes.getOrNull(field.index)?.let { service.commitText(it, body) } == true
@@ -1015,7 +1015,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
     /** Resolve the submit control through the pure, unit-tested scorer. */
     private fun trySnapshotSend(packageName: String): Boolean {
-        val model = screenModelInternal(500, packageName.takeIf { it.isNotBlank() })
+        val model = screenModelInternal(1200, packageName.takeIf { it.isNotBlank() })
         val screen = model.snapshot
         if (screen.nodes.isEmpty()) return false
         if (packageName.isNotBlank() && screen.packageName.isNotBlank() &&

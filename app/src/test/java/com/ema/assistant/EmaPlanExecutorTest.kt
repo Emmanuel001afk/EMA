@@ -34,6 +34,25 @@ class EmaPlanExecutorTest {
     private fun executor(time: FakeTime, guard: EmaDuplicateGuard = EmaDuplicateGuard()) =
         EmaPlanExecutor(time.scheduler, { time.now }, guard)
 
+    @Test fun definitelyUnsentFailureDoesNotPoisonDuplicateGuard() {
+        val t = FakeTime()
+        val guard = EmaDuplicateGuard()
+        val e = executor(t, guard)
+        val key = "test-message"
+        val outcome = EmaOutcomeClassifier.classify("I opened WhatsApp, but could not verify Daniel in the chat header. I did not type or send the message.", false)
+        assertEquals(EmaOutcomeStatus.FAILED, outcome.status)
+        assertFalse(outcome.carriesOn)
+        e.execute(listOf(EmaPlanExecutor.Step("Send", consequential = true, duplicateKey = key) { it(outcome) }), 5000) { }
+        assertFalse(guard.recentlyDone(key, t.now))
+        assertEquals(EmaOutcomeStatus.UNVERIFIED, EmaOutcomeClassifier.classify("I pressed Send but could not verify the sent message.").status)
+    }
+
+    @Test fun explicitMessageDetailsKeepAllBodyCommas() {
+        assertEquals("Daniel bro" to "am coming home, soon", EmaMessageDetails.parse("Daniel bro, am coming home, soon"))
+        assertNull(EmaMessageDetails.parse("Daniel bro am coming home"))
+        assertNull(EmaMessageDetails.parse("Daniel bro,"))
+    }
+
     @Test fun stepsRunInOrderAndAllSucceed() {
         val time = FakeTime()
         val order = mutableListOf<Int>()

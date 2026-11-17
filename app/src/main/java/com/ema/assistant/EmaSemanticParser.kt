@@ -831,10 +831,12 @@ object EmaSemanticParser {
             frame.act = Act.SEARCH
             return frame
         }
-        if (ctx.word(start) == "for") start++
+        if (ctx.word(start) in setOf("for", "on", "about")) start++
         stop = stripTrailingApp(ctx, frame, start, stop)
         var query = ctx.slice(start, stop).trimEnd('.', '!', '?', ',', ' ')
         query = query.replace(Regex("(?i)\\s+(?:please|for me|now)$"), "").trim()
+        if (query.length >= 2 && ((query.first() == '\'' && query.last() == '\'') ||
+                (query.first() == '"' && query.last() == '"'))) query = query.substring(1, query.length - 1)
         selectionInObject(query)?.let { s ->
             frame.selection = s.selection
             frame.kind = s.kind
@@ -870,6 +872,8 @@ object EmaSemanticParser {
         val stop = stripTrailingApp(ctx, frame, objStart, end)
         var query = ctx.slice(objStart, stop).trimEnd('.', '!', '?', ',', ' ')
         query = query.replace(Regex("(?i)\\s+(?:please|for me|now)$"), "").trim()
+        if (query.length >= 2 && ((query.first() == '\'' && query.last() == '\'') ||
+                (query.first() == '"' && query.last() == '"'))) query = query.substring(1, query.length - 1)
         selectionInObject(query)?.let { s ->
             frame.selection = s.selection
             frame.kind = s.kind ?: frame.kind
@@ -918,7 +922,7 @@ object EmaSemanticParser {
             }
             if (msg.confidence < 0.5) {
                 return Result.Clarify("I'm not sure where the name ends and the message begins. Who is it for, and what should it say?",
-                    Role.BODY, null, evidence = evidence)
+                    Role.BODY, EmaCommand.SendMessage("", msg.app ?: preludeApp, ""), evidence = evidence)
             }
             val app = msg.app ?: preludeApp ?: env.defaultApps["messaging"]
             // Prelude clauses that are sub-steps of this goal are absorbed;

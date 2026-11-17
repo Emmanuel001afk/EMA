@@ -80,7 +80,10 @@ sealed class EmaSelection {
          * result; callers decide when that is appropriate.
          */
         fun parseReference(phrase: String, pronounMeansFirst: Boolean = false): EmaSelection? {
-            val words = phrase.lowercase()
+            // Strip only a terminal perception clause. Do not turn a named
+            // title such as "First Video You See About Space" into an ordinal.
+            val reference = phrase.replace(Regex("(?i)\\s+(?:(?:that\\s+)?you\\s+(?:can\\s+)?see|shown(?:\\s+(?:here|on screen))?|on\\s+(?:the\\s+)?screen)\\s*[.!?]*$"), "")
+            val words = reference.lowercase()
                 .replace(Regex("[^a-z0-9#' ]"), " ")
                 .split(Regex("\\s+"))
                 .filter { it.isNotBlank() }

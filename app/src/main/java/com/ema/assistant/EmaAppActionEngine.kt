@@ -755,6 +755,7 @@ class EmaAppActionEngine(private val context: Context) {
         expectBodyPrefilled: Boolean,
         prefillWaits: Int = 0,
         typeAttempts: Int = 0,
+        headerWaits: Int = 0,
         done: (Boolean, String) -> Unit
     ) {
         if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked ||
@@ -764,7 +765,14 @@ class EmaAppActionEngine(private val context: Context) {
         }
         val chat = EmaAccessibilityService.targetSnapshot(packageName)
         if (!EmaActionEvidence.recipientHeaderMatches(chat, packageName, recipientName)) {
-            done(false, "I could not verify $recipientName in the chat header in $appLabel. I did not type or send the message.")
+            if (headerWaits < 12) {
+                main.postDelayed({
+                    completeComposer(packageName, appLabel, recipientName, body,
+                        expectBodyPrefilled, prefillWaits, typeAttempts, headerWaits + 1, done)
+                }, 400L)
+                return
+            }
+            done(false, "I could not verify $recipientName in the chat header in $appLabel. I did not press Send; the app may already have prefilled a draft.")
             return
         }
         val composerText = (chat.focusedNode ?: chat.firstEditable)?.text.orEmpty().trim()

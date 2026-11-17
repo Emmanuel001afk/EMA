@@ -54,7 +54,9 @@ object EmaOutcomeClassifier {
         // could not watch because screen control is off) is not a failure and
         // must not stop the rest of a plan: the action happened, only the proof
         // is missing, and the next step judges its own result.
-        val launchedUnconfirmed = LAUNCHED_UNCONFIRMED.containsMatchIn(l)
+        val noSubmission = Regex("\\b(?:did not|didn't) (?:type|press|send)|\\bwas not sent\\b").containsMatchIn(l) &&
+            !l.contains("did not send it again")
+        val launchedUnconfirmed = LAUNCHED_UNCONFIRMED.containsMatchIn(l) && !noSubmission
         val status = when {
             l.isBlank() -> EmaOutcomeStatus.FAILED
             launchedUnconfirmed -> EmaOutcomeStatus.UNVERIFIED
@@ -64,6 +66,7 @@ object EmaOutcomeClassifier {
             l.endsWith("?") || l.contains("tell me which one") || l.contains("which one do you mean") ||
                 l.contains("what should i say") -> EmaOutcomeStatus.NEEDS_INPUT
             l.contains("did not send it again") || l.contains("won't send it twice") -> EmaOutcomeStatus.BLOCKED
+            noSubmission -> EmaOutcomeStatus.FAILED
             Regex("could(?:n't| not) (?:verify|confirm)|not (?:been )?verified|was not confirmed|may not have|" +
                 "but could(?:n't| not)|unable to confirm|appears to have|could not be confirmed").containsMatchIn(l) -> EmaOutcomeStatus.UNVERIFIED
             Regex("^(?:i couldn't|i could not|i cannot|i can't|couldn't|could not|sorry, i couldn't)|failed|" +
@@ -227,7 +230,7 @@ class EmaPlanExecutor(
             step.duplicateKey?.let { key ->
                 if (guard.recentlyDone(key, now)) {
                     outcomes[index] = EmaStepOutcome(EmaOutcomeStatus.BLOCKED,
-                        "I already did exactly that less than a minute ago, so I did not do it again.")
+                        "A recent identical attempt may already have been submitted. I blocked a repeat to avoid sending twice. Check the destination before retrying.")
                     listener?.onStepFinished(index, outcomes[index]!!)
                     runStep(index + 1, 1); return
                 }
