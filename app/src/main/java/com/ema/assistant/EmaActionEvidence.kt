@@ -30,9 +30,15 @@ object EmaActionEvidence {
     fun requestedMediaPlaying(expectedPackage: String, actualPackage: String, query: String,
                               title: String, artist: String, playing: Boolean): Boolean {
         if (!playing || expectedPackage.isBlank() || expectedPackage != actualPackage || title.isBlank()) return false
-        fun words(value: String) = value.lowercase().split(Regex("[^\\p{L}\\p{N}]+" )).filter { it.isNotBlank() }
+        return mediaQueryMatches(query, "$title $artist")
+    }
+
+    /** Match whole words; connective "by" and media nouns are not title tokens. */
+    fun mediaQueryMatches(query: String, observed: String): Boolean {
+        fun words(value: String) = value.lowercase(java.util.Locale.ROOT)
+            .split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotBlank() }
         val requested = words(query).filterNot { it in setOf("by", "song", "track", "video") }
-        val metadata = words("$title $artist").toSet()
+        val metadata = words(observed).toSet()
         return requested.isNotEmpty() && requested.all { it in metadata }
     }
 }

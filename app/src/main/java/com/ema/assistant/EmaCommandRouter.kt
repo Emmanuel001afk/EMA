@@ -410,7 +410,8 @@ class EmaCommandRouter(
             // Offline knowledge: calculations, conversions, dates. Computed, never invented.
             runCatching {
                 traceLayer("knowledge")
-                EmaKnowledge.answer(command)?.let { answer ->
+                EmaKnowledge.answer(command, previous = EmaDialogueState.snapshot().quantity?.value)?.let { answer ->
+                    answer.value?.let { EmaDialogueState.recordQuantity(it) }
                     finishAssistantResponse(answer.text, done)
                     return
                 }
@@ -1581,7 +1582,7 @@ class EmaCommandRouter(
                 description = text,
                 consequential = false,
                 maxAttempts = 1,
-                timeoutMs = 25_000L,
+                timeoutMs = if (text.trim().startsWith("play ", true)) 55_000L else 25_000L,
                 dependsOnPrevious = true,
                 run = { finish ->
                     executeInternal(text, { result ->
@@ -3333,6 +3334,7 @@ class EmaCommandRouter(
                 maxAttempts = if (cmd is EmaCommand.SearchInApp) 2 else 1,
                 timeoutMs = when (cmd) {
                     is EmaCommand.SendMessage -> 50_000L
+                    is EmaCommand.PlayMedia -> 55_000L
                     is EmaCommand.SelectResult -> 25_000L
                     is EmaCommand.SearchInApp -> 20_000L
                     else -> 25_000L

@@ -363,10 +363,9 @@ class EmaAppActionEngine(private val context: Context) {
             }
             // Search often lives behind its own navigation entry; reveal it
             // before waiting for an editable field that is not on this screen.
-            EmaAccessibilityService.revealSearchEntry(target.packageName)
             EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
                 if (!searched) {
-                    done(false, "I opened $appName, but could not reach its search field to type \"$query\".")
+                    done(false, EmaAccessibilityService.observedBlocker(target.packageName) ?: "I opened $appName, but could not reach its search field to type \"$query\".")
                     return@searchInPackage
                 }
                 // Wait for a non-empty, settled result list before choosing.
@@ -401,9 +400,18 @@ class EmaAppActionEngine(private val context: Context) {
         }
         val selected = EmaAccessibilityService.selectMediaResult(target.packageName, query)
         when {
-            selected -> waiter.delay(900) { startPlayback(target, appName, query, done) }
-            attemptsLeft > 1 -> waiter.delay(700) { selectWithRetry(target, appName, query, attemptsLeft - 1, done) }
-            else -> done(false, "I searched $appName, but could not verify and select a result matching $query.")
+            selected -> waiter.until(3_000, pollMs = 250, probe = { playbackConfirmed(target, query) }) { playing ->
+                if (playing) done(true, "Playing $query in $appName.")
+                else startPlayback(target, appName, query, done)
+            }
+            attemptsLeft > 1 -> {
+                // One safe forward scroll can reveal a matching row below
+                // category headings; never click an unrelated first result.
+                if (attemptsLeft == 2) EmaAccessibilityService.scrollResultsForward(target.packageName)
+                waiter.delay(700) { selectWithRetry(target, appName, query, attemptsLeft - 1, done) }
+            }
+            else -> done(false, EmaAccessibilityService.observedBlocker(target.packageName)
+                ?: "I searched $appName, but could not verify and select a result matching $query. Try including the artist or selecting a result yourself.")
         }
     }
 
@@ -427,20 +435,23 @@ class EmaAppActionEngine(private val context: Context) {
         // Known not playing (or unobservable): at most one Play press. The
         // visible control EMA matches is a Play control, not a Pause control,
         // and EMA never presses a second time.
-        val activated = EmaAccessibilityService.playInTarget(target.packageName)
-        if (!activated) {
-            done(false, "I selected \"$query\" in $appName, but could not find a Play control to start it.")
-            return
-        }
-        waiter.until(4_000, pollMs = 250, probe = { playbackConfirmed(target, query) }) { verified ->
-            done(
-                verified,
-                when {
-                    verified -> "Playing $query in $appName."
-                    state == null -> "I selected \"$query\" in $appName and pressed Play once, but I could not verify playback. Turning on notification access for EMA lets me check the media session."
-                    else -> "I selected \"$query\" in $appName and pressed Play, but the media session never reported the requested title playing."
-                }
-            )
+        // Selecting a row can start playback asynchronously. Check again
+        // before clicking Play, and wait for a delayed player control.
+        var activated = false
+        waiter.until(4_000, pollMs = 300, probe = {
+            if (EmaAccessibilityService.foregroundPackage() != target.packageName) false
+            else if (playbackConfirmed(target, query)) true
+            else if (EmaNotificationListenerService.mediaPlaying(context, target.packageName) == true) false
+            else EmaAccessibilityService.playInTarget(target.packageName).also { activated = it }
+        }) { ready ->
+            if (!ready) {
+                done(false, EmaAccessibilityService.observedBlocker(target.packageName)
+                    ?: "I selected \"$query\" in $appName, but no safe Play control became available. I did not toggle another track.")
+            } else if (!activated) done(true, "Playing $query in $appName.")
+            else waiter.until(4_000, pollMs = 250, probe = { playbackConfirmed(target, query) }) { verified ->
+                done(verified, if (verified) "Playing $query in $appName."
+                    else "I selected \"$query\" in $appName and pressed Play once, but could not verify the requested track. Enable EMA notification access to let me check media sessions.")
+            }
         }
     }
 
@@ -459,7 +470,6 @@ class EmaAppActionEngine(private val context: Context) {
             return
         }
         main.postDelayed({
-            EmaAccessibilityService.revealSearchEntry(target.packageName)
             EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
                 if (!searched) {
                     done(false, "I opened " + target.label + ", but couldn't reach its search field.")
@@ -508,17 +518,16 @@ class EmaAppActionEngine(private val context: Context) {
                 done(false, "I opened " + target.label + ", but it did not come to the foreground in time.")
                 return@awaitForeground
             }
-            EmaAccessibilityService.revealSearchEntry(target.packageName)
             EmaAccessibilityService.searchInPackage(target.packageName, query) { success ->
                 if (!success) {
                     done(false, "I opened " + target.label + ", but couldn't reach its search field to type \"$query\".")
                     return@searchInPackage
                 }
                 waiter.until(8_000, pollMs = 250, probe = {
-                    EmaExecutionVerifier.queryVisible(EmaAccessibilityService.inspectCurrentUi(12000), query)
+                    EmaAccessibilityService.resultItems(target.packageName, query).isNotEmpty()
                 }) {
                     done(
-                        true,
+                        it,
                         if (it) "I searched " + target.label + " for " + query + "."
                         else "I typed \"" + query + "\" into " + target.label + "'s search, but could not confirm results loaded."
                     )
@@ -942,7 +951,6 @@ class EmaAppActionEngine(private val context: Context) {
         }
 
         main.postDelayed({
-            EmaAccessibilityService.revealSearchEntry(target.packageName)
             EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
                 if (!searched) {
                     done(false, "I opened ${target.label}, but couldn't reach its search field.")

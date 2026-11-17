@@ -23,16 +23,22 @@ import kotlin.math.sqrt
  */
 object EmaKnowledge {
 
-    data class Answer(val text: String, val kind: String)
+    data class Answer(val text: String, val kind: String, val value: Double? = null)
 
-    fun answer(raw: String, today: LocalDate = LocalDate.now()): Answer? {
+    fun answer(raw: String, today: LocalDate = LocalDate.now(), previous: Double? = null): Answer? {
         val q = raw.trim().trimEnd('?', '.', '!').trim()
         if (q.isBlank()) return null
         val lower = q.lowercase(Locale.ROOT)
         selfAnswer(lower)?.let { return Answer(it, "self") }
         convert(lower)?.let { return Answer(it, "conversion") }
         dateAnswer(lower, today)?.let { return Answer(it, "date") }
-        calculate(lower)?.let { return Answer(it, "calculation") }
+        calculate(lower)?.let {
+            val numeric = Regex("= (-?[0-9,.]+)\\.$").find(it)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+            return Answer(it, "calculation", numeric)
+        }
+        EmaReasoningKnowledge.answer(raw, today, previous = previous)?.let {
+            return Answer(it.text, "reasoning", it.value)
+        }
         return null
     }
 
