@@ -84,7 +84,7 @@ object EmaNotificationDigest {
             .sortedWith(compareBy<Item> { classify(it).ordinal }.thenByDescending { it.postTimeMs })
 
         if (meaningful.isEmpty()) {
-            return if (priorityOnly) "You have no urgent or unread message notifications."
+            return if (priorityOnly) "You have no urgent or active message notifications."
             else "You're all caught up — no active notifications."
         }
 
@@ -101,7 +101,7 @@ object EmaNotificationDigest {
             val parts = mutableListOf<String>()
             if (urgent.isNotEmpty()) parts += "${urgent.size} urgent"
             if (messages.isNotEmpty()) {
-                val senders = messages.map { redactSensitiveCodes(it.title.ifBlank { it.appName }) }.distinct().take(3)
+                val senders = messages.map { redactItemPart(it, it.title.ifBlank { it.appName }) }.distinct().take(3)
                 parts += "${messages.size} message${if (messages.size == 1) "" else "s"} (${senders.joinToString(", ")})"
             }
             if (alerts.isNotEmpty()) parts += "${alerts.size} update${if (alerts.size == 1) "" else "s"}"
@@ -197,10 +197,19 @@ object EmaNotificationDigest {
         }
     }
 
+    private fun redactItemPart(item: Item, part: String): String {
+        val combined = "${item.title} ${item.text}"
+        val codes = EmaScreenIntelligence.extractEntities(combined)
+            .filter { it.kind == EmaScreenIntelligence.EntityKind.OTP_CODE }
+        var safe = redactSensitiveCodes(part)
+        for (code in codes) safe = safe.replace(code.value, "[verification code hidden]")
+        return safe
+    }
+
     private fun formatOne(item: Item): String {
         val app = item.appName.ifBlank { shortPkg(item.packageName) }
-        val safeText = redactSensitiveCodes(item.text.replace(Regex("\\s+"), " ").trim()).take(110)
-        val title = redactSensitiveCodes(item.title.trim()).take(80)
+        val safeText = redactItemPart(item, item.text.replace(Regex("\\s+"), " ").trim()).take(110)
+        val title = redactItemPart(item, item.title.trim()).take(80)
         return when {
             title.isNotEmpty() && safeText.isNotEmpty() -> "$app — $title: $safeText"
             title.isNotEmpty() -> "$app — $title"

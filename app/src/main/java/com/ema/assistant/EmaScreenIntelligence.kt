@@ -514,13 +514,10 @@ object EmaScreenIntelligence {
         isLiveScreen: Boolean = true
     ): List<QuickAction> {
         val out = mutableListOf<QuickAction>()
-        entities.firstOrNull { it.kind == EntityKind.OTP_CODE }?.let {
-            out += QuickAction("Copy code ${it.value}", "copy verification code")
-        }
         if (wordCount >= 35) {
             out += QuickAction(
                 if (isLiveScreen) "Summarize screen" else "Bullet summary",
-                if (isLiveScreen) "summarize screen" else "summarize that in bullet points"
+                if (isLiveScreen) "summarize screen" else "summarize that"
             )
         }
         if (actionItems.isNotEmpty()) {
@@ -529,20 +526,8 @@ object EmaScreenIntelligence {
                 if (isLiveScreen) "extract action items from screen" else "extract action items"
             )
         }
-        entities.firstOrNull { it.kind == EntityKind.PHONE }?.let {
-            out += QuickAction("Call ${it.display.take(16)}", "call ${it.value}")
-        }
-        entities.firstOrNull { it.kind == EntityKind.URL }?.let {
-            out += QuickAction("Copy link", if (isLiveScreen) "copy link on screen" else "copy link")
-        }
-        entities.firstOrNull { it.kind == EntityKind.EMAIL }?.let {
-            out += QuickAction("Copy email", if (isLiveScreen) "copy email on screen" else "copy email")
-        }
-        entities.firstOrNull { it.kind == EntityKind.ADDRESS }?.let {
-            out += QuickAction("Navigate there", "navigate to ${it.value}")
-        }
-        if (wordCount >= 12 && out.size < 4) {
-            out += QuickAction("Save as note", if (isLiveScreen) "save screen as note" else "save that as a note")
+        if (entities.isNotEmpty() && isLiveScreen) {
+            out += QuickAction("Find details", "find details on this screen")
         }
         return out.distinctBy { it.label }.take(4)
     }

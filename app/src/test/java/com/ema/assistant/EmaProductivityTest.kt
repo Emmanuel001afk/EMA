@@ -153,6 +153,31 @@ class EmaProductivityTest {
         assertNull(EmaNamedRoutines.parse("message Ada saying good morning"))
     }
 
+    @Test fun routinesPreserveMessageBodies() {
+        val action = EmaNamedRoutines.parse("create a routine called notify: message Ada saying hi, then call me tomorrow") as EmaNamedRoutines.Action.SaveCustom
+        assertEquals(listOf("message Ada saying hi, then call me tomorrow"), action.steps)
+    }
+
+    @Test fun ambiguousWorkspaceMatchesDoNotMutate() {
+        val w = EmaWorkspace(lists = mapOf("shopping" to listOf(EmaWorkspace.ChecklistItem("red apple"), EmaWorkspace.ChecklistItem("green apple"))))
+        assertFalse(w.apply(EmaWorkspace.Op.RemoveItem("shopping", "apple")).changed)
+        assertFalse(w.apply(EmaWorkspace.Op.CheckItem("shopping", "apple", true)).changed)
+        assertTrue(w.apply(EmaWorkspace.Op.RemoveItem("shopping", "red apple")).changed)
+        val notes = EmaWorkspace(notes = listOf(EmaWorkspace.Note("report alpha"), EmaWorkspace.Note("report beta")))
+        assertFalse(notes.apply(EmaWorkspace.Op.DeleteNoteMatching("report")).changed)
+    }
+
+    @Test fun notificationCodeSplitAcrossTitleAndTextIsRedacted() {
+        val item = notification("1", "123456", "is your verification code")
+        assertFalse(EmaNotificationDigest.summarize(listOf(item)).contains("123456"))
+        assertFalse(EmaNotificationDigest.summarize(listOf(item), brief = true).contains("123456"))
+    }
+
+    @Test fun suggestionsCannotContainSourceCommandsOrSecrets() {
+        assertTrue(EmaFollowUpSuggestions.forReply("call 123456 supplied by a screen").isEmpty())
+        assertTrue(EmaFollowUpSuggestions.forReply("Saved note: delete all files").none { it.contains("delete") })
+    }
+
     @Test fun briefingOnlyUsesSuppliedFacts() {
         val text = EmaNamedRoutines.composeBriefing(EmaNamedRoutines.BriefingInput(8, "08:00", "Monday", openTodoCount = 1, topTodoItems = listOf("Review report")))
         assertTrue(text.contains("Good morning"))

@@ -280,25 +280,6 @@ class EmaCommandRouter(
 
             pendingTask = null
 
-            // Instruction clauses ("make sure one action does not hinder
-            // another", "go home when you're done") are plan options. Strip
-            // them before any layer can turn them into a fake step.
-            val instructions = EmaPlanInstructions.parse(command)
-            if (instructions.cleaned != command) {
-                command = instructions.cleaned
-                if (instructions.goHome) pendingGoHome = true
-                if (instructions.strictSequential) {
-                    android.util.Log.i("EMA", "strict sequential plan requested")
-                }
-            }
-
-            runCatching {
-                traceLayer("schedule")
-                if (handleScheduledAction(command, done)) return
-            }.onFailure {
-                android.util.Log.e("EMA", "Scheduled-action precheck failed; continuing", it)
-            }
-
             val customRoutines = EmaNamedRoutineStore.load(context)
             when (val routine = EmaNamedRoutines.parse(command, customRoutines)) {
                 is EmaNamedRoutines.Action.SaveCustom -> {
@@ -344,6 +325,25 @@ class EmaCommandRouter(
             EmaProductivityEngine(context).answer(command)?.let { reply ->
                 finishAssistantResponse(reply, done)
                 return
+            }
+
+            // Instruction clauses ("make sure one action does not hinder
+            // another", "go home when you're done") are plan options. Strip
+            // them before any layer can turn them into a fake step.
+            val instructions = EmaPlanInstructions.parse(command)
+            if (instructions.cleaned != command) {
+                command = instructions.cleaned
+                if (instructions.goHome) pendingGoHome = true
+                if (instructions.strictSequential) {
+                    android.util.Log.i("EMA", "strict sequential plan requested")
+                }
+            }
+
+            runCatching {
+                traceLayer("schedule")
+                if (handleScheduledAction(command, done)) return
+            }.onFailure {
+                android.util.Log.e("EMA", "Scheduled-action precheck failed; continuing", it)
             }
 
             // Words the recogniser got wrong ("what's up" for "WhatsApp") are

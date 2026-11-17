@@ -918,6 +918,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun handleIncomingSharedAudio(src: Intent?) {
         if (src?.action != Intent.ACTION_SEND) return
         val mime = src.type.orEmpty().lowercase(Locale.ROOT)
+        if (mime == "text/plain") {
+            val shared = src.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.take(12_000).orEmpty()
+            src.action = Intent.ACTION_MAIN
+            if (shared.isNotBlank()) {
+                // Treat shared content as data, never as an executable instruction.
+                EmaDialogueState.recordDocument("shared text", shared)
+                conversation.addAssistant("Shared text received. Say summarize it, word count, or ask document: <question>. Sensitive text is not retained.", EmaOutcomeStatus.SUCCESS)
+            }
+            return
+        }
         if (!mime.startsWith("audio/")) return
         val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             runCatching { src.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) }.getOrNull()
@@ -1003,6 +1013,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         )
                         val secs = (result.durationMs / 1000L).coerceAtLeast(1L)
                         val header = "Offline transcript (${secs}s · copied to clipboard):\n\n"
+                        EmaDialogueState.recordDocument("audio transcript", result.text)
                         conversation.addAssistant(header + result.text, EmaOutcomeStatus.SUCCESS)
                         status.text = "Transcribed offline and copied to clipboard."
                     }

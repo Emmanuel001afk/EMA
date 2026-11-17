@@ -181,7 +181,17 @@ data class EmaWorkspace(
         val q = query.trim().lowercase(Locale.ROOT)
         if (q.isEmpty()) return Outcome(this, "Tell me which item to ${if (done) "check off" else "uncheck"}.", false)
         val searchKeys = if (rawList != null) listOf(canonicalListName(rawList)) else lists.keys.toList()
-        for (key in searchKeys) {
+        val allMatches = searchKeys.flatMap { key ->
+            lists[key].orEmpty().filter { it.text.lowercase(Locale.ROOT).contains(q) }
+        }
+        val exactMatches = allMatches.count { it.text.equals(q, ignoreCase = true) }
+        if (exactMatches > 1 || (exactMatches == 0 && allMatches.size > 1)) {
+            return Outcome(this, "More than one item matches. Name the exact item and list so I change the right one.", false)
+        }
+        val matchingKeys = if (exactMatches == 1) searchKeys.filter { key ->
+            lists[key].orEmpty().any { it.text.equals(q, ignoreCase = true) }
+        } else searchKeys
+        for (key in matchingKeys) {
             val items = lists[key] ?: continue
             val idx = findItemIndex(items, q, preferDone = !done)
             if (idx >= 0) {
@@ -208,7 +218,17 @@ data class EmaWorkspace(
         val q = query.trim().lowercase(Locale.ROOT)
         if (q.isEmpty()) return Outcome(this, "Tell me which item to remove.", false)
         val searchKeys = if (rawList != null) listOf(canonicalListName(rawList)) else lists.keys.toList()
-        for (key in searchKeys) {
+        val allMatches = searchKeys.flatMap { key ->
+            lists[key].orEmpty().filter { it.text.lowercase(Locale.ROOT).contains(q) }
+        }
+        val exactMatches = allMatches.count { it.text.equals(q, ignoreCase = true) }
+        if (exactMatches > 1 || (exactMatches == 0 && allMatches.size > 1)) {
+            return Outcome(this, "More than one item matches. Name the exact item and list so I change the right one.", false)
+        }
+        val matchingKeys = if (exactMatches == 1) searchKeys.filter { key ->
+            lists[key].orEmpty().any { it.text.equals(q, ignoreCase = true) }
+        } else searchKeys
+        for (key in matchingKeys) {
             val items = lists[key] ?: continue
             val idx = findItemIndex(items, q, preferDone = null)
             if (idx >= 0) {
@@ -411,6 +431,9 @@ data class EmaWorkspace(
     private fun deleteNoteMatching(query: String): Outcome {
         val q = query.trim().lowercase(Locale.ROOT)
         if (q.isEmpty()) return Outcome(this, "Tell me which note to delete.", false)
+        if (notes.count { it.text.lowercase(Locale.ROOT).contains(q) } > 1) {
+            return Outcome(this, "More than one note matches. Please use a more specific phrase.", false)
+        }
         val idx = notes.indexOfLast { it.text.lowercase(Locale.ROOT).contains(q) }
         if (idx < 0) return Outcome(this, "I don't have a note matching \"$query\".", false)
         val removed = notes[idx]
@@ -500,7 +523,8 @@ data class EmaWorkspace(
             "rice and beans", "oil and vinegar", "chips and salsa", "milk and cereal"
         )
 
-        fun looksLikeSecret(text: String): Boolean = SECRET_REGEX.containsMatchIn(text)
+        fun looksLikeSecret(text: String): Boolean = SECRET_REGEX.containsMatchIn(text) ||
+            EmaScreenIntelligence.extractEntities(text).any { it.kind == EmaScreenIntelligence.EntityKind.OTP_CODE }
 
         fun canonicalListName(raw: String): String {
             val clean = raw.lowercase(Locale.ROOT)

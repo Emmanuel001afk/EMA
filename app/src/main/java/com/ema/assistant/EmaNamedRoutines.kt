@@ -13,7 +13,6 @@ object EmaNamedRoutines {
 
     const val MAX_CUSTOM_ROUTINES = 30
     const val MAX_STEPS_PER_ROUTINE = 8
-    const val DEFAULT_FOCUS_MINUTES = 25
     private const val SCHEMA = "ema_named_routines=1"
 
     data class CustomRoutine(
@@ -30,7 +29,7 @@ object EmaNamedRoutines {
         data class RunCustom(val routine: CustomRoutine) : Action()
         /** Delete an owner-defined custom routine. */
         data class DeleteCustom(val name: String) : Action()
-        /** List all built-in, custom and scheduled routines. */
+        /** List the briefing and owner-defined routines. */
         object ListRoutines : Action()
         /** Refusal when a custom routine contains a secret or recursive trigger. */
         data class Refused(val reason: String) : Action()
@@ -172,7 +171,9 @@ object EmaNamedRoutines {
             .take(32)
 
     private fun splitRoutineSteps(body: String): List<String> =
-        body.split(Regex("\\s*(?:;|,|\\band then\\b|\\bthen\\b)\\s*", RegexOption.IGNORE_CASE))
+        // Only explicit semicolons separate stored steps. Commas and "then"
+        // commonly occur inside messages, search queries and dictated notes.
+        body.split(';')
             .map { it.trim().replace(Regex("(?i)^and\\s+"), "").trim().trimEnd('.') }
             .filter { it.isNotBlank() }
 

@@ -131,6 +131,8 @@ object EmaDialogueState {
     private var swAccumulatedMs = 0L
     private val swLapsMs = mutableListOf<Long>()
 
+    private fun containsSecret(text: String): Boolean = EmaWorkspace.looksLikeSecret(text)
+
     private fun fresh(atMs: Long, nowMs: Long, ttl: Long = TTL_MS): Boolean =
         nowMs >= atMs - 60_000L && nowMs - atMs <= ttl
 
@@ -192,7 +194,7 @@ object EmaDialogueState {
     @Synchronized
     fun recordDocument(source: String, text: String, nowMs: Long = System.currentTimeMillis()) {
         val cleaned = text.trim()
-        if (cleaned.isEmpty() || EmaWorkspace.looksLikeSecret(cleaned)) {
+        if (cleaned.isEmpty() || containsSecret(cleaned)) {
             document = null
             return
         }
@@ -211,7 +213,7 @@ object EmaDialogueState {
         sensitive: Boolean = false,
         nowMs: Long = System.currentTimeMillis()
     ) {
-        if (sensitive || EmaWorkspace.looksLikeSecret(text)) {
+        if (sensitive || containsSecret(text)) {
             lastReply = null
             return
         }
