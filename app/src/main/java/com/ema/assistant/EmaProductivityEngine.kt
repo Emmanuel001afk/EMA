@@ -62,6 +62,17 @@ class EmaProductivityEngine(private val context: Context) {
             return result.reply
         }
         when (lower) {
+            "diagnose screen control", "check screen access" -> {
+                if (!EmaAccessibilityService.isConnected()) return EmaAccessibilityService.availabilityProblem()
+                val screen = EmaAccessibilityService.screenSnapshot(700)
+                val visible = screen.nodes.count { it.visible }
+                val readable = screen.nodes.count { it.visible && it.label.isNotBlank() }
+                return "EMA Accessibility is connected. Foreground application: " +
+                    EmaAccessibilityService.foregroundPackage().ifBlank { "not observable" } +
+                    ". Visible controls: $visible; readable controls: $readable. Media-session verification: " +
+                    (if (EmaNotificationListenerService.isConnected()) "connected." else "off — enable EMA Notification access in Android Settings.") +
+                    (if (readable == 0) " This app exposes no readable controls right now. Explicit screen questions can try offline OCR; unlock the phone and dismiss sign-in or permission prompts yourself." else "")
+            }
             "undo", "undo that" -> {
                 val entry = EmaDialogueState.popUndo()
                     ?: return "There is no recent reversible workspace change to undo."

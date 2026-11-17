@@ -75,3 +75,5 @@ New computed knowledge examples:
 - After a numeric calculation: `double that`, `halve that`, `split it 4 ways`
 
 These are explicit, deterministic grammars, not arbitrary mathematical theorem proving. Missing prior numeric context and invalid domains produce explanations rather than guessed results. `EmaSearchPolicyTest` and `EmaReasoningKnowledgeTest` exercise safe search decisions, row semantics, domain errors, exact integer operations, DST and conversational numeric references. Real-device validation across app versions remains required.
+
+For device troubleshooting, say `diagnose screen control` or `check screen access`. The response reports Accessibility connectivity, foreground package, visible/readable control counts and whether media-session verification is connected, without dumping screen text. EMA cannot silently grant these Android permissions. Real system dialogs block targeted automation rather than allowing actions through the dialog into the underlying app.

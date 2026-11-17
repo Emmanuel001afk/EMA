@@ -55,6 +55,19 @@ class EmaSearchPolicyTest {
         assertTrue(EmaActionEvidence.mediaQueryMatches("Arcade by Duncan Laurence", results.single().text))
     }
 
+    @Test fun windowPolicyIgnoresKeyboardAndAssistantButHonorsModals() {
+        val app = EmaWindowPolicy.Window(0, "music.app", 1, EmaWindowPolicy.Kind.APPLICATION, false)
+        val ime = EmaWindowPolicy.Window(1, "keyboard", 3, EmaWindowPolicy.Kind.IGNORE, true)
+        val assistant = EmaWindowPolicy.Window(2, "ema", 4, EmaWindowPolicy.Kind.SYSTEM, true)
+        assertEquals(0, EmaWindowPolicy.choose(listOf(app, ime, assistant), "ema", "music.app"))
+        assertNull(EmaWindowPolicy.choose(listOf(app), "ema", "other.app"))
+        val permission = EmaWindowPolicy.Window(3, "android", 5, EmaWindowPolicy.Kind.SYSTEM, true)
+        assertNull(EmaWindowPolicy.choose(listOf(app, permission), "ema", "music.app"))
+        assertEquals(3, EmaWindowPolicy.choose(listOf(app, permission), "ema"))
+        val another = EmaWindowPolicy.Window(4, "other.app", 6, EmaWindowPolicy.Kind.APPLICATION, true)
+        assertNull(EmaWindowPolicy.choose(listOf(app, another), "ema", "music.app"))
+    }
+
     @Test fun mediaMatchesCombineTitleAndArtistWithoutSubstringGuessing() {
         assertTrue(EmaActionEvidence.mediaQueryMatches("Arcade by Duncan Laurence", "Arcade Duncan Laurence Song"))
         assertFalse(EmaActionEvidence.mediaQueryMatches("Arcade", "Arcades"))

@@ -62,6 +62,7 @@ class EmaAccessibilityService : AccessibilityService() {
             val deadline: Long,
             val attempts: Int,
             val lastRevealAt: Long = 0L,
+            val textAttempted: Boolean = false,
             val finished: AtomicBoolean = AtomicBoolean(false)
         )
 
@@ -487,7 +488,14 @@ class EmaAccessibilityService : AccessibilityService() {
             advance(request)
             return
         }
-        when (val decision = EmaSearchPolicy.decide(model.snapshot)) {
+        // Some apps replace the "Search" hint with the query after typing.
+        // Match that read-back only after this request attempted a write.
+        val readBack = if (request.textAttempted) model.snapshot.nodes.singleOrNull {
+            it.visible && it.enabled && it.editable && it.text == request.query
+        } else null
+        val decision = readBack?.let { EmaSearchPolicy.Decision.Type(it.index) }
+            ?: EmaSearchPolicy.decide(model.snapshot)
+        when (decision) {
             is EmaSearchPolicy.Decision.Reveal -> {
                 // One click, then let the UI react. Repeated taps toggled search
                 // closed again on Compose apps before the field was created.
@@ -502,28 +510,27 @@ class EmaAccessibilityService : AccessibilityService() {
                 if (field.text?.toString() == request.query) {
                     // A refreshed snapshot read-back, not ACTION_SET_TEXT's return
                     // value, proves typing. Do not append or type a second time.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val submitted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                         field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-                    }
-                    EmaSearchPolicy.submitIndex(model.snapshot)?.let { index ->
+                    if (!submitted) EmaSearchPolicy.submitIndex(model.snapshot)?.let { index ->
                         model.nodes.getOrNull(index)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     }
                     dropHead(request)
                     finishSearch(request, true)
                 } else {
                     commitText(field, request.query)
-                    advance(request)
+                    advance(request, typed = true)
                 }
             }
             EmaSearchPolicy.Decision.Wait -> advance(request)
         }
     }
 
-    private fun advance(request: PendingSearch, revealedAt: Long = request.lastRevealAt) {
+    private fun advance(request: PendingSearch, revealedAt: Long = request.lastRevealAt, typed: Boolean = request.textAttempted) {
         synchronized(pendingSearchLock) {
             if (pendingSearch.firstOrNull() !== request) return
             pendingSearch.removeFirst()
-            pendingSearch.addFirst(request.copy(attempts = request.attempts + 1, lastRevealAt = revealedAt))
+            pendingSearch.addFirst(request.copy(attempts = request.attempts + 1, lastRevealAt = revealedAt, textAttempted = typed))
         }
     }
 
@@ -612,9 +619,9 @@ class EmaAccessibilityService : AccessibilityService() {
     /**
      * Build the provider-neutral screen model used by every resolver.
      *
-     * Interactive windows are included (dialogs, bottom sheets, IME) because
-     * with only the active window readable, a permission dialog or a keyboard
-     * makes the app underneath look like it has no controls at all.
+     * Resolve window ownership first: app dialogs and bottom sheets belong to
+     * the app; keyboards and EMA's own overlay do not. A real system modal is
+     * readable but blocks package-targeted automation underneath it.
      */
     /** A screen snapshot plus the live nodes it was built from, index-aligned. */
     private class ScreenModel(
@@ -625,15 +632,26 @@ class EmaAccessibilityService : AccessibilityService() {
     private fun screenSnapshotInternal(maxNodes: Int): EmaScreenSnapshot =
         screenModelInternal(maxNodes).snapshot
 
-    /** Ignore assistant/IME windows but never reach through another application. */
+    /** Ignore assistant/IME windows; preserve real system dialogs and app ownership. */
     private fun applicationRoot(targetPackage: String? = null): AccessibilityNodeInfo? {
-        val top = runCatching {
-            windows.orEmpty().filter {
-                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.root != null
-            }.maxByOrNull { it.layer }?.root
-        }.getOrNull() ?: rootInActiveWindow
-        if (targetPackage != null && top?.packageName?.toString() != targetPackage) return null
-        return top
+        val available = runCatching { windows.orEmpty().mapNotNull { window ->
+            window.root?.let { window to it }
+        } }.getOrDefault(emptyList())
+        if (available.isEmpty()) {
+            val root = rootInActiveWindow ?: return null
+            return root.takeIf { targetPackage == null || it.packageName?.toString() == targetPackage }
+        }
+        val descriptors = available.mapIndexed { index, (window, root) ->
+            val kind = when (window.type) {
+                android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION -> EmaWindowPolicy.Kind.APPLICATION
+                android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM -> EmaWindowPolicy.Kind.SYSTEM
+                else -> EmaWindowPolicy.Kind.IGNORE
+            }
+            EmaWindowPolicy.Window(index, root.packageName?.toString().orEmpty(), window.layer,
+                kind, window.isActive || window.isFocused)
+        }
+        val selected = EmaWindowPolicy.choose(descriptors, packageName, targetPackage) ?: return null
+        return available[selected].second
     }
 
     private fun screenModelInternal(maxNodes: Int, targetPackage: String? = null): ScreenModel {
