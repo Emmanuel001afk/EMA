@@ -7,7 +7,7 @@ class EmaTaskReadinessTest {
     private fun screen(body: String = "", send: Boolean = false) = EmaScreenSnapshot("chat.app", listOf(
         EmaNodeSnapshot(0, text = "Daniel", viewId = "chat.app:id/conversation_title", visible = true, enabled = true, top = 30, bottom = 90),
         EmaNodeSnapshot(1, text = body, editable = true, focused = true, visible = true, enabled = true, top = 800, bottom = 950)
-    ) + if (send) listOf(EmaNodeSnapshot(2, text = "Send", viewId = "chat.app:id/send", clickable = true, visible = true, enabled = true, top = 800, bottom = 950)) else emptyList())
+    ) + if (send) listOf(EmaNodeSnapshot(2, text = "Send", viewId = "chat.app:id/send", clickableSelf = true, visible = true, enabled = true, top = 800, bottom = 950)) else emptyList())
     private fun stage(s: EmaScreenSnapshot, waited: Long = 0, locked: Boolean = false) =
         EmaTaskReadiness.message(s, "chat.app", "Daniel", "Hello", waited, locked).stage
 
