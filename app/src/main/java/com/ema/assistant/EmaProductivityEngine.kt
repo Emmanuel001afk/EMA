@@ -23,7 +23,25 @@ class EmaProductivityEngine(private val context: Context) {
         ))
     }
 
-    fun answer(command: String): String? {
+    /** OCR is read-only and is used only for explicit screen requests with no accessible text. */
+    fun answerScreenRequest(command: String, done: (String) -> Unit): Boolean {
+        val lower = command.trim().trimEnd('.', '?', '!').lowercase(Locale.ROOT)
+        val writing = EmaWritingTools.parseCommand(command)
+        val needsScreen = lower in setOf("summarize this screen", "summarize screen", "summarize this page",
+            "extract entities from this screen", "find details on this screen") ||
+            Regex("(?i)^ask (?:about )?(?:this |the )?screen:\\s*(.+)$").matches(command.trim()) ||
+            (writing is EmaWritingTools.Command.TransformTarget && writing.target == EmaWritingTools.Target.SCREEN) ||
+            (writing is EmaWritingTools.Command.StatsTarget && writing.target == EmaWritingTools.Target.SCREEN)
+        if (!needsScreen) return false
+        val visible = EmaAccessibilityService.currentScreenText()
+        if (visible.isNotBlank()) done(answer(command, visible) ?: "I couldn't interpret that screen request.")
+        else EmaAccessibilityService.readScreenWithOcr { text ->
+            done(answer(command, text) ?: "I couldn't read that screen. Protected screens cannot be captured.")
+        }
+        return true
+    }
+
+    fun answer(command: String, observedScreenText: String? = null): String? {
         val lower = command.trim().trimEnd('.', '?', '!').lowercase(Locale.ROOT)
         val snapshot = EmaDialogueState.snapshot()
         EmaWorkspace.parse(command, snapshot.activeList?.name)?.let { op ->
@@ -69,7 +87,7 @@ class EmaProductivityEngine(private val context: Context) {
         }
         EmaWritingTools.parseCommand(command)?.let { writing ->
             fun target(target: EmaWritingTools.Target): String = when (target) {
-                EmaWritingTools.Target.SCREEN -> EmaAccessibilityService.currentScreenText()
+                EmaWritingTools.Target.SCREEN -> observedScreenText ?: EmaAccessibilityService.currentScreenText()
                 EmaWritingTools.Target.CLIPBOARD -> context.getSystemService(ClipboardManager::class.java)
                     ?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
                 EmaWritingTools.Target.LAST_DOCUMENT -> snapshot.document?.text.orEmpty()
@@ -106,7 +124,7 @@ class EmaProductivityEngine(private val context: Context) {
         val documentQuestion = Regex("(?i)^ask (?:about )?(?:the )?document:\\s*(.+)$").matchEntire(command.trim())
         if (summary || entities || question != null || documentQuestion != null) {
             val usePrevious = lower in setOf("summarize it", "summarize that") || documentQuestion != null
-            val source = if (usePrevious) snapshot.document?.text.orEmpty() else EmaAccessibilityService.currentScreenText()
+            val source = if (usePrevious) snapshot.document?.text.orEmpty() else observedScreenText ?: EmaAccessibilityService.currentScreenText()
             if (source.isBlank()) return "There is no readable source text. For screen questions, enable EMA Accessibility access first."
             EmaDialogueState.recordDocument(if (usePrevious) "document" else "screen", source)
             return when {

@@ -322,6 +322,7 @@ class EmaCommandRouter(
 
             // Content-bearing productivity requests are handled before aliases,
             // planning or optional AI can reinterpret their payloads.
+            if (EmaProductivityEngine(context).answerScreenRequest(command) { finishAssistantResponse(it, done) }) return
             EmaProductivityEngine(context).answer(command)?.let { reply ->
                 finishAssistantResponse(reply, done)
                 return

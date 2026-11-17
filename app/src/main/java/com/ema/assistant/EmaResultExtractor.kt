@@ -187,7 +187,9 @@ object EmaResultExtractor {
             if (meaningful.isEmpty()) return@filter false
             val joined = labels.joinToString(" ").lowercase()
             // The search box echoing the query, or a "Search for ..." suggestion row.
-            if (normalizedQuery.isNotBlank() && meaningful.all { it.lowercase() == normalizedQuery }) return@filter false
+            if (normalizedQuery.isNotBlank() && meaningful.all { it.lowercase() == normalizedQuery } &&
+                (t.top - screenTop < height * 0.15 ||
+                    g.members.any { it.viewIdLeaf.contains("search", true) })) return@filter false
             if (joined.startsWith("search ") && t.top - screenTop < height * 0.15) return@filter false
             // Toolbars: short items hugging the top edge.
             if (t.top - screenTop < height * 0.08 && hFrac < 0.1) return@filter false

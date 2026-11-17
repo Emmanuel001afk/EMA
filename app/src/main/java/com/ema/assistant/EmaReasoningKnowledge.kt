@@ -32,6 +32,7 @@ object EmaReasoningKnowledge {
     )
 
     fun answer(raw: String, today: LocalDate = LocalDate.now(), clock: Clock = Clock.systemUTC(), previous: Double? = null): Result? {
+        if (raw.length > 4096) return null
         val q = raw.trim().trimEnd('?', '!', '.').lowercase(Locale.ROOT)
         when (q) {
             "double that", "double it" -> return previous?.let { result("2 × ${f(it)}", it * 2) } ?: Result("There is no recent numeric result to double.")

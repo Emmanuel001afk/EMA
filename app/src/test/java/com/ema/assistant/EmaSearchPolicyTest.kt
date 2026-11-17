@@ -36,6 +36,25 @@ class EmaSearchPolicyTest {
         assertTrue(EmaSearchPolicy.blocker(screen(node(0, "Sign in"), node(1, "Email")))!!.contains("Sign in"))
         assertTrue(EmaSearchPolicy.blocker(screen(node(0, "No internet")))!!.contains("network"))
     }
+    @Test fun titleOnlyRowIsNotDiscardedAsAQueryEcho() {
+        val b = EmaResultScreens.Builder("music.app")
+        b.chrome("Arcade")
+        val row = b.node(click = true, l = 0, t = 600, r = 1080, b = 800)
+        b.node(text = "Arcade", parent = row, l = 40, t = 630, r = 900, b = 700)
+        val results = EmaResultExtractor.extract(b.build(), "Arcade")
+        assertEquals(1, results.size)
+        assertEquals("Arcade", results.single().title)
+    }
+
+    @Test fun separateTitleAndArtistAreMatchedAsOneRow() {
+        val b = EmaResultScreens.Builder("music.app")
+        b.chrome("Arcade by Duncan Laurence")
+        b.row("Arcade", "Duncan Laurence", null, 600)
+        val results = EmaResultExtractor.extract(b.build(), "Arcade by Duncan Laurence")
+        assertEquals(1, results.size)
+        assertTrue(EmaActionEvidence.mediaQueryMatches("Arcade by Duncan Laurence", results.single().text))
+    }
+
     @Test fun mediaMatchesCombineTitleAndArtistWithoutSubstringGuessing() {
         assertTrue(EmaActionEvidence.mediaQueryMatches("Arcade by Duncan Laurence", "Arcade Duncan Laurence Song"))
         assertFalse(EmaActionEvidence.mediaQueryMatches("Arcade", "Arcades"))

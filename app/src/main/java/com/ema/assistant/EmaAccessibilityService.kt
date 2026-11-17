@@ -334,7 +334,7 @@ class EmaAccessibilityService : AccessibilityService() {
                 return
             }
             service.captureAndTapTextVisuallyWithRetry(
-                packageName = service.rootInActiveWindow?.packageName?.toString().orEmpty(),
+                packageName = service.applicationRoot()?.packageName?.toString().orEmpty(),
                 target = text,
                 attempts = 3,
                 callback = callback
@@ -477,6 +477,11 @@ class EmaAccessibilityService : AccessibilityService() {
             return
         }
 
+        if (getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            dropHead(request)
+            finishSearch(request, false)
+            return
+        }
         val model = screenModelInternal(700, request.packageName)
         if (model.snapshot.nodes.isEmpty()) {
             advance(request)
@@ -749,7 +754,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun findBestVisibleNode(query: String): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
+        val root = applicationRoot() ?: return null
         val wanted = query.trim().lowercase()
         if (wanted.isBlank()) return null
         var exact: AccessibilityNodeInfo? = null
@@ -774,7 +779,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapTextExactInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
 
@@ -797,7 +802,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapTextInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
 
@@ -846,7 +851,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapFirstResultInternal(query: String = ""): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         data class Candidate(val node: AccessibilityNodeInfo, val label: String, val score: Int)
         val candidates = mutableListOf<Candidate>()
         val ignored = setOf("back", "home", "search", "menu", "more options", "settings")
@@ -892,7 +897,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapSendButtonInternal(packageName: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         if (packageName.isNotBlank() && root.packageName?.toString() != packageName) return false
 
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -961,7 +966,7 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         // OCR is expensive, so it is only reached once the node tree has failed.
-        val rootPackage = rootInActiveWindow?.packageName?.toString().orEmpty()
+        val rootPackage = applicationRoot()?.packageName?.toString().orEmpty()
         val target = packageName.ifBlank { rootPackage }
         if (target.isNotBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             captureAndTapTextVisually(target, "send") { visualOk ->
@@ -1013,7 +1018,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
     /** Use the soft keyboard's own action button, which many chat apps honour. */
     private fun tryImeActionSend(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
             ?: findEditable(root)
             ?: return false
@@ -1024,7 +1029,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapLikelySubmitControlInternal(packageName: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         if (packageName.isNotBlank() && root.packageName?.toString() != packageName) return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findEditable(root)
@@ -1096,7 +1101,7 @@ class EmaAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------- text
 
     private fun setFocusedTextInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findEditable(root)
             ?: return false
@@ -1105,13 +1110,13 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun focusedEditableTextInternal(): String {
-        val root = rootInActiveWindow ?: return ""
+        val root = applicationRoot() ?: return ""
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root) ?: return ""
         return if (field.isEditable) field.text?.toString().orEmpty() else ""
     }
 
     private fun composerHasFocusInternal(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
         return field.isEditable
     }
@@ -1150,7 +1155,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun scrollInternal(direction: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val target = findScrollable(root) ?: root
         val action = when (direction.lowercase()) {
             "up", "back", "top" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
@@ -1265,7 +1270,7 @@ class EmaAccessibilityService : AccessibilityService() {
         target: String,
         callback: (Boolean) -> Unit
     ) {
-        val root = rootInActiveWindow
+        val root = applicationRoot()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             callback(false)
             return
