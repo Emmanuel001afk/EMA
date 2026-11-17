@@ -80,6 +80,7 @@ dependencies {
     implementation("com.google.mlkit:image-labeling:17.0.9")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
 
 // The model is part of every APK, not an end-user download/import. Keep the
