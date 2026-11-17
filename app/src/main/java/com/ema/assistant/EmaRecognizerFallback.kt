@@ -177,7 +177,7 @@ object EmaRecognizerFallback {
                 errorCode == ERROR_RECOGNIZER_BUSY ->
                     "The speech recognizer is busy. Try again in a moment."
                 kind == EmaRecognizerKind.EMA_OFFLINE ->
-                    "EMA's offline speech engine could not start right now (low free memory or unavailable microphone)."
+                    "EMA's offline speech engine could not start right now."
                 else ->
                     "Speech recognition couldn't finish. Please try again."
             }

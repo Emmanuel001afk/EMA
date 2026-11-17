@@ -14,12 +14,12 @@ object EmaWakeModel {
     fun ready(context: Context): Boolean {
         val dir = directory(context)
         return File(dir, ".model-version").let { it.isFile && it.readText() == SHA256 } &&
-            required.all { File(dir, it).isFile }
+            required.all { File(dir, it).let { file -> file.isFile && file.length() > 0L } }
     }
 
     /** Worker-thread-only, idempotent and crash-recoverable. Never needs a network. */
-    @Synchronized fun prepare(context: Context): File {
-        if (ready(context)) return directory(context)
+    @Synchronized fun prepare(context: Context, forceReinstall: Boolean = false): File {
+        if (!forceReinstall && ready(context)) return directory(context)
         val staging = File(context.noBackupFilesDir, "wake-model-preparing")
         val archive = File(context.noBackupFilesDir, "wake-model-asset.tmp")
         staging.deleteRecursively()
@@ -67,7 +67,7 @@ object EmaWakeModel {
                     zip.closeEntry()
                 }
             }
-            check(required.all { File(staging, it).isFile }) { "Built-in wake model is incomplete" }
+            check(required.all { File(staging, it).let { file -> file.isFile && file.length() > 0L } }) { "Built-in wake model is incomplete" }
             org.vosk.Model(staging.path).close()
             File(staging, ".model-version").writeText(SHA256)
             val destination = directory(context)
