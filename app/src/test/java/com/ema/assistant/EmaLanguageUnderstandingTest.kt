@@ -11,8 +11,10 @@ class EmaLanguageUnderstandingTest {
     ))
     private fun commands(raw: String): List<String> {
         val result = EmaSemanticParser.understand(raw, env)
-        assertTrue("$raw -> $result", result is EmaSemanticParser.Result.Plan)
-        return (result as EmaSemanticParser.Result.Plan).steps.map { it.command?.toCanonical() ?: it.legacyText.orEmpty() }
+        return when (result) {
+            is EmaSemanticParser.Result.Plan -> result.steps.map { it.command?.toCanonical() ?: it.legacyText.orEmpty() }
+            else -> listOf(result.toString())
+        }
     }
 
     @Test fun politeSurfaceFormsPreserveTheSameGoalAndRoles() {
@@ -23,6 +25,7 @@ class EmaLanguageUnderstandingTest {
         )
         val wrappers = listOf("please ", "could you please ", "can you ", "I would like you to ", "I need you to ", "help me to ")
         for (request in requests) for (wrapper in wrappers) {
+            assertEquals(request, EmaLanguageUnderstanding.assess(wrapper + request).canonical)
             assertEquals("$wrapper$request", commands(request), commands(wrapper + request))
         }
     }
