@@ -361,10 +361,14 @@ class EmaAppActionEngine(private val context: Context) {
                 done(false, "I opened $appName, but it did not come to the foreground in time.")
                 return@awaitForeground
             }
+            if (EmaAccessibilityService.searchResultsReady(target.packageName, query)) {
+                selectWithRetry(target, appName, query, 3, done)
+                return@awaitForeground
+            }
             // Search often lives behind its own navigation entry; reveal it
             // before waiting for an editable field that is not on this screen.
             EmaAccessibilityService.searchInPackage(target.packageName, query) { searched ->
-                if (!searched) {
+                if (!searched && !EmaAccessibilityService.searchResultsReady(target.packageName, query)) {
                     done(false, EmaAccessibilityService.observedBlocker(target.packageName) ?: "I opened $appName, but could not reach its search field to type \"$query\".")
                     return@searchInPackage
                 }

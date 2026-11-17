@@ -1448,6 +1448,11 @@ class EmaCommandRouter(
         }
         val direct = appEngine.findApp(appPhrase)
         if (direct != null) {
+            val tail = EmaAppRequestReview.unresolvedTail(appPhrase, direct.label)
+            if (tail != null) {
+                finishAssistantResponse("I matched ${direct.label}, but I couldn't interpret the remaining words: \"$tail\". Please specify whether to open the app, open a page inside it, or play/search for something. I haven't completed that request.", done)
+                return
+            }
             openConfirmedApp(direct.label, done)
             return
         }
