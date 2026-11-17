@@ -17,16 +17,40 @@ object EmaSearchPolicy {
         val identified = fields.filter { searchWords.containsMatchIn("${it.label} ${it.viewIdLeaf.replace('_', ' ')}") }
         // Never type into the first arbitrary editable: it could be a chat or login field.
         val chosen = identified.singleOrNull() ?: fields.singleOrNull()?.takeIf {
-            it.focused && visible.any { n -> n.label.trim().equals("search", true) }
+            it.focused && visible.any { n ->
+                listOf(n.text, n.description).any { label -> label.trim().equals("search", true) }
+            }
         }
         if (chosen != null) return Decision.Type(chosen.index)
         val entry = visible.filter { !it.editable && it.actionable &&
             !unsafe.containsMatchIn("${it.label} ${it.viewIdLeaf.replace('_', ' ')}") &&
             (it.text.trim().equals("search", true) || it.description.trim().let { d ->
-                d.equals("search", true) || d.equals("search tab", true) || d.equals("open search", true)
+                d.equals("search", true) || d.equals("search tab", true) || Regex("(?i)^search[, ]+tab(?:[, ]+\\d+ of \\d+)?$").matches(d) || d.equals("open search", true)
             } || it.viewIdLeaf.lowercase() in setOf("search", "search_button", "search_tab", "search_bar", "search_src_text"))
         }.distinctBy { it.clickTargetIndex }.firstOrNull()
         return entry?.let { Decision.Reveal(it.clickTargetIndex) } ?: Decision.Wait
+    }
+
+    /** Search may already have succeeded even if the app never reported an
+     * editable field/read-back. A query anchor AND an actionable matching row
+     * are required, so a home-page recommendation alone cannot skip search. */
+    fun resultsReady(screen: EmaScreenSnapshot, query: String): Boolean {
+        val wanted = EmaNodeSnapshot.normalize(query)
+        if (wanted.isBlank()) return false
+        val visible = screen.nodes.filter { it.visible && it.enabled }
+        val bottom = visible.maxOfOrNull { it.bottom } ?: return false
+        val top = visible.minOfOrNull { it.top } ?: return false
+        val searchNavigation = visible.any { n ->
+            listOf(n.text, n.description).any { it.trim().equals("search", true) || it.trim().equals("search tab", true) }
+        }
+        val anchor = visible.any { n ->
+            EmaNodeSnapshot.normalize(n.text) == wanted &&
+                (n.editable || n.viewIdLeaf.contains("search", true) || n.className.contains("EditText") ||
+                    (searchNavigation && n.top - top < (bottom - top) * 0.15))
+        }
+        return anchor && EmaResultExtractor.extract(screen, query).any {
+            !it.sponsored && EmaActionEvidence.mediaQueryMatches(query, it.text)
+        }
     }
 
     /** Submit is different from navigating to Search. Never click a Search tab after typing. */

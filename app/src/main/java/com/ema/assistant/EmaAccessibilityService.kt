@@ -180,6 +180,10 @@ class EmaAccessibilityService : AccessibilityService() {
                 ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
         }
 
+        fun searchResultsReady(packageName: String, query: String): Boolean = instance?.let {
+            EmaSearchPolicy.resultsReady(it.screenModelInternal(700, packageName).snapshot, query)
+        } == true
+
         fun observedBlocker(packageName: String): String? = instance?.let {
             EmaSearchPolicy.blocker(it.screenModelInternal(700, packageName).snapshot)
         }
@@ -486,6 +490,11 @@ class EmaAccessibilityService : AccessibilityService() {
         val model = screenModelInternal(700, request.packageName)
         if (model.snapshot.nodes.isEmpty()) {
             advance(request)
+            return
+        }
+        if (EmaSearchPolicy.resultsReady(model.snapshot, request.query)) {
+            dropHead(request)
+            finishSearch(request, true)
             return
         }
         // Some apps replace the "Search" hint with the query after typing.

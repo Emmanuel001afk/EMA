@@ -55,6 +55,40 @@ class EmaSearchPolicyTest {
         assertTrue(EmaActionEvidence.mediaQueryMatches("Arcade by Duncan Laurence", results.single().text))
     }
 
+    @Test fun alreadyPopulatedSearchWithReadOnlyQueryCanContinue() {
+        val b = EmaResultScreens.Builder("music.app")
+        // Screenshot shape: custom-drawn query label, no editable semantics.
+        b.node(text = "arcade", l = 120, t = 60, r = 860, b = 160)
+        b.node(text = "Search", desc = "Search", click = true, l = 220, t = 2280, r = 410, b = 2400)
+        b.row("Arcade", "Song · Duncan Laurence", null, 600)
+        assertTrue(EmaSearchPolicy.resultsReady(b.build(), "arcade"))
+        assertFalse(EmaSearchPolicy.resultsReady(b.build(), "another song"))
+        assertFalse(EmaSearchPolicy.resultsReady(b.build(), ""))
+    }
+
+    @Test fun queryEchoWithoutResultsOrRecommendationWithoutQueryIsNotReady() {
+        val b = EmaResultScreens.Builder("music.app")
+        b.chrome("arcade")
+        assertFalse(EmaSearchPolicy.resultsReady(b.build(), "arcade"))
+        val home = EmaResultScreens.Builder("music.app")
+        home.chrome("other query")
+        home.row("Arcade", "Duncan Laurence", null, 600)
+        assertFalse(EmaSearchPolicy.resultsReady(home.build(), "arcade"))
+    }
+
+    @Test fun duplicatedSearchTextAndDescriptionStillIdentifiesFocusedField() {
+        val s = screen(node(0, "arcade", editable = true, focused = true), node(1, "Search").copy(description = "Search"))
+        assertEquals(EmaSearchPolicy.Decision.Type(0), EmaSearchPolicy.decide(s))
+    }
+
+    @Test fun fuzzyAppMatchCannotDiscardUnrecognizedContinuation() {
+        assertEquals("am pt arcade", EmaAppRequestReview.unresolvedTail("Spotify am pt arcade", "Spotify"))
+        assertNull(EmaAppRequestReview.unresolvedTail("Spotify app", "Spotify"))
+        assertNull(EmaAppRequestReview.unresolvedTail("Spotify", "Spotify"))
+        assertNull(EmaAppRequestReview.unresolvedTail("Music", "Music Player"))
+        assertEquals("and find report", EmaAppRequestReview.unresolvedTail("Portal and find report", "Portal"))
+    }
+
     @Test fun windowPolicyIgnoresKeyboardAndAssistantButHonorsModals() {
         val app = EmaWindowPolicy.Window(0, "music.app", 1, EmaWindowPolicy.Kind.APPLICATION, false)
         val ime = EmaWindowPolicy.Window(1, "keyboard", 3, EmaWindowPolicy.Kind.IGNORE, true)

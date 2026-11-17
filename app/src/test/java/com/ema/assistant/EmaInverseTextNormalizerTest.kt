@@ -25,6 +25,16 @@ class EmaInverseTextNormalizerTest {
         EmaInverseTextNormalizer.normalize(raw, EmaRecognitionProfile.COMMAND, ctx)
 
     @Test
+    fun pluralSplitSpotifyIsRecoveredWithoutInventingMissingActions() {
+        assertEquals("open Spotify", norm("open spots if i"))
+        val unclear = norm("open spots if i agree at it")
+        assertTrue(unclear.contains("agree at it"))
+        assertFalse(unclear.contains("play", ignoreCase = true))
+        val body = norm("message Ada saying open spots if i agree at it")
+        assertTrue(body.contains("spots if i agree at it"))
+    }
+
+    @Test
     fun normalizesSpokenClockTimesAndDualAlarms() {
         assertEquals("set an alarm for 6:30 am", norm("set an alarm for six thirty a m"))
         assertEquals("set an alarm for 7:05 pm", norm("set an alarm for seven oh five p m"))

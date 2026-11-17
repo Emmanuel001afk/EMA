@@ -257,7 +257,7 @@ object EmaInverseTextNormalizer {
         Regex("(?i)\\byoutube\\b") to "YouTube",
         Regex("(?i)\\b(?:whats\\s+app|what's\\s+app|what\\s+sup|watts\\s+app|whatsapp)\\b") to "WhatsApp",
         Regex("(?i)\\b(open|launch|start|on|in|using|via|through)\\s+what's\\s+up\\b") to "$1 WhatsApp",
-        Regex("(?i)\\b(?:spot\\s+if\\s+(?:i|eye)|spot\\s+a\\s+(?:fi|five|fly)|spot\\s+defy|spot\\s+ify|spotify)\\b") to "Spotify",
+        Regex("(?i)\\b(?:spots?\\s+if\\s+(?:i|eye)|spot\\s+a\\s+(?:fi|five|fly)|spot\\s+defy|spot\\s+ify|spotify)\\b") to "Spotify",
         Regex("(?i)\\b(?:tick\\s+tock|tik\\s+tok|tic\\s+tac|tiktok)\\b") to "TikTok",
         Regex("(?i)\\bface\\s+book\\b") to "Facebook",
         Regex("(?i)\\binsta\\s+gram\\b") to "Instagram",
