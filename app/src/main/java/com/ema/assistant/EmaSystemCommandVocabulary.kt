@@ -42,7 +42,7 @@ object EmaSystemCommandVocabulary {
         "how much storage do i have", "what is my storage",
         // Media and hardware toggles
         "take a screenshot", "screenshot", "turn on flashlight", "turn off flashlight",
-        "flashlight on", "flashlight off", "torch on", "torch off",
+        "on flashlight", "off flashlight", "on the flashlight", "off the flashlight", "on torch", "off torch", "flashlight on", "flashlight off", "torch on", "torch off",
         "increase brightness", "decrease brightness", "brightness up", "brightness down",
         "turn on dnd", "turn dnd on", "enable dnd", "do not disturb on",
         "turn off dnd", "turn dnd off", "disable dnd", "do not disturb off",

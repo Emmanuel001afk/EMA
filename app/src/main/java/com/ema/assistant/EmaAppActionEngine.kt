@@ -755,19 +755,27 @@ class EmaAppActionEngine(private val context: Context) {
         expectBodyPrefilled: Boolean,
         prefillWaits: Int = 0,
         typeAttempts: Int = 0,
+        headerWaits: Int = 0,
         done: (Boolean, String) -> Unit
     ) {
-        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked ||
-            EmaAccessibilityService.targetSnapshot(packageName).packageName != packageName) {
-            done(false, "The phone locked or active screen changed. I did not type or send the message to $recipientName.")
-            return
-        }
         val chat = EmaAccessibilityService.targetSnapshot(packageName)
-        if (!EmaActionEvidence.recipientHeaderMatches(chat, packageName, recipientName)) {
-            done(false, "I could not verify $recipientName in the chat header in $appLabel. I did not type or send the message.")
-            return
+        val readiness = EmaTaskReadiness.message(chat, packageName, recipientName, body,
+            headerWaits * 400L, context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked)
+        when (readiness.stage) {
+            EmaTaskReadiness.Stage.WAIT -> {
+                main.postDelayed({
+                    completeComposer(packageName, appLabel, recipientName, body,
+                        expectBodyPrefilled, prefillWaits, typeAttempts, headerWaits + 1, done)
+                }, 400L)
+                return
+            }
+            EmaTaskReadiness.Stage.BLOCKED, EmaTaskReadiness.Stage.TIMED_OUT -> {
+                done(false, "${readiness.reason} I did not press Send; an existing or prefilled draft may remain.")
+                return
+            }
+            else -> Unit
         }
-        val composerText = (chat.focusedNode ?: chat.firstEditable)?.text.orEmpty().trim()
+        val composerText = (chat.nodes.filter { it.visible && it.enabled && it.editable }.let { fields -> fields.singleOrNull { it.focused } ?: fields.singleOrNull() })?.text.orEmpty().trim()
 
         // Old transcript text is not evidence that this request is composed.
         val bodyPresent = composerText == body.trim()
@@ -784,6 +792,7 @@ class EmaAppActionEngine(private val context: Context) {
                         expectBodyPrefilled = true,
                         prefillWaits = prefillWaits + 1,
                         typeAttempts = typeAttempts,
+                        headerWaits = headerWaits,
                         done = done
                     )
                 }, 700L)
@@ -813,6 +822,7 @@ class EmaAppActionEngine(private val context: Context) {
                     expectBodyPrefilled = false,
                     prefillWaits = prefillWaits,
                     typeAttempts = typeAttempts + 1,
+                    headerWaits = headerWaits,
                     done = done
                 )
             }, 500L)

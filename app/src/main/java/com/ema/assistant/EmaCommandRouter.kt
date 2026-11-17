@@ -272,6 +272,14 @@ class EmaCommandRouter(
         // Conversation history, stale pending tasks, or scheduler state are
         // auxiliary; a failure there must not make every command fail.
         if (depth == 0) {
+            val assessment = EmaLanguageUnderstanding.assess(command)
+            when (assessment.act) {
+                EmaLanguageUnderstanding.Act.NEGATED, EmaLanguageUnderstanding.Act.CONSTRAINED -> {
+                    finishAssistantResponse(assessment.explanation, done)
+                    return
+                }
+                else -> Unit
+            }
             runCatching {
                 if (handlePendingFollowUp(command, done)) return
             }.onFailure {
@@ -279,6 +287,18 @@ class EmaCommandRouter(
             }
 
             pendingTask = null
+
+            command = assessment.canonical
+            val appExplanation = EmaApplicationKnowledge.answerQuestion(command, appEngine.installedApps())
+                ?: EmaApplicationKnowledge.explainTerm(command)
+            if (appExplanation != null) {
+                finishAssistantResponse(appExplanation, done)
+                return
+            }
+            if (assessment.act == EmaLanguageUnderstanding.Act.QUESTION) {
+                finishAssistantResponse(EmaInstructionKnowledge.explain(command), done)
+                return
+            }
 
             val customRoutines = EmaNamedRoutineStore.load(context)
             when (val routine = EmaNamedRoutines.parse(command, customRoutines)) {
@@ -969,10 +989,10 @@ class EmaCommandRouter(
             }
 
             lower == "turn on flashlight" || lower == "turn on the flashlight" ||
-                lower == "flashlight on" || lower == "turn on torch" -> setFlashlight(true, done)
+                lower == "flashlight on" || lower == "on flashlight" || lower == "on the flashlight" || lower == "on torch" || lower == "turn on torch" -> setFlashlight(true, done)
 
             lower == "turn off flashlight" || lower == "turn off the flashlight" ||
-                lower == "flashlight off" || lower == "turn off torch" -> setFlashlight(false, done)
+                lower == "flashlight off" || lower == "off flashlight" || lower == "off the flashlight" || lower == "off torch" || lower == "turn off torch" -> setFlashlight(false, done)
 
             lower == "increase brightness" || lower == "brightness up" -> adjustBrightness(0.1f, done)
             lower == "decrease brightness" || lower == "brightness down" -> adjustBrightness(-0.1f, done)
@@ -1984,7 +2004,7 @@ class EmaCommandRouter(
         val key = EmaDuplicateGuard.messageKey(app, selected.displayName + selected.phone.orEmpty(), body)
         val now = android.os.SystemClock.elapsedRealtime()
         if (EmaDuplicateGuard.shared.recentlyDone(key, now)) {
-            val result = "I sent that exact message to ${selected.displayName} less than a minute ago, so I did not send it again."
+            val result = "A recent identical attempt to ${selected.displayName} may already have been submitted. I won't send it twice; check the chat before retrying."
             speak(result); done(result); return
         }
         appEngine.sendMessage(app, selected.displayName, selected.phone, selected.email, body) { ok, result ->
@@ -2009,6 +2029,23 @@ class EmaCommandRouter(
             val result = if (ok) "Reminder set for ${EmaTimeParser.describe(moment.millis)}: ${task.target}."
             else "Android could not schedule that reminder."
             speak(result); done(result)
+            return true
+        }
+
+        if (task.type == "message-details") {
+            if (EmaPlanInstructions.isCancel(command)) {
+                pendingTask = null
+                finishAssistantResponse("Cancelled. I did not send a message.", done)
+                return true
+            }
+            if (Regex("(?i)^(?:open|play|search|turn|set|call)\\s+").containsMatchIn(command)) return false
+            val details = EmaMessageDetails.parse(command)
+            if (details == null) {
+                finishAssistantResponse("Please separate the recipient and message with a comma, for example: Daniel Bro, am coming home.", done)
+                return true
+            }
+            pendingTask = null
+            sendMessageCommand(EmaCommand.SendMessage(details.first, task.app, details.second), done)
             return true
         }
 
@@ -3296,6 +3333,10 @@ class EmaCommandRouter(
                     EmaSemanticParser.Role.RECIPIENT -> {
                         val partial = result.partial as? EmaCommand.SendMessage
                         pendingTask = PendingTask("message-recipient", "", partial?.app, partial?.body)
+                    }
+                    EmaSemanticParser.Role.BODY -> {
+                        val partial = result.partial as? EmaCommand.SendMessage
+                        pendingTask = PendingTask("message-details", "", partial?.app)
                     }
                     EmaSemanticParser.Role.APP -> pendingTask = PendingTask("choose-app", command, candidates = result.options)
                     else -> Unit

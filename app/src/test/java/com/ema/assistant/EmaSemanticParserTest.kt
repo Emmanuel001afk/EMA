@@ -13,6 +13,22 @@ class EmaSemanticParserTest {
         return (r as EmaSemanticParser.Result.Plan).steps.mapNotNull { it.command }.filterIsInstance<EmaCommand.SendMessage>().single()
     }
 
+    @Test fun screenshotSearchThenPerceivedFirstVideoIsSelectionNotTitle() {
+        val raw = "open YouTube and search on 'how to build an operating system' and play the first video you see"
+        val plan = EmaSemanticParser.understand(raw, env) as EmaSemanticParser.Result.Plan
+        val commands = plan.steps.mapNotNull { it.command }
+        val search = commands.filterIsInstance<EmaCommand.SearchInApp>().single()
+        assertEquals("how to build an operating system", search.query)
+        assertTrue(commands.last() is EmaCommand.SelectResult)
+        assertFalse(commands.any { it is EmaCommand.PlayMedia })
+    }
+
+    @Test fun perceptionClausesDoNotBecomeSongQueries() {
+        assertEquals(EmaSelection.Ordinal(1), EmaSelection.parseReference("the first video you see"))
+        assertEquals(EmaSelection.Ordinal(2), EmaSelection.parseReference("the second result that you can see"))
+        assertNull(EmaSelection.parseReference("First Video You See About Space"))
+    }
+
     @Test fun bodyIsCopiedExactly() {
         val body = "Don't forget: 3 eggs, 2 apples & the WhatsApp group link!"
         assertEquals(body, msg("tell Daniel on WhatsApp that $body").body)
