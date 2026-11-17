@@ -56,6 +56,7 @@ class EmaConversationView(private val context: Context, private val onOptionChos
         root.addView(pillRow)
         root.addView(messages)
         setState(State.READY)
+        showSuggestions(EmaFollowUpSuggestions.starters)
     }
 
     fun setState(state: State, detail: String? = null) {
@@ -75,6 +76,7 @@ class EmaConversationView(private val context: Context, private val onOptionChos
     fun addAssistant(text: String, status: EmaOutcomeStatus) {
         messages.addView(bubble(text, user = false, status = status))
         setState(stateFor(status))
+        if (status == EmaOutcomeStatus.SUCCESS) showSuggestions(EmaFollowUpSuggestions.forReply(text))
         trim()
     }
 
@@ -129,6 +131,20 @@ class EmaConversationView(private val context: Context, private val onOptionChos
     }
 
     /** EMA asked something; offer the options as one-tap answers. */
+    private fun showSuggestions(commands: List<String>) {
+        if (commands.isEmpty()) return
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        commands.take(4).forEach { command ->
+            row.addView(Button(context).apply {
+                text = command
+                isAllCaps = false
+                textSize = 12f
+                setOnClickListener { onOptionChosen(command) }
+            })
+        }
+        messages.addView(HorizontalScrollView(context).apply { addView(row) })
+    }
+
     fun showOptions(options: List<String>) {
         setState(State.NEEDS_ANSWER)
         if (options.isEmpty()) return

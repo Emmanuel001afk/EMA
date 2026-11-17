@@ -51,6 +51,29 @@ class EmaNotificationListenerService : NotificationListenerService() {
 
         fun isConnected(): Boolean = service != null
 
+        /** Snapshot only; no dismissal or reply side effects. */
+        fun digestItems(): List<EmaNotificationDigest.Item> {
+            val connected = service ?: return emptyList()
+            return runCatching {
+                connected.getActiveNotifications().orEmpty().take(100).map { sbn ->
+                    val n = sbn.notification
+                    val label = runCatching {
+                        connected.packageManager.getApplicationLabel(
+                            connected.packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+                    }.getOrDefault(sbn.packageName.substringAfterLast('.'))
+                    EmaNotificationDigest.Item(
+                        key = sbn.key, packageName = sbn.packageName, appName = label,
+                        title = n.extras?.getCharSequence("android.title")?.toString().orEmpty(),
+                        text = n.extras?.getCharSequence("android.bigText")?.toString()
+                            ?: n.extras?.getCharSequence("android.text")?.toString().orEmpty(),
+                        category = n.category.orEmpty(), postTimeMs = sbn.postTime,
+                        isOngoing = sbn.isOngoing,
+                        canReply = n.actions?.any { !it.remoteInputs.isNullOrEmpty() } == true
+                    )
+                }
+            }.getOrDefault(emptyList())
+        }
+
         fun describeActiveNotifications(): String {
             val activeService = service
             if (activeService == null) return "EMA notification access is not connected. Enable Notification access for EMA first."

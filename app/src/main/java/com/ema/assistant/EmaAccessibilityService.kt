@@ -61,6 +61,8 @@ class EmaAccessibilityService : AccessibilityService() {
             val callback: (Boolean) -> Unit,
             val deadline: Long,
             val attempts: Int,
+            val lastRevealAt: Long = 0L,
+            val textAttempted: Boolean = false,
             val finished: AtomicBoolean = AtomicBoolean(false)
         )
 
@@ -88,7 +90,7 @@ class EmaAccessibilityService : AccessibilityService() {
         fun searchInPackage(packageName: String?, query: String, callback: (Boolean) -> Unit) {
             val service = instance
             if (service == null) {
-                android.util.Log.w("EMA", "searchInPackage('$query') rejected: screen control service is not connected")
+                android.util.Log.w("EMA", "searchInPackage rejected: screen control service is not connected")
                 runCatching { callback(false) }
                 return
             }
@@ -169,12 +171,17 @@ class EmaAccessibilityService : AccessibilityService() {
         fun selectMediaResult(packageName: String, query: String): Boolean {
             val service = instance ?: return false
             val model = service.screenModelInternal(500, packageName)
-            val result = model.snapshot.nodes.firstOrNull {
-                it.visible && it.enabled && !it.editable && it.actionable &&
-                    EmaExecutionVerifier.queryVisible(it.label, query)
-            } ?: return false
-            return model.nodes.getOrNull(result.clickTargetIndex)
+            // A query echoed in a search box or toolbar isn't a result. Rows
+            // combine title and artist child labels under their click target.
+            val result = EmaResultExtractor.extract(model.snapshot, query)
+                .filter { !it.sponsored && EmaActionEvidence.mediaQueryMatches(query, it.text) }
+                .sortedBy { it.top }.firstOrNull() ?: return false
+            return model.nodes.getOrNull(result.clickIndex)
                 ?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        }
+
+        fun observedBlocker(packageName: String): String? = instance?.let {
+            EmaSearchPolicy.blocker(it.screenModelInternal(700, packageName).snapshot)
         }
 
         fun playInTarget(packageName: String): Boolean {
@@ -231,7 +238,7 @@ class EmaAccessibilityService : AccessibilityService() {
             val service = instance ?: return false
             val model = service.screenModelInternal(RESULT_NODE_LIMIT, packageName)
             val list = model.snapshot.nodes.filter { it.scrollable && it.visible }
-                .maxByOrNull { it.width.toLong() * it.height } ?: return service.scrollInternal("down")
+                .maxByOrNull { it.width.toLong() * it.height } ?: return false
             return model.nodes.getOrNull(list.index)?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) == true ||
                 service.scrollInternal("down")
         }
@@ -328,7 +335,7 @@ class EmaAccessibilityService : AccessibilityService() {
                 return
             }
             service.captureAndTapTextVisuallyWithRetry(
-                packageName = service.rootInActiveWindow?.packageName?.toString().orEmpty(),
+                packageName = service.applicationRoot()?.packageName?.toString().orEmpty(),
                 target = text,
                 attempts = 3,
                 callback = callback
@@ -465,59 +472,65 @@ class EmaAccessibilityService : AccessibilityService() {
             dropHead(request)
             android.util.Log.w(
                 "EMA",
-                "screen search expired for '${request.query}' in ${request.packageName ?: "any app"} after ${request.attempts} attempts"
+                "screen search expired (${EmaPrivacy.describe(request.query)}) after ${request.attempts} attempts"
             )
             finishSearch(request, false)
             return
         }
 
-        val root = rootInActiveWindow
-        if (root == null) {
+        if (getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            dropHead(request)
+            finishSearch(request, false)
+            return
+        }
+        val model = screenModelInternal(700, request.packageName)
+        if (model.snapshot.nodes.isEmpty()) {
             advance(request)
             return
         }
-        if (request.packageName != null && root.packageName?.toString() != request.packageName) {
-            // The target app is not in front yet. Wait for it rather than typing
-            // the query into whatever else happens to be open.
-            advance(request)
-            return
-        }
-
-        val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
-            ?: findEditable(root)
-            ?: findSearchNode(root)
-
-        if (field == null || !field.isEditable) {
-            // Reveal a hidden search entry (tab, icon, or collapsed search view)
-            // and retry on the next tick. Either way the attempt is consumed.
-            clickSearchControl(root)
-            revealSearchEntryInternal(request.packageName)
-            advance(request)
-            return
-        }
-
-        if (commitText(field, request.query)) {
-            // Nudge the app to run its search: the IME action first, then any
-            // explicit search/go control that is still on screen.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                runCatching {
-                    field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        // Some apps replace the "Search" hint with the query after typing.
+        // Match that read-back only after this request attempted a write.
+        val readBack = if (request.textAttempted) model.snapshot.nodes.singleOrNull {
+            it.visible && it.enabled && it.editable && it.text == request.query
+        } else null
+        val decision = readBack?.let { EmaSearchPolicy.Decision.Type(it.index) }
+            ?: EmaSearchPolicy.decide(model.snapshot)
+        when (decision) {
+            is EmaSearchPolicy.Decision.Reveal -> {
+                // One click, then let the UI react. Repeated taps toggled search
+                // closed again on Compose apps before the field was created.
+                if (now - request.lastRevealAt >= 1_200L) {
+                    model.nodes.getOrNull(decision.index)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    advance(request, now)
+                } else advance(request)
+            }
+            is EmaSearchPolicy.Decision.Type -> {
+                val field = model.nodes.getOrNull(decision.index)
+                if (field == null) { advance(request); return }
+                if (field.text?.toString() == request.query) {
+                    // A refreshed snapshot read-back, not ACTION_SET_TEXT's return
+                    // value, proves typing. Do not append or type a second time.
+                    val submitted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                        field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                    if (!submitted) EmaSearchPolicy.submitIndex(model.snapshot)?.let { index ->
+                        model.nodes.getOrNull(index)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                    dropHead(request)
+                    finishSearch(request, true)
+                } else {
+                    commitText(field, request.query)
+                    advance(request, typed = true)
                 }
             }
-            clickSearchControl(root)
-            dropHead(request)
-            finishSearch(request, true)
-            return
+            EmaSearchPolicy.Decision.Wait -> advance(request)
         }
-
-        advance(request)
     }
 
-    private fun advance(request: PendingSearch) {
+    private fun advance(request: PendingSearch, revealedAt: Long = request.lastRevealAt, typed: Boolean = request.textAttempted) {
         synchronized(pendingSearchLock) {
             if (pendingSearch.firstOrNull() !== request) return
             pendingSearch.removeFirst()
-            pendingSearch.addFirst(request.copy(attempts = request.attempts + 1))
+            pendingSearch.addFirst(request.copy(attempts = request.attempts + 1, lastRevealAt = revealedAt, textAttempted = typed))
         }
     }
 
@@ -540,11 +553,12 @@ class EmaAccessibilityService : AccessibilityService() {
     // ------------------------------------------------------- screen reading
 
     private fun readCurrentWindow(maxChars: Int): String {
-        val root = rootInActiveWindow ?: return ""
+        val root = applicationRoot() ?: return ""
         val out = StringBuilder()
 
         fun walk(node: AccessibilityNodeInfo?) {
             if (node == null || out.length >= maxChars) return
+            if (node.isPassword) return
             val text = node.text?.toString()?.trim().orEmpty()
             val description = node.contentDescription?.toString()?.trim().orEmpty()
             val value = when {
@@ -567,11 +581,12 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun inspectCurrentUiInternal(maxChars: Int): String {
-        val root = rootInActiveWindow ?: return ""
+        val root = applicationRoot() ?: return ""
         val out = StringBuilder()
 
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || out.length >= maxChars) return
+            if (node.isPassword) return
             val text = node.text?.toString()?.trim().orEmpty()
             val desc = node.contentDescription?.toString()?.trim().orEmpty()
             val label = when {
@@ -604,9 +619,9 @@ class EmaAccessibilityService : AccessibilityService() {
     /**
      * Build the provider-neutral screen model used by every resolver.
      *
-     * Interactive windows are included (dialogs, bottom sheets, IME) because
-     * with only the active window readable, a permission dialog or a keyboard
-     * makes the app underneath look like it has no controls at all.
+     * Resolve window ownership first: app dialogs and bottom sheets belong to
+     * the app; keyboards and EMA's own overlay do not. A real system modal is
+     * readable but blocks package-targeted automation underneath it.
      */
     /** A screen snapshot plus the live nodes it was built from, index-aligned. */
     private class ScreenModel(
@@ -617,16 +632,30 @@ class EmaAccessibilityService : AccessibilityService() {
     private fun screenSnapshotInternal(maxNodes: Int): EmaScreenSnapshot =
         screenModelInternal(maxNodes).snapshot
 
-    private fun screenModelInternal(maxNodes: Int, targetPackage: String? = null): ScreenModel {
-        val roots = if (targetPackage == null) collectRoots() else {
-            // Never combine keyboard/assistant/other-app controls with a chat.
-            // Only the top application window may be a target, including when
-            // an IME or the system-assistant window has input focus above it.
-            val application = windows.orEmpty().filter {
-                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
-            }.maxByOrNull { it.layer }?.root ?: rootInActiveWindow
-            if (application?.packageName?.toString() == targetPackage) listOf(application) else emptyList()
+    /** Ignore assistant/IME windows; preserve real system dialogs and app ownership. */
+    private fun applicationRoot(targetPackage: String? = null): AccessibilityNodeInfo? {
+        val available = runCatching { windows.orEmpty().mapNotNull { window ->
+            window.root?.let { window to it }
+        } }.getOrDefault(emptyList())
+        if (available.isEmpty()) {
+            val root = rootInActiveWindow ?: return null
+            return root.takeIf { targetPackage == null || it.packageName?.toString() == targetPackage }
         }
+        val descriptors = available.mapIndexed { index, (window, root) ->
+            val kind = when (window.type) {
+                android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION -> EmaWindowPolicy.Kind.APPLICATION
+                android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM -> EmaWindowPolicy.Kind.SYSTEM
+                else -> EmaWindowPolicy.Kind.IGNORE
+            }
+            EmaWindowPolicy.Window(index, root.packageName?.toString().orEmpty(), window.layer,
+                kind, window.isActive || window.isFocused)
+        }
+        val selected = EmaWindowPolicy.choose(descriptors, packageName, targetPackage) ?: return null
+        return available[selected].second
+    }
+
+    private fun screenModelInternal(maxNodes: Int, targetPackage: String? = null): ScreenModel {
+        val roots = applicationRoot(targetPackage)?.let { listOf(it) }.orEmpty()
         if (roots.isEmpty()) return ScreenModel(EmaScreenSnapshot("", emptyList()), emptyList())
 
         val nodes = mutableListOf<AccessibilityNodeInfo>()
@@ -652,15 +681,17 @@ class EmaAccessibilityService : AccessibilityService() {
             val bounds = Rect().also { node.getBoundsInScreen(it) }
             snapshots += EmaNodeSnapshot(
                 index = index,
-                text = node.text?.toString()?.trim().orEmpty(),
-                description = node.contentDescription?.toString()?.trim().orEmpty(),
+                text = if (node.isPassword) "" else node.text?.toString()?.trim().orEmpty(),
+                description = if (node.isPassword) "" else node.contentDescription?.toString()?.trim().orEmpty(),
                 viewId = node.viewIdResourceName.orEmpty(),
                 className = node.className?.toString().orEmpty(),
                 visible = node.isVisibleToUser,
                 enabled = node.isEnabled,
                 clickableSelf = node.isClickable,
                 clickableAncestorIndex = clickableAncestorOf(index, nodes, parentIndex),
-                editable = node.isEditable,
+                editable = !node.isPassword && (node.isEditable || node.actionList.any {
+                    it.id == AccessibilityNodeInfo.ACTION_SET_TEXT
+                }),
                 focused = node.isFocused,
                 scrollable = node.isScrollable,
                 checkable = node.isCheckable,
@@ -741,7 +772,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun findBestVisibleNode(query: String): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
+        val root = applicationRoot() ?: return null
         val wanted = query.trim().lowercase()
         if (wanted.isBlank()) return null
         var exact: AccessibilityNodeInfo? = null
@@ -766,7 +797,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapTextExactInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
 
@@ -789,7 +820,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapTextInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val wanted = text.trim().lowercase()
         if (wanted.isBlank()) return false
 
@@ -816,19 +847,11 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun revealSearchEntryInternal(packageName: String?): Boolean {
-        val root = rootInActiveWindow ?: return false
-        if (packageName != null && root.packageName?.toString() != packageName) return false
-        // Bottom navigation and toolbars commonly label the entry "Search".
-        val labels = listOf("Search", "Search tab", "Explore", "Find", "Discover")
-        for (label in labels) {
-            if (tapTextExactInternal(label)) return true
-        }
-        for (label in labels) {
-            val node = findBestVisibleNode(label) ?: continue
-            val target = if (node.isClickable) node else clickableAncestor(node) ?: continue
-            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-        }
-        return false
+        val model = screenModelInternal(700, packageName)
+        val decision = EmaSearchPolicy.decide(model.snapshot)
+        if (decision is EmaSearchPolicy.Decision.Type) return true
+        return decision is EmaSearchPolicy.Decision.Reveal &&
+            model.nodes.getOrNull(decision.index)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
     }
 
     private fun isAudioPlayingInternal(): Boolean = runCatching {
@@ -846,7 +869,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapFirstResultInternal(query: String = ""): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         data class Candidate(val node: AccessibilityNodeInfo, val label: String, val score: Int)
         val candidates = mutableListOf<Candidate>()
         val ignored = setOf("back", "home", "search", "menu", "more options", "settings")
@@ -892,7 +915,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapSendButtonInternal(packageName: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         if (packageName.isNotBlank() && root.packageName?.toString() != packageName) return false
 
         fun find(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -961,7 +984,7 @@ class EmaAccessibilityService : AccessibilityService() {
         }
 
         // OCR is expensive, so it is only reached once the node tree has failed.
-        val rootPackage = rootInActiveWindow?.packageName?.toString().orEmpty()
+        val rootPackage = applicationRoot()?.packageName?.toString().orEmpty()
         val target = packageName.ifBlank { rootPackage }
         if (target.isNotBlank() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             captureAndTapTextVisually(target, "send") { visualOk ->
@@ -1013,7 +1036,7 @@ class EmaAccessibilityService : AccessibilityService() {
 
     /** Use the soft keyboard's own action button, which many chat apps honour. */
     private fun tryImeActionSend(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
             ?: findEditable(root)
             ?: return false
@@ -1024,7 +1047,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun tapLikelySubmitControlInternal(packageName: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         if (packageName.isNotBlank() && root.packageName?.toString() != packageName) return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findEditable(root)
@@ -1096,7 +1119,7 @@ class EmaAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------- text
 
     private fun setFocusedTextInternal(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             ?: findEditable(root)
             ?: return false
@@ -1105,13 +1128,13 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun focusedEditableTextInternal(): String {
-        val root = rootInActiveWindow ?: return ""
+        val root = applicationRoot() ?: return ""
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: findEditable(root) ?: return ""
         return if (field.isEditable) field.text?.toString().orEmpty() else ""
     }
 
     private fun composerHasFocusInternal(): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val field = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
         return field.isEditable
     }
@@ -1150,7 +1173,7 @@ class EmaAccessibilityService : AccessibilityService() {
     }
 
     private fun scrollInternal(direction: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+        val root = applicationRoot() ?: return false
         val target = findScrollable(root) ?: root
         val action = when (direction.lowercase()) {
             "up", "back", "top" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
@@ -1265,7 +1288,7 @@ class EmaAccessibilityService : AccessibilityService() {
         target: String,
         callback: (Boolean) -> Unit
     ) {
-        val root = rootInActiveWindow
+        val root = applicationRoot()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             callback(false)
             return

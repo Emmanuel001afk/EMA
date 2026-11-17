@@ -249,7 +249,17 @@ object EmaOfflineSpeechModel {
                 if (alreadyReady) {
                     runCatching { onPreparing?.invoke() }
                 }
-                val loaded = Model(directory.path)
+                val loaded = EmaOfflineModelRecovery.load(
+                    load = { Model(directory.path) },
+                    reinstallFromBundledAssets = {
+                        // No active leases exist on the cold-load path. Repair
+                        // from the checksum-verified APK, never from a download.
+                        synchronized(stateLock) { state = State.PREPARING }
+                        runCatching { onPreparing?.invoke() }
+                        EmaWakeModel.prepare(app, forceReinstall = true)
+                        synchronized(stateLock) { state = State.LOADING }
+                    }
+                )
                 val elapsed = (SystemClock.elapsedRealtime() - loadStarted).coerceAtLeast(1L)
                 synchronized(stateLock) {
                     cachedModel = loaded

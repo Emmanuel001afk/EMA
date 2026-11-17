@@ -39,7 +39,7 @@ object EmaSpeechRecognition {
     private const val MAX_SCREEN_LABELS = 80
     private const val TRANSIENT_AUDIO_RETRY_DELAY_MS = 180L
 
-    /** Owner's chosen speech recognition mode (defaults to EMA's built-in offline engine first). */
+    /** Owner's chosen speech recognition mode (defaults to EMA's built-in engine only; existing explicit choices are preserved). */
     fun speechMode(context: Context): EmaSpeechMode {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val raw = prefs.getString(KEY_SPEECH_MODE, null)
@@ -47,7 +47,7 @@ object EmaSpeechRecognition {
         if (prefs.contains(LEGACY_KEY_OFFLINE_ENABLED) && !prefs.getBoolean(LEGACY_KEY_OFFLINE_ENABLED, true)) {
             return EmaSpeechMode.SYSTEM_FIRST
         }
-        return EmaSpeechMode.EMA_OFFLINE_FIRST
+        return EmaSpeechMode.EMA_OFFLINE_ONLY
     }
 
     /** Persist the owner's chosen speech recognition mode. */
@@ -356,6 +356,9 @@ object EmaSpeechRecognition {
             context = context,
             languageTag = language.toLanguageTag()
         ).available
+        if (!mode.allowsSystemRecognizers) {
+            return if (emaAvailable) listOf(EmaRecognizerKind.EMA_OFFLINE) else emptyList()
+        }
         val onDevice = hasPlatformOnDevice(context)
         val external = findExternalService(context) != null
         val online = isNetworkAvailable(context)
@@ -463,7 +466,8 @@ object EmaSpeechRecognition {
                 ) {
                     "EMA's built-in offline engine currently supports English. Switch Speech mode to Offline first to use system speech for ${language.displayLanguage}, or type below."
                 } else {
-                    "Speech recognition isn't available right now. Check available memory or type your request below."
+                    val readiness = EmaOfflineSpeechModel.checkAvailability(appContext, language.toLanguageTag())
+                    "Offline speech cannot start: ${readiness.reason} No audio was sent to a speech service. Close memory-heavy apps and try again; you can also type below."
                 }
                 mainHandler.post {
                     if (gen == generation) listener.onFailure(SpeechRecognizer.ERROR_CLIENT, msg, null)
@@ -798,7 +802,13 @@ object EmaSpeechRecognition {
                 diagnosticDetail !in setOf(
                     "No speech detected.", "No words recognized.", "Only background noise was heard."
                 )
-            val finalMessage = if (hasSpecificHint) diagnosticDetail!! else generic
+            val finalMessage = if (hasSpecificHint) diagnosticDetail!! else if (
+                kind == EmaRecognizerKind.EMA_OFFLINE && errorCode == SpeechRecognizer.ERROR_CLIENT
+            ) {
+                val readiness = EmaOfflineSpeechModel.checkAvailability(appContext, activeLanguage.toLanguageTag())
+                if (!readiness.available) "Offline speech could not start: ${readiness.reason} Close memory-heavy apps and retry."
+                else "$generic Check microphone access and free storage, then tap Prepare offline speech engine in Settings."
+            } else generic
             listener.onFailure(errorCode, finalMessage, kind)
         }
 

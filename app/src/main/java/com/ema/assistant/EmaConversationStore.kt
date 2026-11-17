@@ -13,6 +13,7 @@ object EmaConversationStore {
 
     @Synchronized
     fun add(context: Context, role: String, text: String) {
+        if (EmaWorkspace.looksLikeSecret(text)) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val array = runCatching { JSONArray(prefs.getString(KEY_TURNS, "[]")) }.getOrElse { JSONArray() }
         array.put(JSONObject().put("role", role).put("text", text.take(4000)))

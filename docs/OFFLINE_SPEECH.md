@@ -59,17 +59,19 @@ BCP-47 locales (`en-US`, `en-GB`, `en-NG`, `en-AU`, `en-CA`, `en-IN`, `en-IE`,
 `en-NZ`, `en-ZA`, `en-GH`, `en-KE`, `en-TZ`, `en-UG`, `en-SG`, `en-PH`,
 `en-HK`, `en-JM`, `en-001`, `en`):
 
-1. **`EMA offline first` (default)** — Runs `EmaOfflineSpeechEngine` directly
+1. **`EMA offline first` (optional system fallback)** — Runs `EmaOfflineSpeechEngine` directly
    in-process first. Falls back to Android on-device (API 31+) or an explicit
    external system recognizer only when the offline engine cannot serve the
    request (e.g. non-English locale or severe low memory). Voice: *"offline speech first"*.
-2. **`EMA offline only` (strict private)** — Uses only EMA's built-in offline
+2. **`EMA offline only` (default for new installations; strict private)** — Uses only EMA's built-in offline
    engine. External and cloud speech services are never contacted. Voice:
    *"offline speech only"*.
 3. **`System recognizer first`** — Tries Android's on-device / system recognizer
    first when online, switching immediately to EMA's built-in offline engine
    offline or on any platform error. All platform results still pass through
    `EmaSpeechRescorer` and `EmaInverseTextNormalizer`. Voice: *"system speech first"*.
+
+Existing explicit speech-mode choices are preserved on upgrade. Select *"offline speech only"* to enforce local-only recognition on an existing installation. The model is bundled; a model-open I/O failure triggers at most one local reinstall/reload from verified APK assets. Memory and permission failures are not treated as corruption. No availability or accuracy guarantee can override Android resource limits.
 
 Recognition profiles adapt endpointing, normalization and rescoring per task:
 `COMMAND` (assistant actions), `CONFIRMATION` (snappy yes/no/choice replies when

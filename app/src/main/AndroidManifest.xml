@@ -47,6 +47,7 @@
                 <action android:name="android.intent.action.SEND"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="audio/*"/>
+                <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
         <!-- System-wide offline voice input dialog for apps starting ACTION_RECOGNIZE_SPEECH. -->

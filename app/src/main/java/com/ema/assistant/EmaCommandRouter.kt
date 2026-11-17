@@ -280,6 +280,54 @@ class EmaCommandRouter(
 
             pendingTask = null
 
+            val customRoutines = EmaNamedRoutineStore.load(context)
+            when (val routine = EmaNamedRoutines.parse(command, customRoutines)) {
+                is EmaNamedRoutines.Action.SaveCustom -> {
+                    val reply = if (routine.name !in customRoutines && customRoutines.size >= EmaNamedRoutines.MAX_CUSTOM_ROUTINES) {
+                        "Your routines are full. Delete one before creating another."
+                    } else if (EmaNamedRoutineStore.save(context, customRoutines +
+                            (routine.name to EmaNamedRoutines.CustomRoutine(routine.name, routine.steps)))) {
+                        "Saved routine ${routine.name} with ${routine.steps.size} steps. Say run ${routine.name} routine."
+                    } else "I couldn't save that routine."
+                    finishAssistantResponse(reply, done)
+                    return
+                }
+                is EmaNamedRoutines.Action.DeleteCustom -> {
+                    val reply = if (routine.name !in customRoutines) "No saved routine has that name."
+                    else if (EmaNamedRoutineStore.save(context, customRoutines - routine.name)) "Deleted routine ${routine.name}."
+                    else "I couldn't delete that routine."
+                    finishAssistantResponse(reply, done)
+                    return
+                }
+                is EmaNamedRoutines.Action.RunCustom -> {
+                    // Children run at depth 1: they cannot invoke another custom routine.
+                    executeSequence(routine.routine.steps, done, 1)
+                    return
+                }
+                is EmaNamedRoutines.Action.Refused -> {
+                    finishAssistantResponse(routine.reason, done)
+                    return
+                }
+                EmaNamedRoutines.Action.ListRoutines -> {
+                    finishAssistantResponse("Daily briefing: say brief me. Saved custom routines: " +
+                        customRoutines.keys.joinToString(", ").ifBlank { "none" } + ".", done)
+                    return
+                }
+                EmaNamedRoutines.Action.Briefing -> {
+                    finishAssistantResponse(EmaProductivityEngine(context).briefing(), done)
+                    return
+                }
+                null -> Unit
+            }
+
+            // Content-bearing productivity requests are handled before aliases,
+            // planning or optional AI can reinterpret their payloads.
+            if (EmaProductivityEngine(context).answerScreenRequest(command) { finishAssistantResponse(it, done) }) return
+            EmaProductivityEngine(context).answer(command)?.let { reply ->
+                finishAssistantResponse(reply, done)
+                return
+            }
+
             // Instruction clauses ("make sure one action does not hinder
             // another", "go home when you're done") are plan options. Strip
             // them before any layer can turn them into a fake step.
@@ -363,7 +411,8 @@ class EmaCommandRouter(
             // Offline knowledge: calculations, conversions, dates. Computed, never invented.
             runCatching {
                 traceLayer("knowledge")
-                EmaKnowledge.answer(command)?.let { answer ->
+                EmaKnowledge.answer(command, previous = EmaDialogueState.snapshot().quantity?.value)?.let { answer ->
+                    answer.value?.let { EmaDialogueState.recordQuantity(it) }
                     finishAssistantResponse(answer.text, done)
                     return
                 }
@@ -377,6 +426,13 @@ class EmaCommandRouter(
                 if (handleSemantic(command, done)) return
             }.onFailure {
                 android.util.Log.e("EMA", "Semantic layer failed; using established layers", it)
+            }
+        }
+
+        if (depth > 0) {
+            EmaProductivityEngine(context).answer(command)?.let {
+                finishAssistantResponse(it, done)
+                return
             }
         }
 
@@ -1527,7 +1583,7 @@ class EmaCommandRouter(
                 description = text,
                 consequential = false,
                 maxAttempts = 1,
-                timeoutMs = 25_000L,
+                timeoutMs = if (text.trim().startsWith("play ", true)) 55_000L else 25_000L,
                 dependsOnPrevious = true,
                 run = { finish ->
                     executeInternal(text, { result ->
@@ -3054,6 +3110,7 @@ class EmaCommandRouter(
 
     private fun finishAssistantResponse(raw: String, done: (String) -> Unit) {
         val answer = raw.trim().ifBlank { "I could not answer that right now. Please try again." }
+        EmaDialogueState.recordReply(answer)
         Handler(Looper.getMainLooper()).post {
             runCatching { EmaConversationStore.add(context, "assistant", answer) }
                 .onFailure { android.util.Log.e("EMA", "Could not store assistant response", it) }
@@ -3278,6 +3335,7 @@ class EmaCommandRouter(
                 maxAttempts = if (cmd is EmaCommand.SearchInApp) 2 else 1,
                 timeoutMs = when (cmd) {
                     is EmaCommand.SendMessage -> 50_000L
+                    is EmaCommand.PlayMedia -> 55_000L
                     is EmaCommand.SelectResult -> 25_000L
                     is EmaCommand.SearchInApp -> 20_000L
                     else -> 25_000L

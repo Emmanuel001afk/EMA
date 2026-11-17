@@ -12,7 +12,7 @@ import java.util.Locale
 enum class EmaSpeechMode(val key: String, val label: String, val explanation: String) {
 
     /**
-     * Default. EMA uses its own built-in offline speech-to-text engine first:
+     * Optional fallback-enabled mode. EMA uses its own built-in offline speech-to-text engine first:
      * no internet, no external speech app, no audio sent off the phone. If the
      * built-in engine cannot serve the request (for example a non-English
      * language or severe device memory pressure), EMA falls back to Android's
@@ -20,7 +20,7 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
      */
     EMA_OFFLINE_FIRST(
         "ema_offline_first",
-        "EMA offline first (built-in, default)",
+        "EMA offline first (allows system fallback)",
         "EMA uses its own built-in offline speech recognizer first. Android speech is used only if the local engine is unavailable."
     ),
 
@@ -30,7 +30,7 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
      */
     EMA_OFFLINE_ONLY(
         "ema_offline_only",
-        "EMA offline only (private, no system speech)",
+        "EMA offline only (default, private, no system speech)",
         "EMA uses only its built-in offline speech recognizer. Audio never leaves EMA or touches cloud speech services."
     ),
 
@@ -54,7 +54,7 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
     val prefersEmaOffline: Boolean get() = this != SYSTEM_FIRST
 
     companion object {
-        const val DEFAULT_KEY = "ema_offline_first"
+        const val DEFAULT_KEY = "ema_offline_only"
 
         /**
          * Regional English BCP-47 tags advertised by [EmaRecognitionService] for
@@ -84,7 +84,7 @@ enum class EmaSpeechMode(val key: String, val label: String, val explanation: St
         )
 
         fun fromKey(key: String?): EmaSpeechMode =
-            values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: EMA_OFFLINE_FIRST
+            values().firstOrNull { it.key.equals(key?.trim(), ignoreCase = true) } ?: EMA_OFFLINE_ONLY
 
         /**
          * Normalize a raw BCP-47 / Java locale string (`"en_NG"`, `"en-us"`,
