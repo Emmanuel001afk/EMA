@@ -216,7 +216,9 @@ object EmaSemanticParser {
     // ---------------------------------------------------------- entry
 
     fun understand(raw: String, env: Env = Env()): Result {
-        val cleaned = normalise(raw)
+        val assessment = EmaLanguageUnderstanding.assess(raw)
+        if (assessment.act != EmaLanguageUnderstanding.Act.REQUEST) return Result.NotHandled("non-executable-${assessment.act.name.lowercase()}")
+        val cleaned = normalise(assessment.canonical)
         if (cleaned.isBlank()) return Result.NotHandled("empty")
         val corrected = applyCorrections(cleaned)
         val toks = tokenize(corrected)

@@ -103,3 +103,24 @@ The motivating screenshots are evidence of visible text and UI state, not a reco
 - Device vocabulary accepts `on flashlight`, `off flashlight`, `on torch`, and `off torch` in addition to existing forms. Permissions and hardware availability still apply.
 
 These fixes address reproduced parser/state bugs from device screenshots. They do not establish that every app exposes usable controls, that every slow screen eventually loads, or that an uncertain send is safe to repeat. Physical-device regression remains necessary for messaging and playback.
+
+## Native request assessment and task meaning
+
+The native path now assesses speech acts before semantic parsing and before pending-task
+follow-ups: indirect action requests are canonicalized, instruction/capability questions
+are answered without acting, and explicit negative or mixed-negative instructions do not
+execute. Explicit message/search payloads are protected from prefix rewriting. This is a
+bounded grammar, not general language understanding; unsupported paraphrases still need
+clarification. Eight exact French/Spanish device phrases are text mappings only, not a
+claim of multilingual offline acoustic recognition.
+
+Installed app identity is separate from app purpose. Exact known package identities map
+to task concepts across messaging, video, music, browsers, maps, email, files, camera,
+calendar, clock, notes and calculators. Unknown packages remain unknown; purpose is not
+proof that every listed workflow is implemented or accessible in that app version.
+
+Messaging readiness has explicit wait/type/submit/blocked/timeout stages. Loading can
+be observed for eight seconds; wrong packages, locks and conflicting drafts block action.
+A visible recipient, unambiguous composer, exact body and safe Send control are required.
+Submission still uses the existing final recheck and post-send verification. Unit tests
+exercise these stages; real devices/app versions and slow networks require validation.

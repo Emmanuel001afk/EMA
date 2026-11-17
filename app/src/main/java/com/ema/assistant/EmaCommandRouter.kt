@@ -272,6 +272,14 @@ class EmaCommandRouter(
         // Conversation history, stale pending tasks, or scheduler state are
         // auxiliary; a failure there must not make every command fail.
         if (depth == 0) {
+            val assessment = EmaLanguageUnderstanding.assess(command)
+            when (assessment.act) {
+                EmaLanguageUnderstanding.Act.NEGATED, EmaLanguageUnderstanding.Act.CONSTRAINED -> {
+                    finishAssistantResponse(assessment.explanation, done)
+                    return
+                }
+                else -> Unit
+            }
             runCatching {
                 if (handlePendingFollowUp(command, done)) return
             }.onFailure {
@@ -279,6 +287,18 @@ class EmaCommandRouter(
             }
 
             pendingTask = null
+
+            command = assessment.canonical
+            val appExplanation = EmaApplicationKnowledge.answerQuestion(command, appEngine.installedApps())
+                ?: EmaApplicationKnowledge.explainTerm(command)
+            if (appExplanation != null) {
+                finishAssistantResponse(appExplanation, done)
+                return
+            }
+            if (assessment.act == EmaLanguageUnderstanding.Act.QUESTION) {
+                finishAssistantResponse(EmaInstructionKnowledge.explain(command), done)
+                return
+            }
 
             val customRoutines = EmaNamedRoutineStore.load(context)
             when (val routine = EmaNamedRoutines.parse(command, customRoutines)) {
