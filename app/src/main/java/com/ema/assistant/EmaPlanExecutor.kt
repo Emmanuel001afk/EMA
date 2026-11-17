@@ -65,7 +65,7 @@ object EmaOutcomeClassifier {
                 "screen control is off|enable ema in accessibility|notification access").containsMatchIn(l) -> EmaOutcomeStatus.NEEDS_PERMISSION
             l.endsWith("?") || l.contains("tell me which one") || l.contains("which one do you mean") ||
                 l.contains("what should i say") -> EmaOutcomeStatus.NEEDS_INPUT
-            l.contains("did not send it again") || l.contains("won't send it twice") -> EmaOutcomeStatus.BLOCKED
+            l.contains("did not send it again") || l.contains("won't send it twice") || l.contains("blocked a repeat to avoid sending twice") -> EmaOutcomeStatus.BLOCKED
             noSubmission -> EmaOutcomeStatus.FAILED
             Regex("could(?:n't| not) (?:verify|confirm)|not (?:been )?verified|was not confirmed|may not have|" +
                 "but could(?:n't| not)|unable to confirm|appears to have|could not be confirmed").containsMatchIn(l) -> EmaOutcomeStatus.UNVERIFIED

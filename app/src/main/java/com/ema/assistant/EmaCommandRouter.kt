@@ -2013,6 +2013,12 @@ class EmaCommandRouter(
         }
 
         if (task.type == "message-details") {
+            if (EmaPlanInstructions.isCancel(command)) {
+                pendingTask = null
+                finishAssistantResponse("Cancelled. I did not send a message.", done)
+                return true
+            }
+            if (Regex("(?i)^(?:open|play|search|turn|set|call)\\s+").containsMatchIn(command)) return false
             val details = EmaMessageDetails.parse(command)
             if (details == null) {
                 finishAssistantResponse("Please separate the recipient and message with a comma, for example: Daniel Bro, am coming home.", done)

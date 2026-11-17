@@ -93,3 +93,13 @@ A search can be ready even when a custom app does not expose its query as an edi
 Command-only normalization recognizes the split brand variant `spots if i` as Spotify, while preserving message bodies and any undecoded trailing words. It does not invent `and play Arcade` from a badly recognized phrase. When a fuzzy direct-app match contains an unresolved suffix, EMA requests clarification instead of silently dropping that suffix and reporting that opening the app completed the whole request. Explicit structured app-section requests still follow the section-navigation path.
 
 The motivating screenshots are evidence of visible text and UI state, not a recording of the original audio or an accessibility-node dump. These regression fixtures reproduce the visible screen shape; they do not establish word-error-rate improvements or confirm behavior on that specific Spotify build. Validate with `diagnose screen control`, then try a typed command and the same spoken command separately on the device.
+
+## Selection and message-continuation regressions
+
+- A terminal perception phrase (`the first video you see`, `the second result that you can see`) qualifies an observed ordinal, not a song/video title. Titles with additional topic words remain queries. `search on 'how to build an operating system'` strips the search introducer and enclosing quote pair.
+- Ambiguous recipient/body clarification retains the original app. A reply such as `Daniel Bro, am coming home` supplies an explicit recipient/body boundary; later commas remain in the message. Cancellation and new explicit commands can leave this clarification safely.
+- Explicitly not typing/pressing Send/sending is a failed submission, not an unverified send. It must not poison duplicate suppression. Possible submissions remain guarded, with wording that describes uncertainty rather than claiming success.
+- Chat-header verification tolerates up to 12 additional 400 ms observations while the target package remains accessible and the phone unlocked. Recipient/body matching stays exact; a larger bounded 1,200-node target snapshot improves coverage on long chat trees. A failed header check acknowledges that an intent may already have prefilled a draft; a draft is not evidence of sending.
+- Device vocabulary accepts `on flashlight`, `off flashlight`, `on torch`, and `off torch` in addition to existing forms. Permissions and hardware availability still apply.
+
+These fixes address reproduced parser/state bugs from device screenshots. They do not establish that every app exposes usable controls, that every slow screen eventually loads, or that an uncertain send is safe to repeat. Physical-device regression remains necessary for messaging and playback.
