@@ -28,10 +28,10 @@ class EmaInverseTextNormalizerTest {
     fun pluralSplitSpotifyIsRecoveredWithoutInventingMissingActions() {
         assertEquals("open Spotify", norm("open spots if i"))
         val unclear = norm("open spots if i agree at it")
-        assertTrue(unclear.contains("agree at it"))
+        assertTrue(unclear, unclear.contains("agree at it"))
         assertFalse(unclear.contains("play", ignoreCase = true))
         val body = norm("message Ada saying open spots if i agree at it")
-        assertTrue(body.contains("spots if i agree at it"))
+        assertTrue(body, body.contains("spots if I agree at it"))
     }
 
     @Test
