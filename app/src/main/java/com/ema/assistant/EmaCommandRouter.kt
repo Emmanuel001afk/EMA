@@ -2728,7 +2728,13 @@ class EmaCommandRouter(
             finishAssistantResponse(if (verified) "Auto rotate is ${if (enabled) "on" else "off"}, verified."
                 else "Android did not confirm the requested rotation setting.", done)
         } else {
-            val wanted = if (!enabled) AudioManager.RINGER_MODE_NORMAL else if (f.id == "silent") AudioManager.RINGER_MODE_SILENT else AudioManager.RINGER_MODE_VIBRATE
+            val mode = if (f.id == "silent") AudioManager.RINGER_MODE_SILENT else AudioManager.RINGER_MODE_VIBRATE
+            val current = runCatching { context.getSystemService(AudioManager::class.java).ringerMode }.getOrNull()
+            if (!enabled && current != null && current != mode) {
+                finishAssistantResponse("${f.name} is already off. I left the current ringtone mode unchanged.", done)
+                return
+            }
+            val wanted = if (!enabled) AudioManager.RINGER_MODE_NORMAL else mode
             val verified = runCatching {
                 val audio = context.getSystemService(AudioManager::class.java)
                 audio.ringerMode = wanted

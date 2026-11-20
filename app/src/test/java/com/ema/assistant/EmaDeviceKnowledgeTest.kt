@@ -12,6 +12,14 @@ class EmaDeviceKnowledgeTest {
             assertEquals(alias, f, EmaDeviceKnowledge.parse("search settings for $alias")?.feature)
         }
     }
+    @Test fun ringerModesAndRotationKeepTheirOwnMeaning() {
+        for (name in listOf("silent mode", "vibrate mode", "auto rotate")) {
+            assertEquals(EmaDeviceKnowledge.Operation.ENABLE, EmaDeviceKnowledge.parse("turn $name on")?.operation)
+            assertEquals(EmaDeviceKnowledge.Operation.DISABLE, EmaDeviceKnowledge.parse("switch $name off")?.operation)
+        }
+        assertNotEquals(EmaDeviceKnowledge.find("silent mode"), EmaDeviceKnowledge.find("dnd"))
+        assertNotEquals(EmaDeviceKnowledge.find("auto rotate"), EmaDeviceKnowledge.find("display"))
+    }
     @Test fun stateQuestionsAreNeverMutations() {
         for (name in listOf("wi-fi", "bluetooth", "dnd", "location", "battery saver")) {
             for (word in listOf("on", "off", "enabled", "disabled"))

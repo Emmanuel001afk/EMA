@@ -46,6 +46,8 @@ object EmaDeviceKnowledge {
             Operation.OPEN to Regex("^(?:search|look) (?:the )?settings for (.+)$"),
             Operation.ENABLE to Regex("^(?:turn on|switch on|enable|activate) (.+)$"),
             Operation.DISABLE to Regex("^(?:turn off|switch off|disable|deactivate) (.+)$"),
+            Operation.ENABLE to Regex("^(?:turn|switch) (.+?) on$"),
+            Operation.DISABLE to Regex("^(?:turn|switch) (.+?) off$"),
             Operation.ENABLE to Regex("^(.+?) on$"),
             Operation.DISABLE to Regex("^(.+?) off$")
         )
