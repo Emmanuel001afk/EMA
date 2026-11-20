@@ -256,39 +256,22 @@ class EmaAccessibilityService : AccessibilityService() {
          * Reading is separate from tapping so the caller can wait for the shade
          * to finish animating and can verify the result afterwards.
          */
-        fun readToggle(labels: Collection<String>): Boolean? {
+        fun readToggle(labels: Collection<String>, expectedPackage: String? = null): Boolean? {
             val service = instance ?: return null
-            val wanted = labels.map { EmaNodeSnapshot.normalize(it) }.filter { it.isNotBlank() }.toSet()
-            if (wanted.isEmpty()) return null
-            val snapshot = service.screenModelInternal(600).snapshot
-            val node = snapshot.nodes.firstOrNull { candidate ->
-                candidate.visible && candidate.enabled &&
-                    (EmaNodeSnapshot.normalize(candidate.label) in wanted ||
-                        wanted.any { label -> EmaNodeSnapshot.normalize(candidate.label).startsWith(label) })
-            } ?: return null
-            if (node.checkable) return node.checked
-            val state = EmaNodeSnapshot.normalize(node.stateDescription)
-            return when {
-                state.startsWith("on") || state.contains("enabled") -> true
-                state.startsWith("off") || state.contains("disabled") -> false
-                else -> null
-            }
+            val snapshot = service.screenModelInternal(1200, expectedPackage).snapshot
+            return EmaDeviceToggleResolver.resolve(snapshot, labels)?.enabled
         }
 
-        /** Tap a Quick Settings tile by its visible label. Never guesses coordinates. */
-        fun tapToggle(labels: Collection<String>): Boolean {
+        /** Uses the same identity/state resolver as readToggle, with a fresh package check. */
+        fun tapToggle(labels: Collection<String>, expectedPackage: String? = null, desiredState: Boolean? = null): Boolean {
             val service = instance ?: return false
-            val wanted = labels.map { EmaNodeSnapshot.normalize(it) }.filter { it.isNotBlank() }.toSet()
-            if (wanted.isEmpty()) return false
-            val model = service.screenModelInternal(600)
-            val node = model.snapshot.nodes.firstOrNull { candidate ->
-                candidate.visible && candidate.enabled && candidate.actionable &&
-                    (EmaNodeSnapshot.normalize(candidate.label) in wanted ||
-                        wanted.any { label -> EmaNodeSnapshot.normalize(candidate.label).startsWith(label) })
-            } ?: return false
+            if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) return false
+            val model = service.screenModelInternal(1200, expectedPackage)
+            val decision = EmaDeviceToggleResolver.resolve(model.snapshot, labels) ?: return false
+            if (desiredState != null && decision.enabled == desiredState) return true
+            val node = decision.node
             val target = model.nodes.getOrNull(node.clickTargetIndex) ?: return false
-            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            return service.tapCoordinatesInternal(node.centerX.toFloat(), node.centerY.toFloat())
+            return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
 
         fun targetSnapshot(packageName: String): EmaScreenSnapshot =

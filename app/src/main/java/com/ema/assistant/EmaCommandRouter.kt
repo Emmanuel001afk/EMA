@@ -2716,14 +2716,14 @@ class EmaCommandRouter(
         }
         fun observed(): Boolean? {
             if (EmaAccessibilityService.targetSnapshot("com.android.settings").packageName != "com.android.settings") return null
-            return EmaAccessibilityService.readToggle(f.aliases)
+            return EmaAccessibilityService.readToggle(f.aliases, "com.android.settings")
         }
         waiter.until(8_000, pollMs = 300, probe = { observed() != null }) { found ->
             if (!found) {
                 finishAssistantResponse("I opened ${f.name} settings, but could not verify its switch. I haven't changed it.", done)
             } else if (observed() == enabled) {
                 finishAssistantResponse("${f.name} is already ${if (enabled) "on" else "off"} according to its Settings switch.", done)
-            } else if (observed() == null || !EmaAccessibilityService.tapToggle(f.aliases)) {
+            } else if (observed() == null || !EmaAccessibilityService.tapToggle(f.aliases, "com.android.settings", enabled)) {
                 finishAssistantResponse("I could not safely activate ${f.name}'s switch. Check its settings.", done)
             } else {
                 waiter.until(6_000, pollMs = 300, probe = { observed() == enabled }) { verified ->
@@ -2812,7 +2812,7 @@ class EmaCommandRouter(
                 speak(message); done(message)
                 return@until
             }
-            if (!EmaAccessibilityService.tapToggle(labels)) {
+            if (!EmaAccessibilityService.tapToggle(labels, desiredState = enabled)) {
                 EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
                 toggleThroughSettingsPage(kind, labels, enabled, done)
                 return@until
@@ -2862,7 +2862,7 @@ class EmaCommandRouter(
                 speak(message); done(message)
                 return@until
             }
-            if (!EmaAccessibilityService.tapToggle(labels)) {
+            if (!EmaAccessibilityService.tapToggle(labels, desiredState = enabled)) {
                 val message = "I opened $name settings, but couldn't tap its switch."
                 speak(message); done(message)
                 return@until

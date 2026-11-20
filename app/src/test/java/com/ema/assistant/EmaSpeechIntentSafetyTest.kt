@@ -28,6 +28,6 @@ class EmaSpeechIntentSafetyTest {
             EmaVoskJsonParser.Hypothesis("turn off wifi", 0.8f, 1.0),
             EmaVoskJsonParser.Hypothesis("turn on wifi", 0.79f, 0.99)
         ), EmaSpeechContext.EMPTY, EmaRecognitionProfile.COMMAND)
-        assertEquals("turn off wifi", result.primary?.lowercase())
+        assertEquals("turn off wi-fi", result.primary?.lowercase())
     }
 }
