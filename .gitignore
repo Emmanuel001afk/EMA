@@ -39,3 +39,11 @@ Thumbs.db
 
 # Python release-verification tooling
 __pycache__/
+
+# Windows desktop generated assets and packaging
+.venv/
+desktop/windows/resources/model/
+desktop/windows/resources/*.zip
+desktop/windows/*.spec
+desktop/windows/dist/
+desktop/windows/build/
