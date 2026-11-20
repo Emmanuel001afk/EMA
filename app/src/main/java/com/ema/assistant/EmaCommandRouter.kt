@@ -811,6 +811,8 @@ class EmaCommandRouter(
      * the command was consumed here.
      */
     private fun handleSystemCommand(lower: String, command: String, done: (String) -> Unit): Boolean {
+        // Plan/routine steps must use the same device semantics as a standalone request.
+        if (handleDeviceKnowledge(command, done)) return true
         // Generic device-settings parser first: it understands "turn on
         // aeroplane mode", "raise brightness to full" and the exact historical
         // phrasings alike, without an entry per wording.
