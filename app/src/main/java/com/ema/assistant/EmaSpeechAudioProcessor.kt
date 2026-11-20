@@ -920,6 +920,7 @@ class EmaSpeechAudioProcessor(
         fun isIncompleteClause(transcript: String): Boolean {
             val words = tokenizeForEndpoint(transcript)
             if (words.isEmpty()) return false
+            if (EmaSpeechIntentSafety.needsContinuation(transcript)) return true
             if (isHesitationTail(transcript)) return true
             val last = words.last()
             if (words.size >= 2) {

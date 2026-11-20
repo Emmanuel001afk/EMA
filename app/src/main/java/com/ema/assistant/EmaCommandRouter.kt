@@ -289,6 +289,7 @@ class EmaCommandRouter(
             pendingTask = null
 
             command = assessment.canonical
+            if (handleDeviceKnowledge(command, done)) return
             val appExplanation = EmaApplicationKnowledge.answerQuestion(command, appEngine.installedApps())
                 ?: EmaApplicationKnowledge.explainTerm(command)
             if (appExplanation != null) {
@@ -2645,6 +2646,94 @@ class EmaCommandRouter(
         speak(message); done(message)
     }
 
+    /** Knowledge and navigation are not permission to toggle, pair, forget or disclose credentials. */
+    private fun handleDeviceKnowledge(command: String, done: (String) -> Unit): Boolean {
+        val request = EmaDeviceKnowledge.parse(command) ?: return false
+        val f = request.feature
+        fun reply(text: String) = finishAssistantResponse(text, done)
+        val kind = when (f.id) {
+            "wifi" -> EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI
+            "bluetooth" -> EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH
+            "airplane" -> EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE
+            "dnd" -> EmaSystemCommandVocabulary.DeviceSetting.Kind.DND
+            else -> null
+        }
+        when (request.operation) {
+            EmaDeviceKnowledge.Operation.EXPLAIN -> reply("${f.name} ${f.purpose}. ${f.guidance} I haven't changed it.")
+            EmaDeviceKnowledge.Operation.OPEN -> openSettings(f.action, "${f.name} settings", done)
+            EmaDeviceKnowledge.Operation.STATUS -> {
+                val state = when {
+                    f.id == "dnd" -> runCatching {
+                        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+                        when (manager.currentInterruptionFilter) {
+                            android.app.NotificationManager.INTERRUPTION_FILTER_ALL -> false
+                            android.app.NotificationManager.INTERRUPTION_FILTER_NONE,
+                            android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY,
+                            android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS -> true
+                            else -> null
+                        }
+                    }.getOrNull()
+                    kind != null -> readRadioState(kind)
+                    f.id == "location" -> runCatching {
+                        val m = context.getSystemService(android.location.LocationManager::class.java)
+                        if (android.os.Build.VERSION.SDK_INT >= 28) m.isLocationEnabled
+                        else m.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) || m.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+                    }.getOrNull()
+                    f.id == "battery" -> runCatching { context.getSystemService(android.os.PowerManager::class.java).isPowerSaveMode }.getOrNull()
+                    else -> null
+                }
+                reply(if (state == null) "I cannot reliably read ${f.name}'s state on this phone. You can ask me to open its settings; I haven't changed it."
+                    else "${f.name} is ${if (state) "on" else "off"}. ${f.guidance}")
+            }
+            EmaDeviceKnowledge.Operation.ENABLE, EmaDeviceKnowledge.Operation.DISABLE -> {
+                val enabled = request.operation == EmaDeviceKnowledge.Operation.ENABLE
+                if (kind != null) executeDeviceSetting(EmaSystemCommandVocabulary.DeviceSetting(kind,
+                    if (enabled) EmaSystemCommandVocabulary.DeviceSetting.Action.ON else EmaSystemCommandVocabulary.DeviceSetting.Action.OFF), done)
+                else if (f.id in setOf("location", "battery", "nfc")) setObservedDeviceToggle(f, enabled, done)
+                else {
+                    openSettings(f.action, "${f.name} settings") { result ->
+                        reply("$result I have not changed ${f.name}. ${f.guidance}")
+                    }
+                }
+            }
+            EmaDeviceKnowledge.Operation.WORKFLOW -> openSettings(f.action, "${f.name} settings") { result ->
+                reply("$result ${f.guidance} I have not connected, paired, disconnected or forgotten any device or network.")
+            }
+        }
+        return true
+    }
+
+    /** Only a state-bearing switch on the Settings foreground may authorize one tap. */
+    private fun setObservedDeviceToggle(f: EmaDeviceKnowledge.Feature, enabled: Boolean, done: (String) -> Unit) {
+        val locked = context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        if (locked || !EmaAccessibilityService.isConnected()) {
+            finishAssistantResponse("${if (locked) "Unlock the phone" else "Enable EMA Accessibility access"} before I can verify and change ${f.name}. I haven't changed it.", done)
+            return
+        }
+        runCatching { context.startActivity(Intent(f.action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.onFailure {
+            finishAssistantResponse("${f.name} controls are not available on this phone. I haven't changed it.", done)
+            return
+        }
+        fun observed(): Boolean? {
+            if (EmaAccessibilityService.targetSnapshot("com.android.settings").packageName != "com.android.settings") return null
+            return EmaAccessibilityService.readToggle(f.aliases)
+        }
+        waiter.until(8_000, pollMs = 300, probe = { observed() != null }) { found ->
+            if (!found) {
+                finishAssistantResponse("I opened ${f.name} settings, but could not verify its switch. I haven't changed it.", done)
+            } else if (observed() == enabled) {
+                finishAssistantResponse("${f.name} is already ${if (enabled) "on" else "off"} according to its Settings switch.", done)
+            } else if (observed() == null || !EmaAccessibilityService.tapToggle(f.aliases)) {
+                finishAssistantResponse("I could not safely activate ${f.name}'s switch. Check its settings.", done)
+            } else {
+                waiter.until(6_000, pollMs = 300, probe = { observed() == enabled }) { verified ->
+                    finishAssistantResponse(if (verified) "${f.name} is ${if (enabled) "on" else "off"}, verified in Settings."
+                        else "I tapped ${f.name}'s switch, but could not verify the requested state. Check its settings before retrying.", done)
+                }
+            }
+        }
+    }
+
     private fun radioName(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): String = when (kind) {
         EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE -> "airplane mode"
         EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> "Wi-Fi"
@@ -2655,13 +2744,17 @@ class EmaCommandRouter(
     private fun radioLabels(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): List<String> = when (kind) {
         EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE ->
             listOf("airplane mode", "aeroplane mode", "flight mode", "airplane")
-        EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> listOf("wi-fi", "wifi", "internet", "wi fi")
+        EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI -> listOf("wi-fi", "wifi", "wi fi")
         EmaSystemCommandVocabulary.DeviceSetting.Kind.BLUETOOTH -> listOf("bluetooth")
         else -> emptyList()
     }
 
     /** System-observable state, or null when this Android build hides it. */
     private fun readRadioState(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind): Boolean? = runCatching {
+        if (kind == EmaSystemCommandVocabulary.DeviceSetting.Kind.WIFI) {
+            val wifi = context.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            return@runCatching wifi?.isWifiEnabled
+        }
         val value = when (kind) {
             EmaSystemCommandVocabulary.DeviceSetting.Kind.AIRPLANE ->
                 Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, -1)
@@ -2688,6 +2781,10 @@ class EmaCommandRouter(
      * and if neither can be verified it says so instead of claiming success.
      */
     private fun setRadio(kind: EmaSystemCommandVocabulary.DeviceSetting.Kind, enabled: Boolean, done: (String) -> Unit) {
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            finishAssistantResponse("Unlock the phone before changing wireless settings. I have not changed them.", done)
+            return
+        }
         val name = radioName(kind)
         val labels = radioLabels(kind)
         val known = readRadioState(kind)
@@ -2700,7 +2797,7 @@ class EmaCommandRouter(
             return
         }
         EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.QUICK_SETTINGS)
-        waiter.until(3_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) != null }) { visible ->
+        waiter.until(6_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) != null }) { visible ->
             if (!visible) {
                 EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
                 toggleThroughSettingsPage(kind, labels, enabled, done)
@@ -2720,7 +2817,7 @@ class EmaCommandRouter(
                 toggleThroughSettingsPage(kind, labels, enabled, done)
                 return@until
             }
-            waiter.until(3_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) == enabled }) { toggled ->
+            waiter.until(6_000, pollMs = 200, probe = { EmaAccessibilityService.readToggle(labels) == enabled }) { toggled ->
                 EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.BACK)
                 if (!toggled) {
                     toggleThroughSettingsPage(kind, labels, enabled, done)
@@ -3248,7 +3345,7 @@ class EmaCommandRouter(
             val message = "EMA needs Do Not Disturb access. I opened the setting so you can grant it."
             speak(message); done(message); return
         }
-        val wanted = if (enabled) android.app.NotificationManager.INTERRUPTION_FILTER_NONE
+        val wanted = if (enabled) android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY
         else android.app.NotificationManager.INTERRUPTION_FILTER_ALL
         val changed = runCatching { manager.setInterruptionFilter(wanted); true }.getOrDefault(false)
         if (!changed) {

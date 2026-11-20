@@ -40,6 +40,8 @@ object EmaLanguageUnderstanding {
         val polite = Regex("(?i)^(?:(?:hey|hi|okay|ok) ema[,!]?\\s+)?(?:please\\s+)?")
         val stripped = text.replaceFirst(polite, "")
         if (stripped != text) { text = stripped; rules += "politeness-prefix" }
+        if (Regex("(?i)^do not disturb (on|off)$").matches(text))
+            return Assessment(raw, "turn ${text.substringAfterLast(' ')} dnd", Act.REQUEST, "Explicit DND state request.", rules + "dnd-name")
         if (negative.containsMatchIn(text)) return Assessment(raw, text, Act.NEGATED,
             "Understood. I won't execute that request.", rules + "negative-instruction")
         if (Regex("(?i)^(?:can|could|would|will) you(?: please)? (?:not|never)\\s+").containsMatchIn(text))

@@ -124,3 +124,36 @@ be observed for eight seconds; wrong packages, locks and conflicting drafts bloc
 A visible recipient, unambiguous composer, exact body and safe Send control are required.
 Submission still uses the existing final recheck and post-send verification. Unit tests
 exercise these stages; real devices/app versions and slow networks require validation.
+
+## Device knowledge and speech safety sweep
+
+Device discovery uses a shared offline catalogue of 20 settings concepts: Wi-Fi,
+Bluetooth, DND, airplane mode, location, hotspot, NFC, battery saver, display, sound,
+notifications, apps/permissions, storage, accessibility, VPN, mobile data, date/time,
+security, keyboards, and accounts/sync. Try `search settings for hotspot`, `what is
+Bluetooth?`, `is Wi-Fi on?`, or `open app permissions`. Explanations never toggle;
+status queries never infer a connection from a radio being enabled.
+
+Explicit Wi-Fi/Bluetooth/airplane commands retain the existing observed toggle and
+system-readback workflow. Location, battery saver and NFC can use an observed Settings
+switch, with Accessibility access, an unlocked phone, bounded loading waits and state
+verification. Unsupported OEM pages/labels fail safely. Other catalogue entries provide
+navigation and guidance, not a claim of automatic control. Network passwords, Bluetooth
+pairing consent, VPN consent, security authentication and account credentials stay under
+the user's control. Connecting/pairing/forgetting requests open the appropriate controls
+and explicitly report that the requested connection operation was not completed.
+
+DND uses priority mode so the user's configured interruption exceptions are respected,
+not total-silence mode. Android 15+ policy ownership can restrict global effects; EMA
+reads back the reported filter and must not claim success without matching evidence.
+Wi-Fi reads use WifiManager; an Internet quick-settings tile is deliberately not treated
+as a Wi-Fi-only switch because it can contain cellular controls too.
+
+Offline STT improvements here are decoder-policy, endpoint and rescoring changes, not a
+new acoustic model: closed grammars are limited to confirmation turns; unfinished
+setting targets and message-content slots get extra pause tolerance; rescoring cannot
+reverse the top acoustic hypothesis's setting polarity/target/value or remove a negative
+instruction. The recognizer still can mishear speech. English model accuracy, accents,
+noise and microphone routes require real-recording evaluation; no measured WER improvement
+is claimed. Dictation and web search remain open vocabulary and do not use command safety
+filtering. No audio leaves the phone in offline-only mode.
