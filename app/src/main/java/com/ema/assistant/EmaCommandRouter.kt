@@ -188,6 +188,15 @@ class EmaCommandRouter(
             return
         }
 
+        // Replacement is abandonment, not a reset that leaves the previous plan alive.
+        activeCompletion?.set(true)
+        activeTimeout?.let { commandHandler.removeCallbacks(it) }
+        activeTimeout = null
+        activePlan?.cancel()
+        activePlan = null
+        pendingStepConfirmation = null
+        suppressSpeech = false
+
         // A command has one terminal result. This prevents a late callback,
         // timeout, or duplicated provider callback from producing conflicting
         // answers for the same user command.
@@ -235,7 +244,8 @@ class EmaCommandRouter(
 
         // Instruction clauses are options, not steps. When the request itself
         // is a single command, the final Home action runs after it completes.
-        val withHome: (String) -> Unit = { result ->
+        val withHome: (String) -> Unit = home@ { result ->
+            if (completed.get() || activeCompletion !== completed) return@home
             if (pendingGoHome && !goHomeConsumedByPlan) {
                 pendingGoHome = false
                 val moved = EmaAccessibilityService.performGlobalAction(AccessibilityGlobal.HOME)
@@ -1608,6 +1618,7 @@ class EmaCommandRouter(
         depth: Int
     ) {
         val listener = progressListener
+        val owner = activeCompletion
         val planSteps = steps.mapIndexed { index, text ->
             EmaPlanExecutor.Step(
                 description = text,
@@ -1627,7 +1638,8 @@ class EmaCommandRouter(
         val deadline = planSteps.sumOf { it.timeoutMs }.coerceAtMost(150_000L)
         extendDeadline(deadline + 15_000L)
         suppressSpeech = true
-        activePlan = planExecutor.execute(planSteps, deadline, planProgressListener(listener)) { report ->
+        activePlan = planExecutor.execute(planSteps, deadline, planProgressListener(listener)) completion@ { report ->
+            if (owner !== activeCompletion || owner?.get() == true) return@completion
             activePlan = null
             suppressSpeech = false
             finishAssistantResponse(report.summary.ifBlank { "Done." }, done)
@@ -3488,6 +3500,7 @@ class EmaCommandRouter(
     }
 
     private fun runSemanticPlan(plan: EmaSemanticParser.Result.Plan, done: (String) -> Unit) {
+        val owner = activeCompletion
         // Validate locally before doing anything: a consequential step whose
         // prerequisites are missing stops the plan up front.
         val granted = grantedPrerequisites()
@@ -3549,7 +3562,8 @@ class EmaCommandRouter(
         extendDeadline(deadline + 15_000L)
         suppressSpeech = true
         val listener = progressListener
-        activePlan = planExecutor.execute(steps, deadline, planProgressListener(listener)) { report ->
+        activePlan = planExecutor.execute(steps, deadline, planProgressListener(listener)) completion@ { report ->
+            if (owner !== activeCompletion || owner?.get() == true) return@completion
             activePlan = null
             suppressSpeech = false
             finishAssistantResponse(report.summary, done)
