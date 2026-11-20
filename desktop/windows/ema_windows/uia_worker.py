@@ -81,7 +81,17 @@ def execute(request):
             if before.controls != after.controls:
                 return {"status": "verified", "message": "Scrolled; visible controls changed."}
         return {"status": "requested, not verified", "message": "Scroll was requested, but no visible effect was verified. I will not repeat it."}
-    chosen = select(before, operation, request["target"])
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            chosen = select(before, operation, request["target"])
+            break
+        except LookupError as exc:
+            if not str(exc).startswith("No readable") or time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)
+            before, objects = snapshot(hwnd, pid)
+
     node = objects[chosen.key]
     # Bind identity and state again, not only the HWND or an old screen coordinate.
     fresh, objects = snapshot(hwnd, pid)

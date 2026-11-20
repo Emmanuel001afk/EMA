@@ -7,15 +7,11 @@ License: Apache License, Version 2.0 (see vosk-Apache-2.0.txt)
 Original source: https://alphacephei.com/vosk/models
 Archive SHA-256: 30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
 
-EMA packages this unmodified model inside its APK at build time and shares one
-verified on-device instance across EMA's offline speech-to-text engine
-(EmaOfflineSpeechEngine / EmaRecognitionService) and local "Hey EMA" wake-word
-detection. EMA's audio signal conditioning, adaptive voice-activity detection,
-continuation-aware endpointing, N-best contextual rescoring, inverse text
-normalization, phonetic grounding, wake grammar, service lifecycle and command
-execution are separate application code. Offline speech recognition and wake
-detection work completely offline without a separate app, account, API key,
-runtime model download, or user-selected ZIP.
+EMA Windows packages this unmodified model inside its portable application at
+build time, alongside the desktop Vosk speech-to-text runtime. Audio is processed
+locally without an account, API key or runtime model download. The desktop edition
+uses press-to-talk and reviewed transcripts; it does not implement Android wake-word
+services, phone integrations or Android's DSP/rescoring pipeline.
 
 The English vocabulary uses "hey emma" for the spoken EMA name. Recognition
 accuracy and pronunciation coverage need device testing. The model is not
