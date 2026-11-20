@@ -305,6 +305,31 @@ class EmaAccessibilityService : AccessibilityService() {
         fun screenSnapshot(maxNodes: Int = 500): EmaScreenSnapshot =
             instance?.screenSnapshotInternal(maxNodes) ?: EmaScreenSnapshot("", emptyList())
 
+        /** Fresh-tree binding: stale observations cannot authorize clicks or typing. */
+        fun performGroundedInteraction(
+            goal: EmaInteractionReasoner.Goal,
+            expected: EmaScreenSnapshot
+        ): EmaInteractionLoop.Dispatch {
+            val service = instance ?: return EmaInteractionLoop.Dispatch.REJECTED
+            if (service.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked)
+                return EmaInteractionLoop.Dispatch.REJECTED
+            val model = service.screenModelInternal(1200, expected.packageName)
+            if (EmaInteractionReasoner.fingerprint(model.snapshot) != EmaInteractionReasoner.fingerprint(expected))
+                return EmaInteractionLoop.Dispatch.STALE
+            val grounded = EmaInteractionReasoner.assess(goal, model.snapshot, expected.packageName)
+            if (grounded.state != EmaInteractionReasoner.State.READY) return EmaInteractionLoop.Dispatch.STALE
+            val node = grounded.node ?: return EmaInteractionLoop.Dispatch.REJECTED
+            val index = if (goal is EmaInteractionReasoner.Goal.Activate) node.clickTargetIndex else node.index
+            val actual = model.nodes.getOrNull(index) ?: return EmaInteractionLoop.Dispatch.STALE
+            val accepted = when (goal) {
+                is EmaInteractionReasoner.Goal.Activate -> actual.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                is EmaInteractionReasoner.Goal.EnterText -> service.commitText(actual, goal.text)
+                is EmaInteractionReasoner.Goal.Scroll -> actual.performAction(
+                    if (goal.direction == "down") AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            }
+            return if (accepted) EmaInteractionLoop.Dispatch.ACCEPTED else EmaInteractionLoop.Dispatch.REJECTED
+        }
+
         fun activate(text: String): Boolean = instance?.activateTextInternal(text) == true
 
         /**

@@ -161,3 +161,44 @@ instruction. The recognizer still can mishear speech. English model accuracy, ac
 noise and microphone routes require real-recording evaluation; no measured WER improvement
 is claimed. Dictation and web search remain open vocabulary and do not use command safety
 filtering. No audio leaves the phone in offline-only mode.
+
+## Shared interaction reasoning (not an app or settings phrase patch)
+
+Generic activation, text entry and scrolling now use the same provider-independent
+`EmaInteractionLoop` and `EmaInteractionReasoner` instead of separate fixed-delay
+handlers. The unit of reasoning is an explicit interaction goal, current observable
+state, a grounded control, and an expected observable effect:
+
+1. Observe a readable application and bind its package identity.
+2. Assess readiness from visible/enabled controls. Wait for missing controls; ask about
+   duplicate labels or multiple unfocused fields rather than choosing the first.
+3. Require full control labels (or standard button/tab/menu suffixes). A partial label
+   such as Delete does not authorize Delete all accounts. Existing nonempty fields are
+   not silently overwritten.
+4. Rebind against a fresh accessibility tree immediately before mutation. A changed
+   fingerprint causes re-observation, not a click on an old node or coordinate.
+5. Dispatch at most once, then observe within a bounded effect deadline. A toggle must
+   change its own checked state; text must read back in the intended field; generic
+   activation/scrolling needs a stable observable screen effect. Acceptance of an event
+   alone is not proof. Unrelated feed updates cannot prove a field/toggle postcondition.
+6. Cancel pending observations/actions on command replacement, command timeout and
+   plan-step timeout/cancellation. Never retry an accepted but unverified interaction.
+
+These rules apply to generic controls in unknown apps, not just known package names.
+A verified activation proves only the control interaction and observed effect, not a
+higher-level claim such as sent, paid, connected or playing. Dedicated task adapters
+retain their stronger domain postconditions. Generic OCR-coordinate activation is not
+used by this grounded loop; unreadable controls produce a limitation, not a blind tap.
+A single scroll cannot establish arrival at the top, so unsupported top requests ask
+for an explicit viewport direction instead of falsely claiming success.
+
+Dependent plan steps no longer continue merely because an earlier action was attempted
+but unverified. An explicit observed-launch exception remains for an app that arrived
+but is still busy; independent steps may still run. The legacy destination navigator
+stops on ambiguity or uncertain dispatch instead of issuing speculative exact-text taps.
+
+This is a shared execution-reasoning upgrade, not a general-purpose language model or
+proof of universal app automation. Dedicated app loops are not all migrated to this new
+runtime. Cross-app snapshot simulations cover slow loading, duplicate labels, stale
+state, read-back, cancellation, no-op actions and package changes. Real accessibility
+hierarchies, OEM variations and physical device latency still require device testing.

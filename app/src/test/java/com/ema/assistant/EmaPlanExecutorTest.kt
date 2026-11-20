@@ -101,6 +101,33 @@ class EmaPlanExecutorTest {
         assertFalse(sent)
     }
 
+    @Test fun uncertainPrerequisiteDoesNotUnlockEvenAnOrdinaryDependentStep() {
+        val t = FakeTime(); var dependent = false; var independent = false
+        executor(t).execute(listOf(
+            EmaPlanExecutor.Step("Activate library") { it(EmaStepOutcome(EmaOutcomeStatus.UNVERIFIED, "Effect unknown")) },
+            EmaPlanExecutor.Step("Select result") { dependent = true; it(ok()) },
+            EmaPlanExecutor.Step("Read battery", dependsOnPrevious = false) { independent = true; it(ok()) }
+        ), 60_000) {}
+        assertFalse(dependent); assertTrue(independent)
+    }
+
+    @Test fun explicitObservedLaunchExceptionCanUnlockTheNextStep() {
+        val t = FakeTime(); var ran = false
+        executor(t).execute(listOf(
+            EmaPlanExecutor.Step("Open app") { it(EmaStepOutcome(EmaOutcomeStatus.UNVERIFIED, "App arrived but is busy", carriesOn = true)) },
+            EmaPlanExecutor.Step("Inspect search field") { ran = true; it(ok()) }
+        ), 60_000) {}
+        assertTrue(ran)
+    }
+
+    @Test fun timeoutsAndCancellationStopThePhysicalInteractionLoop() {
+        val t = FakeTime(); var stops = 0
+        executor(t).execute(listOf(EmaPlanExecutor.Step("Wait for control", timeoutMs = 500, onStop = { stops++ }) {}), 1000) {}
+        t.advance(600); assertEquals(1, stops)
+        val handle = executor(t).execute(listOf(EmaPlanExecutor.Step("Wait again", onStop = { stops++ }) {}), 1000) {}
+        handle.cancel(); assertEquals(2, stops)
+    }
+
     @Test fun nonConsequentialStepIsRetriedBoundedTimes() {
         val time = FakeTime()
         var attempts = 0

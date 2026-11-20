@@ -176,6 +176,7 @@ class EmaCommandRouter(
      * what was actually heard.
      */
     fun execute(raw: String, guesses: List<String>, done: (String) -> Unit) {
+        EmaGenericUiController.cancelPendingAction()
         // "yes / no / stop" answers a paused plan; they are not new commands.
         if (pendingStepConfirmation != null && handleStepConfirmation(raw, done)) return
 
@@ -201,6 +202,7 @@ class EmaCommandRouter(
         val timeout = Runnable {
             if (!completed.compareAndSet(false, true)) return@Runnable
             executionController.shutdown()
+            EmaGenericUiController.cancelPendingAction()
             activePlan?.cancel()
             activePlan = null
             suppressSpeech = false
@@ -1609,6 +1611,7 @@ class EmaCommandRouter(
         val planSteps = steps.mapIndexed { index, text ->
             EmaPlanExecutor.Step(
                 description = text,
+                onStop = { EmaGenericUiController.cancelPendingAction() },
                 consequential = false,
                 maxAttempts = 1,
                 timeoutMs = if (text.trim().startsWith("play ", true)) 55_000L else 25_000L,
@@ -1842,7 +1845,7 @@ class EmaCommandRouter(
         commandHandler.postDelayed({
             EmaGenericUiController.tap(destination) { ok, detail ->
                 if (ok) {
-                    val result = "Opened $destination in $contextLabel."
+                    val result = "Activated $destination in $contextLabel. $detail"
                     speak(result); done(result)
                     return@tap
                 }
@@ -1853,26 +1856,16 @@ class EmaCommandRouter(
                     return@tap
                 }
 
-                // Re-inspect before changing the screen. If the destination is
-                // present in accessible text, give it another exact opportunity;
-                // otherwise scroll the currently scrollable view.
-                val screen = EmaAccessibilityService.currentScreenText(12000)
-                val destinationWords = destination.lowercase(Locale.getDefault())
-                    .split(Regex("\\s+"))
-                    .filter { it.length > 1 }
-
-                val textMatch = destinationWords.isNotEmpty() &&
-                    destinationWords.any { word -> screen.lowercase(Locale.getDefault()).contains(word) }
-
-                if (textMatch) {
-                    EmaAccessibilityService.tapTextExact(destination)
-                    commandHandler.postDelayed({
-                        navigateVisibleDestination(destination, contextLabel, attempt + 1, done)
-                    }, 300L)
-                } else {
-                    EmaGenericUiController.scroll("down") { _, _ ->
-                        navigateVisibleDestination(destination, contextLabel, attempt + 1, done)
-                    }
+                val outcome = EmaOutcomeClassifier.classify(detail)
+                if (outcome.status != EmaOutcomeStatus.FAILED) {
+                    speak(detail); done(detail)
+                    return@tap
+                }
+                // Only a definitely unperformed lookup may recover by scrolling.
+                // Never replay a tap that Android may already have accepted.
+                EmaGenericUiController.scroll("down") { moved, observation ->
+                    if (moved) navigateVisibleDestination(destination, contextLabel, attempt + 1, done)
+                    else { speak(observation); done(observation) }
                 }
             }
         }, delay)
@@ -3517,6 +3510,7 @@ class EmaCommandRouter(
             val cmd = step.command
             EmaPlanExecutor.Step(
                 description = step.describe(),
+                onStop = { EmaGenericUiController.cancelPendingAction() },
                 consequential = cmd is EmaCommand.SendMessage || cmd is EmaCommand.CallContact,
                 duplicateKey = (cmd as? EmaCommand.SendMessage)?.let { EmaDuplicateGuard.messageKey(it.app, it.recipient, it.body) },
                 maxAttempts = if (cmd is EmaCommand.SearchInApp) 2 else 1,
