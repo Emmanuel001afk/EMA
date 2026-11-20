@@ -219,5 +219,7 @@ def main():
     if sys.platform != "win32":
         raise SystemExit("EMA Windows requires Windows 10/11. The Android app is a separate build.")
     root = tk.Tk()
-    App(root)
+    app = App(root)
+    if "--gui-smoke-test" in sys.argv:
+        root.after(600, app.close)
     root.mainloop()

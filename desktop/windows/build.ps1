@@ -14,6 +14,8 @@ python tools/verify_distribution.py dist/EMA
 if ($LASTEXITCODE -ne 0) { throw 'Distribution verification failed' }
 $app = Start-Process -FilePath dist/EMA/EMA.exe -ArgumentList '--self-test' -PassThru -Wait
 if ($app.ExitCode -ne 0) { throw 'Packaged desktop dependency/model smoke test failed' }
+$gui = Start-Process -FilePath dist/EMA/EMA.exe -ArgumentList '--gui-smoke-test' -PassThru -Wait
+if ($gui.ExitCode -ne 0) { throw 'Packaged desktop GUI startup smoke test failed' }
 $worker = Start-Process -FilePath dist/EMA/worker/EMA-worker.exe -ArgumentList '--self-test' -PassThru -Wait -WindowStyle Hidden
 if ($worker.ExitCode -ne 0) { throw 'Packaged UI Automation worker smoke test failed' }
 Write-Host 'PASS: Windows portable app, model, licenses and worker built and smoke-tested'
