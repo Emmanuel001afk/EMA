@@ -124,3 +124,87 @@ be observed for eight seconds; wrong packages, locks and conflicting drafts bloc
 A visible recipient, unambiguous composer, exact body and safe Send control are required.
 Submission still uses the existing final recheck and post-send verification. Unit tests
 exercise these stages; real devices/app versions and slow networks require validation.
+
+## Device knowledge and speech safety sweep
+
+Device discovery uses a shared offline catalogue of 23 settings concepts: Wi-Fi,
+Bluetooth, DND, airplane mode, location, hotspot, NFC, battery saver, display, sound,
+notifications, apps/permissions, storage, accessibility, VPN, mobile data, date/time,
+security, keyboards, accounts/sync, auto rotation, silent mode and vibrate mode. Try `search settings for hotspot`, `what is
+Bluetooth?`, `is Wi-Fi on?`, or `open app permissions`. Explanations never toggle;
+status queries never infer a connection from a radio being enabled.
+
+Silent/vibrate modes change and verify the ringtone stream, not media volume. Auto
+rotation uses Android write-settings permission and read-back. These changes require an
+unlocked phone.
+
+Explicit Wi-Fi/Bluetooth/airplane commands retain the existing observed toggle and
+system-readback workflow. Location, battery saver and NFC can use an observed Settings
+switch, with Accessibility access, an unlocked phone, bounded loading waits and state
+verification. Unsupported OEM pages/labels fail safely. Other catalogue entries provide
+navigation and guidance, not a claim of automatic control. Network passwords, Bluetooth
+pairing consent, VPN consent, security authentication and account credentials stay under
+the user's control. Connecting/pairing/forgetting requests open the appropriate controls
+and explicitly report that the requested connection operation was not completed.
+
+DND uses priority mode so the user's configured interruption exceptions are respected,
+not total-silence mode. Android 15+ policy ownership can restrict global effects; EMA
+reads back the reported filter and must not claim success without matching evidence.
+Wi-Fi reads use WifiManager; an Internet quick-settings tile is deliberately not treated
+as a Wi-Fi-only switch because it can contain cellular controls too.
+
+Offline STT improvements here are decoder-policy, endpoint and rescoring changes, not a
+new acoustic model: closed grammars are limited to confirmation turns; unfinished
+setting targets and message-content slots get extra pause tolerance; rescoring cannot
+reverse the top acoustic hypothesis's setting polarity/target/value or remove a negative
+instruction. The recognizer still can mishear speech. English model accuracy, accents,
+noise and microphone routes require real-recording evaluation; no measured WER improvement
+is claimed. Dictation and web search remain open vocabulary and do not use command safety
+filtering. No audio leaves the phone in offline-only mode.
+
+## Shared interaction reasoning (not an app or settings phrase patch)
+
+Generic activation, text entry and scrolling now use the same provider-independent
+`EmaInteractionLoop` and `EmaInteractionReasoner` instead of separate fixed-delay
+handlers. The unit of reasoning is an explicit interaction goal, current observable
+state, a grounded control, and an expected observable effect:
+
+1. Observe a readable application and bind its package identity.
+2. Assess readiness from visible/enabled controls. Wait for missing controls; ask about
+   duplicate labels or multiple unfocused fields rather than choosing the first.
+3. Require full control labels (or standard button/tab/menu suffixes). A partial label
+   such as Delete does not authorize Delete all accounts. Existing nonempty fields are
+   not silently overwritten.
+4. Rebind against a fresh accessibility tree immediately before mutation. A changed
+   fingerprint causes re-observation, not a click on an old node or coordinate.
+5. Dispatch at most once, then observe within a bounded effect deadline. A toggle must
+   change its own checked state; text must read back in the intended field; generic
+   activation/scrolling needs a stable observable screen effect. Acceptance of an event
+   alone is not proof. Unrelated feed updates cannot prove a field/toggle postcondition.
+6. Cancel pending observations/actions on command replacement, command timeout and
+   plan-step timeout/cancellation. Never retry an accepted but unverified interaction.
+
+These rules apply to generic controls in unknown apps, not just known package names.
+A verified activation proves only the control interaction and observed effect, not a
+higher-level claim such as sent, paid, connected or playing. Dedicated task adapters
+retain their stronger domain postconditions. Generic OCR-coordinate activation is not
+used by this grounded loop; unreadable controls produce a limitation, not a blind tap.
+A single scroll cannot establish arrival at the top, so unsupported top requests ask
+for an explicit viewport direction instead of falsely claiming success.
+
+Dependent plan steps no longer continue merely because an earlier action was attempted
+but unverified. An explicit observed-launch exception remains for an app that arrived
+but is still busy; independent steps may still run. The legacy destination navigator
+stops on ambiguity or uncertain dispatch instead of issuing speculative exact-text taps.
+
+This is a shared execution-reasoning upgrade, not a general-purpose language model or
+proof of universal app automation. Dedicated app loops are not all migrated to this new
+runtime. Cross-app snapshot simulations cover slow loading, duplicate labels, stale
+state, read-back, cancellation, no-op actions and package changes. Real accessibility
+hierarchies, OEM variations and physical device latency still require device testing.
+
+Command lifecycle guards now use non-reusable execution epochs rather than a resettable
+cancelled flag: starting a new command cannot revive callbacks from a previous command.
+Delayed generic navigation recovery is also generation-bound. A dispatch exception is
+reported as uncertain rather than definitely not performed, preventing replay after a
+possible side effect.

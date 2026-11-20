@@ -59,6 +59,13 @@ object EmaOutcomeClassifier {
         val launchedUnconfirmed = LAUNCHED_UNCONFIRMED.containsMatchIn(l) && !noSubmission
         val status = when {
             l.isBlank() -> EmaOutcomeStatus.FAILED
+            l.startsWith("i need clarification:") -> EmaOutcomeStatus.NEEDS_INPUT
+            l.startsWith("i blocked this interaction:") -> EmaOutcomeStatus.BLOCKED
+            l.contains("unlock the phone before") || l.contains("unlock it before") -> EmaOutcomeStatus.BLOCKED
+            l.contains("enable ema accessibility access") || l.contains("needs system write access") -> EmaOutcomeStatus.NEEDS_PERMISSION
+            Regex("i have not (?:connected|paired)|i haven.t changed|i have not changed").containsMatchIn(l) -> EmaOutcomeStatus.FAILED
+            l.contains("android did not confirm") || l.contains("but it reports filter") ||
+                l.contains("still reports it as") || l.contains("could not reliably read") -> EmaOutcomeStatus.UNVERIFIED
             launchedUnconfirmed -> EmaOutcomeStatus.UNVERIFIED
             Regex("needs? (?:contacts|microphone|phone|calendar|notification|camera)? ?(?:access|permission)|grant it|" +
                 "turn on (?:ema'?s? )?(?:accessibility|screen control)|accessibility (?:service )?is (?:off|not enabled)|" +
@@ -155,6 +162,7 @@ class EmaPlanExecutor(
         val maxAttempts: Int = 1,
         val timeoutMs: Long = 25_000L,
         val dependsOnPrevious: Boolean = true,
+        val onStop: () -> Unit = {},
         val run: (done: (EmaStepOutcome) -> Unit) -> Unit
     )
 
@@ -212,7 +220,7 @@ class EmaPlanExecutor(
                 // launched app whose screen never settled) still lets the next
                 // step run: that step checks its own evidence.
                 val previousOk = previous.status == EmaOutcomeStatus.SUCCESS ||
-                    (previous.status == EmaOutcomeStatus.UNVERIFIED && (!step.consequential || previous.carriesOn))
+                    (previous.status == EmaOutcomeStatus.UNVERIFIED && previous.carriesOn)
                 if (!previousOk) {
                     outcomes[index] = EmaStepOutcome(EmaOutcomeStatus.SKIPPED, "Skipped: ${step.description}")
                     listener?.onStepFinished(index, outcomes[index]!!)
@@ -242,6 +250,7 @@ class EmaPlanExecutor(
                 if (settled) return
                 settled = true
                 timer?.cancel()
+                if (outcome.status == EmaOutcomeStatus.TIMED_OUT || outcome.status == EmaOutcomeStatus.CANCELLED) runCatching { step.onStop() }
                 handle.cancelCurrent = null
                 if (handle.cancelled && outcome.status != EmaOutcomeStatus.CANCELLED) {
                     outcomes[index] = EmaStepOutcome(EmaOutcomeStatus.CANCELLED, "Cancelled.")

@@ -107,7 +107,10 @@ object EmaSpeechRescorer {
         val byNormalizedKey = LinkedHashMap<String, RankedHypothesis>()
         val rawDistinct = LinkedHashSet<String>()
 
+        val acousticFirst = decoded.firstOrNull { it.text.isNotBlank() }?.text.orEmpty()
         fun considerCandidate(candidate: RankedHypothesis) {
+            if (profile == EmaRecognitionProfile.COMMAND &&
+                !EmaSpeechIntentSafety.preservesIntent(acousticFirst, candidate.text)) return
             val dedupKey = candidate.text.lowercase()
             val prev = byNormalizedKey[dedupKey]
             if (prev == null || candidate.combinedScore > prev.combinedScore) {
@@ -402,6 +405,7 @@ object EmaSpeechRescorer {
         if (trimmed.isEmpty()) return 0f
         val lower = trimmed.lowercase()
 
+        if (EmaDeviceKnowledge.parse(lower) != null) return PARSEABLE_COMMAND_BONUS
         if (runCatching { EmaSystemCommandVocabulary.recognises(lower) }.getOrDefault(false)) {
             return PARSEABLE_COMMAND_BONUS
         }

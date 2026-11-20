@@ -1044,7 +1044,8 @@ class EmaOfflineSpeechEngine(
     }
 
     private fun createRecognizer(model: org.vosk.Model, config: Config): Recognizer {
-        val phrases = config.grammarPhrases.filter { phrase ->
+        // Closed grammar is appropriate for yes/no, never for names, messages or dictation.
+        val phrases = (if (config.profile == EmaRecognitionProfile.CONFIRMATION) config.grammarPhrases else emptyList()).filter { phrase ->
             phrase.isNotBlank() && phrase.all { it in 'a'..'z' || it == ' ' || it == '\'' }
         }
         val recognizer = if (phrases.isNotEmpty()) {
