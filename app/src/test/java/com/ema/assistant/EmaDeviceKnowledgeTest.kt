@@ -12,6 +12,12 @@ class EmaDeviceKnowledgeTest {
             assertEquals(alias, f, EmaDeviceKnowledge.parse("search settings for $alias")?.feature)
         }
     }
+    @Test fun guidanceAndUnverifiedChangesDoNotReportCompletedDeviceActions() {
+        assertEquals(EmaOutcomeStatus.FAILED, EmaOutcomeClassifier.classify("Opening Bluetooth settings. I have not connected, paired, disconnected or forgotten any device or network.").status)
+        assertEquals(EmaOutcomeStatus.UNVERIFIED, EmaOutcomeClassifier.classify("Android did not confirm the requested rotation setting.").status)
+        assertEquals(EmaOutcomeStatus.BLOCKED, EmaOutcomeClassifier.classify("Unlock the phone before changing wireless settings. I have not changed them.").status)
+        assertEquals(EmaOutcomeStatus.SUCCESS, EmaOutcomeClassifier.classify("Wi-Fi is on, verified.").status)
+    }
     @Test fun ringerModesAndRotationKeepTheirOwnMeaning() {
         for (name in listOf("silent mode", "vibrate mode", "auto rotate")) {
             assertEquals(EmaDeviceKnowledge.Operation.ENABLE, EmaDeviceKnowledge.parse("turn $name on")?.operation)

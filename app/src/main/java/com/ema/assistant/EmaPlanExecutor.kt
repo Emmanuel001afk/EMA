@@ -59,6 +59,11 @@ object EmaOutcomeClassifier {
         val launchedUnconfirmed = LAUNCHED_UNCONFIRMED.containsMatchIn(l) && !noSubmission
         val status = when {
             l.isBlank() -> EmaOutcomeStatus.FAILED
+            l.contains("unlock the phone before") || l.contains("unlock it before") -> EmaOutcomeStatus.BLOCKED
+            l.contains("enable ema accessibility access") || l.contains("needs system write access") -> EmaOutcomeStatus.NEEDS_PERMISSION
+            Regex("i have not (?:connected|paired)|i haven.t changed|i have not changed").containsMatchIn(l) -> EmaOutcomeStatus.FAILED
+            l.contains("android did not confirm") || l.contains("but it reports filter") ||
+                l.contains("still reports it as") || l.contains("could not reliably read") -> EmaOutcomeStatus.UNVERIFIED
             launchedUnconfirmed -> EmaOutcomeStatus.UNVERIFIED
             Regex("needs? (?:contacts|microphone|phone|calendar|notification|camera)? ?(?:access|permission)|grant it|" +
                 "turn on (?:ema'?s? )?(?:accessibility|screen control)|accessibility (?:service )?is (?:off|not enabled)|" +
