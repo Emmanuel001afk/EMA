@@ -2679,6 +2679,11 @@ class EmaCommandRouter(
                         if (android.os.Build.VERSION.SDK_INT >= 28) m.isLocationEnabled
                         else m.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) || m.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
                     }.getOrNull()
+                    f.id == "rotation" -> runCatching { Settings.System.getInt(context.contentResolver, Settings.System.ACCELEROMETER_ROTATION) == 1 }.getOrNull()
+                    f.id == "silent" || f.id == "vibrate" -> runCatching {
+                        val audio = context.getSystemService(AudioManager::class.java)
+                        audio.ringerMode == if (f.id == "silent") AudioManager.RINGER_MODE_SILENT else AudioManager.RINGER_MODE_VIBRATE
+                    }.getOrNull()
                     f.id == "battery" -> runCatching { context.getSystemService(android.os.PowerManager::class.java).isPowerSaveMode }.getOrNull()
                     else -> null
                 }
@@ -2687,7 +2692,8 @@ class EmaCommandRouter(
             }
             EmaDeviceKnowledge.Operation.ENABLE, EmaDeviceKnowledge.Operation.DISABLE -> {
                 val enabled = request.operation == EmaDeviceKnowledge.Operation.ENABLE
-                if (kind != null) executeDeviceSetting(EmaSystemCommandVocabulary.DeviceSetting(kind,
+                if (f.id in setOf("silent", "vibrate", "rotation")) setDeviceMode(f, enabled, done)
+                else if (kind != null) executeDeviceSetting(EmaSystemCommandVocabulary.DeviceSetting(kind,
                     if (enabled) EmaSystemCommandVocabulary.DeviceSetting.Action.ON else EmaSystemCommandVocabulary.DeviceSetting.Action.OFF), done)
                 else if (f.id in setOf("location", "battery", "nfc")) setObservedDeviceToggle(f, enabled, done)
                 else {
@@ -2701,6 +2707,36 @@ class EmaCommandRouter(
             }
         }
         return true
+    }
+
+    private fun setDeviceMode(f: EmaDeviceKnowledge.Feature, enabled: Boolean, done: (String) -> Unit) {
+        if (context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+            finishAssistantResponse("Unlock the phone before changing ${f.name}. I haven't changed it.", done)
+            return
+        }
+        if (f.id == "rotation") {
+            if (!Settings.System.canWrite(context)) {
+                openSettings(Settings.ACTION_MANAGE_WRITE_SETTINGS, "system write permission") {
+                    finishAssistantResponse("EMA needs system write access to change auto rotate. Grant it if you choose, then repeat the command. Auto rotate has not been changed.", done)
+                }
+                return
+            }
+            val verified = runCatching {
+                val result = Settings.System.putInt(context.contentResolver, Settings.System.ACCELEROMETER_ROTATION, if (enabled) 1 else 0)
+                result && Settings.System.getInt(context.contentResolver, Settings.System.ACCELEROMETER_ROTATION) == if (enabled) 1 else 0
+            }.getOrDefault(false)
+            finishAssistantResponse(if (verified) "Auto rotate is ${if (enabled) "on" else "off"}, verified."
+                else "Android did not confirm the requested rotation setting.", done)
+        } else {
+            val wanted = if (!enabled) AudioManager.RINGER_MODE_NORMAL else if (f.id == "silent") AudioManager.RINGER_MODE_SILENT else AudioManager.RINGER_MODE_VIBRATE
+            val verified = runCatching {
+                val audio = context.getSystemService(AudioManager::class.java)
+                audio.ringerMode = wanted
+                audio.ringerMode == wanted
+            }.getOrDefault(false)
+            finishAssistantResponse(if (verified) "${f.name} is ${if (enabled) "on" else "off"}, verified for the ringtone stream. Media and alarms are separate."
+                else "Android did not confirm ${f.name}. DND policy access or device hardware may restrict it. I have not verified the requested change.", done)
+        }
     }
 
     /** Only a state-bearing switch on the Settings foreground may authorize one tap. */

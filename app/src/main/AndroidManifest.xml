@@ -20,6 +20,7 @@
          Disturb access" list, so the grant can never become true. -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <!-- Full-screen alarm UI on Android 14+, if the user grants it. Absent the
          grant EMA still posts the alarm notification and says so. -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>

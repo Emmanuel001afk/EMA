@@ -127,12 +127,16 @@ exercise these stages; real devices/app versions and slow networks require valid
 
 ## Device knowledge and speech safety sweep
 
-Device discovery uses a shared offline catalogue of 20 settings concepts: Wi-Fi,
+Device discovery uses a shared offline catalogue of 23 settings concepts: Wi-Fi,
 Bluetooth, DND, airplane mode, location, hotspot, NFC, battery saver, display, sound,
 notifications, apps/permissions, storage, accessibility, VPN, mobile data, date/time,
-security, keyboards, and accounts/sync. Try `search settings for hotspot`, `what is
+security, keyboards, accounts/sync, auto rotation, silent mode and vibrate mode. Try `search settings for hotspot`, `what is
 Bluetooth?`, `is Wi-Fi on?`, or `open app permissions`. Explanations never toggle;
 status queries never infer a connection from a radio being enabled.
+
+Silent/vibrate modes change and verify the ringtone stream, not media volume. Auto
+rotation uses Android write-settings permission and read-back. These changes require an
+unlocked phone.
 
 Explicit Wi-Fi/Bluetooth/airplane commands retain the existing observed toggle and
 system-readback workflow. Location, battery saver and NFC can use an observed Settings
