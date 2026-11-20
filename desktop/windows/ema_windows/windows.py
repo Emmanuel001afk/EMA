@@ -10,7 +10,7 @@ import time
 from urllib.parse import quote_plus
 import webbrowser
 
-from .core import HELP, SETTINGS, Intent, Result, Status
+from .core import HELP, SETTINGS, Intent, Result, Status, app_key
 
 
 class Cancelled(Exception):
@@ -142,9 +142,9 @@ class WindowsAssistant:
                     self.discover(alive)
                 if intent.kind == "apps":
                     return Result(Status.VERIFIED, "\n".join(a["Name"] for a in self.apps) or "No Start apps were found.")
-                key = intent.target.casefold()
-                exact = [a for a in self.apps if a["Name"].casefold() == key]
-                matches = exact or [a for a in self.apps if key in a["Name"].casefold()]
+                key = app_key(intent.target)
+                exact = [a for a in self.apps if app_key(a["Name"]) == key]
+                matches = exact or [a for a in self.apps if key in app_key(a["Name"])]
                 if intent.kind == "find_app":
                     return Result(Status.VERIFIED, "\n".join(a["Name"] for a in matches) or "No installed Start app matches.")
                 if len(matches) != 1:
@@ -188,4 +188,5 @@ class WindowsAssistant:
         except Cancelled:
             return Result(Status.CANCELLED, "Cancelled. An already-dispatched action cannot be undone; check the target.")
         except Exception as exc:
-            return Result(Status.FAILED, f"Windows could not verify this operation ({type(exc).__name__}). It will not be repeated automatically. Check the device state before retrying.")
+            status = Status.REQUESTED if intent.kind in {"open", "guided_setting", "settings", "click", "type", "scroll", "volume", "brightness", "mute", "unmute", "web"} else Status.FAILED
+            return Result(status, f"Windows could not verify this operation ({type(exc).__name__}). It will not be repeated automatically. Check the device state before retrying.")

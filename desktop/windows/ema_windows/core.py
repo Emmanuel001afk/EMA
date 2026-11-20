@@ -80,6 +80,25 @@ Speech uses the bundled English Vosk model locally. No AI service is used.
 """
 
 
+def percentage(text: str) -> int | None:
+    if text.isdigit():
+        return int(text)
+    words = text.replace("-", " ").split()
+    small = dict(zip("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(), range(20)))
+    tens = dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10)))
+    if text in {"one hundred", "a hundred", "hundred"}:
+        return 100
+    if len(words) == 1:
+        return small.get(words[0], tens.get(words[0]))
+    if len(words) == 2 and words[0] in tens and words[1] in small and 0 < small[words[1]] < 10:
+        return tens[words[0]] + small[words[1]]
+    return None
+
+
+def app_key(text: str) -> str:
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
 def parse(text: str) -> Intent:
     raw = text.strip()
     if not raw or len(raw) > 16000:
@@ -106,10 +125,10 @@ def parse(text: str) -> Intent:
         return Intent(low.replace(" ", "_"))
     if low in {"mute", "unmute"}:
         return Intent(low)
-    match = re.fullmatch(r"set (volume|brightness)(?: to)? (\d{1,3})(?: percent|%)?", low)
+    match = re.fullmatch(r"set (volume|brightness)(?: to)? (.+?)(?: percent|%)?", low)
     if match:
-        value = int(match[2])
-        return Intent(match[1], value=value) if value <= 100 else Intent("clarify", "Use a percentage from 0 to 100.")
+        value = percentage(match[2])
+        return Intent(match[1], value=value) if value is not None and 0 <= value <= 100 else Intent("clarify", "Use a percentage from 0 to 100.")
     match = re.fullmatch(r"(?:click|tap|press) (.+)", raw, re.I)
     if match:
         return Intent("click", match[1], confirmation=True)

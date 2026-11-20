@@ -200,7 +200,7 @@ class App:
                 intent, token, ready, answer = data
                 if self.session.current(token):
                     target = self.backend.target[2] if self.backend.target else "No target window selected"
-                    answer["yes"] = messagebox.askyesno("Confirm explicit screen action", f"Target: {target}\n\nAction: {intent.kind}\nExact content/label:\n{intent.target[:3000]}\n\nThis can change another application. Proceed?")
+                    answer["yes"] = messagebox.askyesno("Confirm explicit screen action", f"Target: {target}\n\nAction: {intent.kind}\nContent/label ({len(intent.target)} characters; preview up to 3,000 — review the command field for full text):\n{intent.target[:3000]}\n\nThis can change another application. Proceed?")
                 ready.set()
             elif kind == "result":
                 token, text = data

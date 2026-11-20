@@ -41,8 +41,14 @@ class IntentTests(unittest.TestCase):
         for value in (0, 40, 100):
             self.assertEqual(value, parse(f'set volume to {value} percent').value)
         self.assertEqual('clarify', parse('set volume to 101 percent').kind)
-        self.assertEqual('unsupported', parse('set volume to -1 percent').kind)
-        self.assertEqual('unsupported', parse('set brightness to 20; rm files').kind)
+        self.assertEqual('clarify', parse('set volume to -1 percent').kind)
+        self.assertEqual('clarify', parse('set brightness to 20; rm files').kind)
+
+    def test_spoken_percentages_only_rewrite_the_numeric_slot(self):
+        for text, expected in (("forty", 40), ("twenty five", 25), ("one hundred", 100), ("zero", 0)):
+            self.assertEqual(expected, parse(f"set volume to {text} percent").value)
+        self.assertEqual('clarify', parse('set volume to one hundred and one percent').kind)
+        self.assertEqual('type', parse('type set volume to forty percent').kind)
 
     def test_questions_do_not_authorize_actions(self):
         for phrase in ('how do I open Notepad', 'can you send messages', 'is wifi on', 'what is Bluetooth'):

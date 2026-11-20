@@ -47,3 +47,4 @@ desktop/windows/resources/*.zip
 desktop/windows/*.spec
 desktop/windows/dist/
 desktop/windows/build/
+desktop/windows/worker-dist/
