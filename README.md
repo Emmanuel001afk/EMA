@@ -1,5 +1,14 @@
 # EMA
 
+## Windows laptop edition
+
+A separate Windows 10/11 x64 desktop preview is available under
+[`desktop/windows`](desktop/windows/README.md), with local voice transcription, typed
+commands, Windows settings access and guarded UI Automation. Download the portable
+`EMA-Windows-x64` artifact from the **EMA Windows Build** workflow after a successful run.
+It is not full Android feature parity; read the capability matrix and validation limits
+before use. The Android app below remains a separate build.
+
 A native Android digital assistant. EMA performs phone and app actions **itself,
 deterministically, on the device**. AI is an optional second layer that is only
 consulted when the on-device layers genuinely cannot resolve a request.

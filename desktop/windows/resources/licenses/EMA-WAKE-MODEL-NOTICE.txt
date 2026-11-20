@@ -1,0 +1,18 @@
+EMA built-in offline speech & wake model
+
+Model: vosk-model-small-en-us-0.15
+US English model for mobile Vosk applications
+Copyright 2020 Alpha Cephei Inc
+License: Apache License, Version 2.0 (see vosk-Apache-2.0.txt)
+Original source: https://alphacephei.com/vosk/models
+Archive SHA-256: 30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
+
+EMA Windows packages this unmodified model inside its portable application at
+build time, alongside the desktop Vosk speech-to-text runtime. Audio is processed
+locally without an account, API key or runtime model download. The desktop edition
+uses press-to-talk and reviewed transcripts; it does not implement Android wake-word
+services, phone integrations or Android's DSP/rescoring pipeline.
+
+The English vocabulary uses "hey emma" for the spoken EMA name. Recognition
+accuracy and pronunciation coverage need device testing. The model is not
+claimed to be newly trained by EMA or to be a manufacturer DSP sound model.

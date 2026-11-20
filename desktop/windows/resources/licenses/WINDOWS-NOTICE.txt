@@ -1,0 +1,16 @@
+EMA Windows desktop edition
+
+The packaged application includes third-party software. Runtime packages include:
+- Vosk API and the small English model (Apache-2.0; model notice and license included here)
+- PortAudio (MIT-style license), distributed through python-sounddevice (MIT)
+- pywinauto (BSD-3-Clause), pycaw (MIT), comtypes (MIT)
+- Python (PSF license), Tcl/Tk (Tcl/Tk license)
+- PyInstaller bootloader (GPL-2.0-or-later with bootloader exception)
+
+These are independent of EMA's Android-specific dependencies. Dependency license
+metadata is included under dependency-licenses in the portable distribution.
+The English model is unchanged from the SHA-256-pinned upstream archive used by
+EMA Android. No cloud recognition service or AI backend is used by this edition.
+
+This preview is unsigned. It does not require administrator privileges. Running
+as administrator is not recommended and does not establish universal UI access.
