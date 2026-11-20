@@ -1842,7 +1842,7 @@ class EmaCommandRouter(
         }
 
         val delay = if (attempt == 0) 900L else 400L
-        commandHandler.postDelayed({
+        EmaGenericUiController.afterCurrent(delay) {
             EmaGenericUiController.tap(destination) { ok, detail ->
                 if (ok) {
                     val result = "Activated $destination in $contextLabel. $detail"
@@ -1868,7 +1868,7 @@ class EmaCommandRouter(
                     else { speak(observation); done(observation) }
                 }
             }
-        }, delay)
+        }
     }
 
     // ----------------------------------------------------------- contacts

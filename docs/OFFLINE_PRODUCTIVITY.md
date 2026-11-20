@@ -202,3 +202,9 @@ proof of universal app automation. Dedicated app loops are not all migrated to t
 runtime. Cross-app snapshot simulations cover slow loading, duplicate labels, stale
 state, read-back, cancellation, no-op actions and package changes. Real accessibility
 hierarchies, OEM variations and physical device latency still require device testing.
+
+Command lifecycle guards now use non-reusable execution epochs rather than a resettable
+cancelled flag: starting a new command cannot revive callbacks from a previous command.
+Delayed generic navigation recovery is also generation-bound. A dispatch exception is
+reported as uncertain rather than definitely not performed, preventing replay after a
+possible side effect.

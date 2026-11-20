@@ -17,29 +17,32 @@ class EmaExecutionController(
     private val handler = Handler(Looper.getMainLooper())
 
     /**
-     * Set once the owning command has reached its terminal result.
+     * Generation identity of the owning command.
      *
      * Without this, a step that completes *after* the command timed out would
      * still be delivered, advancing a sequence the user was already told had
-     * failed. `shutdown()` raises it; `reset()` clears it for the next command.
+     * failed. Both shutdown and reset invalidate old tokens; reset cannot revive them.
      */
-    private val cancelled = AtomicBoolean(false)
+    private val epoch = EmaExecutionEpoch().apply { begin() }
 
     /** Begin a new command: later steps are allowed to report again. */
     fun reset() {
-        cancelled.set(false)
+        epoch.begin()
+        handler.removeCallbacksAndMessages(null)
     }
 
-    fun isCancelled(): Boolean = cancelled.get()
+    fun isCancelled(): Boolean = !epoch.isActive()
 
     fun <T> runStep(
         action: (finish: (T) -> Unit) -> Unit,
         onTimeout: () -> T,
         done: (T) -> Unit
     ) {
+        val token = epoch.token()
+        if (!epoch.isCurrent(token)) return
         val finished = AtomicBoolean(false)
         val timeout = Runnable {
-            if (cancelled.get()) return@Runnable
+            if (!epoch.isCurrent(token)) return@Runnable
             if (!finished.compareAndSet(false, true)) return@Runnable
             runCatching { done(onTimeout()) }
                 .onFailure { android.util.Log.e("EMA", "Execution timeout callback failed", it) }
@@ -51,14 +54,14 @@ class EmaExecutionController(
             action { result ->
                 // A result arriving after cancellation belongs to an abandoned
                 // command and must not advance anything.
-                if (cancelled.get()) return@action
+                if (!epoch.isCurrent(token)) return@action
                 if (!finished.compareAndSet(false, true)) return@action
                 handler.removeCallbacks(timeout)
                 runCatching { done(result) }
                     .onFailure { android.util.Log.e("EMA", "Execution result callback failed", it) }
             }
         } catch (t: Throwable) {
-            if (finished.compareAndSet(false, true)) {
+            if (epoch.isCurrent(token) && finished.compareAndSet(false, true)) {
                 handler.removeCallbacks(timeout)
                 android.util.Log.e("EMA", "Execution step threw before completion", t)
                 runCatching { done(onTimeout()) }
@@ -68,7 +71,7 @@ class EmaExecutionController(
     }
 
     fun shutdown() {
-        cancelled.set(true)
+        epoch.invalidate()
         handler.removeCallbacksAndMessages(null)
     }
 }

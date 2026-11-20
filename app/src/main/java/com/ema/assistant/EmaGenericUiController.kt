@@ -24,6 +24,12 @@ object EmaGenericUiController {
         active = null
     }
 
+    /** Delayed recovery belongs to the current interaction generation, not a later command. */
+    fun afterCurrent(delayMs: Long, action: () -> Unit) {
+        val token = generation
+        main.postDelayed({ if (generation == token) action() }, delayMs)
+    }
+
     private fun interact(goal: EmaInteractionReasoner.Goal, callback: (Boolean, String) -> Unit) {
         cancelPendingAction()
         val token = generation

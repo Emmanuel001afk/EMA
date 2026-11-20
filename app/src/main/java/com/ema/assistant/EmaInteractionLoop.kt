@@ -62,7 +62,15 @@ class EmaInteractionLoop(
                     EmaInteractionReasoner.State.SATISFIED -> { finish(Status.VERIFIED, decision.reason); return }
                     EmaInteractionReasoner.State.READY -> {
                         // Adapter rechecks package, lock, fingerprint and target against a fresh tree.
-                        val dispatch = try { perform(goal, screen, decision.node!!) } catch (_: Exception) { Dispatch.REJECTED }
+                        if (now - started > readinessBudgetMs) {
+                            finish(Status.NOT_ACTED, "The control arrived after the readiness deadline. I did not act.")
+                            return
+                        }
+                        val dispatch = try { perform(goal, screen, decision.node!!) } catch (_: Exception) {
+                            before = screen; target = decision.node
+                            finish(Status.UNVERIFIED, "Dispatch was interrupted; the effect is unknown. I will not repeat it automatically.")
+                            return
+                        }
                         when (dispatch) {
                             Dispatch.ACCEPTED -> { before = screen; target = decision.node; dispatchedAt = now }
                             Dispatch.REJECTED -> { finish(Status.NOT_ACTED, "Android did not accept the grounded interaction. I have not verified a change."); return }
