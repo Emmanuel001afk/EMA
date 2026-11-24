@@ -28,7 +28,7 @@ object EmaSentenceLogic {
     private fun category(raw: String): String? {
         val s = identifier(raw) ?: return null
         return when {
-            s.length > 5 && (s.endsWith("sses") || s.endsWith("ches") || s.endsWith("shes") || s.endsWith("xes")) -> s.dropLast(2)
+            s.length > 4 && (s.endsWith("sses") || s.endsWith("ches") || s.endsWith("shes") || s.endsWith("xes")) -> s.dropLast(2)
             s.length > 3 && s.endsWith("s") && !s.endsWith("ss") && !s.endsWith("us") && !s.endsWith("is") &&
                 s !in setOf("series", "species", "news") -> s.dropLast(1)
             else -> s
