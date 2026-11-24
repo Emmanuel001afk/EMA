@@ -332,6 +332,81 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         refreshHubStatus()
 
         root.addView(TextView(this).apply {
+            text = "Optional live information (internet)"
+            textSize = 16f
+            setPadding(0, dp(16), 0, dp(2))
+        })
+        root.addView(TextView(this).apply {
+            text = "EMA can fetch current weather and today or tomorrow's daily forecast directly from Open-Meteo when you name a city; no SearXNG address is needed for weather. " +
+                "Other EMA web searches send the query to your SearXNG server and summarize snippets on-device by default. " +
+                "If you choose AI summaries, the query and snippets also go to the AI service. Google opens separately. " +
+                "Native-only mode blocks EMA live search and feeds, but an explicit Google search can still use the network. " +
+                "Addresses are stored on this device: do not include passwords or secret tokens."
+            textSize = 13f
+        })
+        val livePrefs = getSharedPreferences("ema_live", MODE_PRIVATE)
+        root.addView(TextView(this).apply {
+            text = "Default web search: EMA, Google, or both"
+            textSize = 14f
+        })
+        val providers = EmaWebSearchRouting.Provider.values().toList()
+        val searchProvider = Spinner(this)
+        searchProvider.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, providers.map { it.label })
+        val selectedProvider = EmaWebSearchRouting.Provider.fromKey(livePrefs.getString("search_provider", null))
+        searchProvider.setSelection(providers.indexOf(selectedProvider).coerceAtLeast(0))
+        searchProvider.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                providers.getOrNull(position)?.let { livePrefs.edit().putString("search_provider", it.key).apply() }
+            }
+        }
+        root.addView(searchProvider)
+        root.addView(TextView(this).apply {
+            text = "Search result summary"
+            textSize = 14f
+        })
+        val summaries = EmaLiveInformation.Summarizer.values().toList()
+        val summaryPicker = Spinner(this)
+        summaryPicker.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, summaries.map { it.label })
+        val selectedSummary = EmaLiveInformation.Summarizer.fromKey(livePrefs.getString("search_summary", null))
+        summaryPicker.setSelection(summaries.indexOf(selectedSummary).coerceAtLeast(0))
+        summaryPicker.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                summaries.getOrNull(position)?.let { livePrefs.edit().putString("search_summary", it.key).apply() }
+            }
+        }
+        root.addView(summaryPicker)
+        val searchAddress = EditText(this).apply {
+            hint = "SearXNG base HTTPS URL (e.g. https://search.example)"
+            isSingleLine = true
+            setText(livePrefs.getString("searxng_url", ""))
+        }
+        val feedAddress = EditText(this).apply {
+            hint = "RSS or Atom feed HTTPS URL"
+            isSingleLine = true
+            setText(livePrefs.getString("feed_url", ""))
+        }
+        val liveStatus = TextView(this).apply { textSize = 13f }
+        root.addView(searchAddress)
+        root.addView(feedAddress)
+        root.addView(Button(this).apply {
+            text = "Save live information settings"
+            setOnClickListener {
+                val search = searchAddress.text.toString().trim()
+                val feed = feedAddress.text.toString().trim()
+                if ((search.isNotEmpty() && !EmaLiveInformation.validConfiguredUrl(search, true)) ||
+                    (feed.isNotEmpty() && !EmaLiveInformation.validConfiguredUrl(feed, false))) {
+                    liveStatus.text = "Use valid HTTPS URLs without embedded credentials or fragments. The SearXNG base cannot include a query."
+                } else {
+                    livePrefs.edit().putString("searxng_url", search).putString("feed_url", feed).apply()
+                    liveStatus.text = "Saved. Say search SearXNG for followed by your query, or read my news feed. Empty addresses disable their feature."
+                }
+            }
+        })
+        root.addView(liveStatus)
+
+        root.addView(TextView(this).apply {
             text = "Microphone mode"
             textSize = 16f
             setPadding(0, dp(12), 0, dp(2))

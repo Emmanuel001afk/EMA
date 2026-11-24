@@ -355,13 +355,16 @@ object EmaScreenIntelligence {
     fun answerAboutText(
         question: String,
         sourceText: String,
-        sourceLabel: String = "this screen"
+        sourceLabel: String = "this screen",
+        topicOnly: Boolean = false
     ): GroundedAnswer {
         if (sourceText.isBlank()) {
             return GroundedAnswer("There is no readable text on $sourceLabel.", matched = false)
         }
         val qLow = question.lowercase(Locale.ROOT).trim().trimEnd('?', '.', '!')
-        val focus = classifyFocus(qLow)
+        // A topic such as "the deadline" should retrieve passages mentioning
+        // that topic, not return an unrelated date merely because one exists.
+        val focus = if (topicOnly) QuestionFocus.GENERAL else classifyFocus(qLow)
         val entities = extractEntities(sourceText)
 
         when (focus) {
@@ -474,14 +477,16 @@ object EmaScreenIntelligence {
         }.sortedByDescending { it.second }
 
         val top = scored.firstOrNull()
-        if (top == null || top.second < 0.75 || (qTerms.isNotEmpty() && top.third == 0 && focus == QuestionFocus.GENERAL)) {
+        if (top == null || (topicOnly && (qTerms.isEmpty() || top.third < qTerms.size)) ||
+            (!topicOnly && (top.second < 0.75 || (qTerms.isNotEmpty() && top.third == 0 && focus == QuestionFocus.GENERAL)))) {
             val topic = qTerms.take(3).joinToString(" ").ifBlank { "that" }
             return GroundedAnswer("I checked $sourceLabel and didn't find anything mentioning \"$topic\".", matched = false)
         }
 
         val picks = mutableListOf(top.first)
         val runner = scored.getOrNull(1)
-        if (runner != null && runner.second >= top.second * 0.68 && runner.second >= 1.1) {
+        if (runner != null && (!topicOnly || runner.third == qTerms.size) &&
+            runner.second >= top.second * 0.68 && runner.second >= 1.1) {
             picks += runner.first
         }
         picks.sort()

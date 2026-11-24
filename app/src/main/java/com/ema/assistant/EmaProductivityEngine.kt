@@ -27,7 +27,8 @@ class EmaProductivityEngine(private val context: Context) {
     fun answerScreenRequest(command: String, done: (String) -> Unit): Boolean {
         val lower = command.trim().trimEnd('.', '?', '!').lowercase(Locale.ROOT)
         val writing = EmaWritingTools.parseCommand(command)
-        val needsScreen = lower in setOf("summarize this screen", "summarize screen", "summarize this page",
+        val needsScreen = EmaGroundedQuestion.parse(command)?.source == EmaGroundedQuestion.Source.SCREEN ||
+            lower in setOf("summarize this screen", "summarize screen", "summarize this page",
             "extract entities from this screen", "find details on this screen") ||
             Regex("(?i)^ask (?:about )?(?:this |the )?screen:\\s*(.+)$").matches(command.trim()) ||
             (writing is EmaWritingTools.Command.TransformTarget && writing.target == EmaWritingTools.Target.SCREEN) ||
@@ -128,6 +129,18 @@ class EmaProductivityEngine(private val context: Context) {
             if (source.isBlank()) return "There is no readable source text. Read a screen first or provide text after a colon."
             EmaDialogueState.recordDocument("writing source", source)
             return answer
+        }
+        EmaGroundedQuestion.parse(command)?.let { request ->
+            val previous = request.source == EmaGroundedQuestion.Source.DOCUMENT
+            val source = if (previous) snapshot.document?.text.orEmpty()
+                else observedScreenText ?: EmaAccessibilityService.currentScreenText()
+            if (source.isBlank()) return if (previous)
+                "There is no recent readable document. Read or summarize a screen first."
+            else "There is no readable text on this screen."
+            EmaDialogueState.recordDocument(if (previous) "document" else "screen", source)
+            return EmaScreenIntelligence.answerAboutText(
+                request.question, source, if (previous) "the recent document" else "this screen", request.topicOnly
+            ).text
         }
         val summary = lower in setOf("summarize this screen", "summarize screen", "summarize this page", "summarize it", "summarize that")
         val entities = lower in setOf("extract entities from this screen", "find details on this screen")
