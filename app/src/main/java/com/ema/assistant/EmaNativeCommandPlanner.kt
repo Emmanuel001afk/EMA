@@ -173,5 +173,8 @@ object EmaNativeCommandPlanner {
         raw.trim()
             .replace(Regex("\\s+"), " ")
             .replace(Regex("(?i)^(?:(?:hey[ ,]+ema|please|kindly|could you|can you)[ ,]+)+"), "")
+            // Only unwrap these conversational forms when an explicit action
+            // immediately follows. Do not reinterpret questions or negations.
+            .replace(Regex("(?i)^(?:would you|will you|would you please|will you please|i would like you to|i'd like you to)[ ,]+(?=$ACTION_VERBS\\b)"), "")
             .trim()
 }

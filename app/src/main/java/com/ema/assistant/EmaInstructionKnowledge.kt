@@ -2,6 +2,22 @@ package com.ema.assistant
 
 /** Instruction questions explain a workflow; they never authorize its execution. */
 object EmaInstructionKnowledge {
+    /** Only claim an offline workflow explanation for specific assistant tasks.
+     * A keyword alone (e.g. "send" in "how do I send a parcel") is not enough.
+     */
+    fun explainIfSupported(question: String): String? {
+        val q = question.trim().lowercase().trimEnd('?', '.', '!').trim()
+            .replace(Regex("\\s+(?:using|with|in) (?:ema|this assistant)$"), "")
+        val knownWorkflow = Regex(
+            "^(?:how (?:do|can|should) i|how (?:do|can) you|can you|could you) " +
+                "(?:send (?:a |an |the )?(?:message|text|email)|make (?:a )?call|" +
+                "play music|read (?:the )?screen|summari[sz]e (?:the )?screen|" +
+                "(?:turn|switch) (?:on|off) (?:the )?(?:flashlight|torch|bluetooth|wi-?fi)|" +
+                "work offline|control apps|understand languages|send messages|make calls|search apps)$"
+        ).matches(q)
+        return if (knownWorkflow) explain(question) else null
+    }
+
     fun explain(question: String): String {
         val q = question.lowercase()
         val guidance = when {

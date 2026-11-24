@@ -54,6 +54,29 @@ Selectable in the app under **Assistant brain**, or by voice:
 Say *"what mode are you in"*, *"turn off AI"* or *"turn on AI"* to inspect or
 change this by voice.
 
+EMA also includes an offline English WordNet dictionary. Ask **“define bank”**,
+**“what does resilience mean?”**, **“spell café”**, **“how many letters in EMA?”**
+or **“alphabet.”** Multiple meanings are listed without guessing the intended
+sense. It does not know every word or understand every sentence; see the
+[coverage and source notes](docs/QUESTION_COVERAGE.md).
+
+For weather, say **“weather in Lagos, Nigeria”** or **“weather in Lagos,
+Nigeria tomorrow.”** EMA can fetch Open-Meteo current data or a daily forecast
+directly, without SearXNG or AI, when online and not in native-only mode. For other live searches or news feeds, configure an HTTPS
+SearXNG instance and/or RSS/Atom feed in **Optional live information**. Say
+**“search on weather in Lagos”** or **“read my news feed.”** Choose EMA (the default), Google, or both
+for web search. EMA search uses your configured SearXNG instance and summarizes
+snippets on-device by default; an AI summary can be chosen in settings. EMA's live requests use internet, are disabled in
+native-only mode, and do not affect the offline dictionary. See
+[setup and privacy details](docs/LIVE_INFORMATION.md).
+
+For an explicitly requested online reference, say **“Wikipedia lookup Lagos”**
+or **“look up Ada Lovelace on Wikipedia.”** EMA retrieves an exact English
+Wikipedia article excerpt with a source link and retrieval time. This sends the
+article title to Wikipedia, even in native-only mode; no lookup happens
+implicitly. It is not a live news or weather service, and the source can be
+inaccurate or out of date. See [question coverage](docs/QUESTION_COVERAGE.md).
+
 ---
 
 ## How actions actually complete

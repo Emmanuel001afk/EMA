@@ -56,6 +56,16 @@ class EmaNativeCommandPlannerTest {
     }
 
     @Test
+    fun conversationalRequestsAreUnwrappedOnlyForExplicitActions() {
+        assertEquals(listOf("open Spotify"), plan("would you please open Spotify"))
+        assertEquals(listOf("set a timer for 5 minutes"), plan("I'd like you to set a timer for 5 minutes"))
+        assertEquals(listOf("message Ada saying would you please open the gate"),
+            plan("will you message Ada saying would you please open the gate"))
+        assertEquals(listOf("would you not open Spotify"), plan("would you not open Spotify"))
+        assertEquals(listOf("would you explain Spotify"), plan("would you explain Spotify"))
+    }
+
+    @Test
     fun aPolitePrefixIsNotStrippedFromTheMiddleOfACommand() {
         // "please" is part of the message body here, not scaffolding.
         assertEquals(

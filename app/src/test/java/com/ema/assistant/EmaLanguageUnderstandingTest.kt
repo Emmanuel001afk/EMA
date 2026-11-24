@@ -44,6 +44,25 @@ class EmaLanguageUnderstandingTest {
         }
     }
 
+    @Test fun negativeDesiresAndConditionalActionsDoNotExecute() {
+        for (raw in listOf("I don't want you to open Spotify", "I don’t want you to call Ada", "I never want to delete it", "please avoid sending messages")) {
+            assertEquals(raw, EmaLanguageUnderstanding.Act.NEGATED, EmaLanguageUnderstanding.assess(raw).act)
+        }
+        for (raw in listOf("if it rains, open Spotify", "unless I say otherwise, call Ada", "what if you open Spotify?", "maybe open Spotify", "open Spotify if I ask", "could you open Spotify if I ask", "I want you to call Ada unless I cancel", "would you mind opening Spotify if I ask")) {
+            assertEquals(raw, EmaLanguageUnderstanding.Act.CONSTRAINED, EmaLanguageUnderstanding.assess(raw).act)
+            assertTrue(raw, EmaSemanticParser.understand(raw, env) is EmaSemanticParser.Result.NotHandled)
+        }
+        assertEquals(EmaLanguageUnderstanding.Act.REQUEST, EmaLanguageUnderstanding.assess("open Spotify").act)
+    }
+
+    @Test fun conditionWordsInsidePayloadArePreserved() {
+        for (raw in listOf("message Ada saying call me if it rains", "search YouTube for what if we never meet", "proofread: if it rains, open Spotify")) {
+            val result = EmaLanguageUnderstanding.assess(raw)
+            assertEquals(raw, EmaLanguageUnderstanding.Act.REQUEST, result.act)
+            assertEquals(raw, result.canonical)
+        }
+    }
+
     @Test fun contentNegationAndActionWordsRemainData() {
         for (raw in listOf("message Daniel on WhatsApp saying don't open Spotify and never call me", "search YouTube for don't stop and never give up", "proofread: open Spotify but don't play music")) {
             val a = EmaLanguageUnderstanding.assess(raw)

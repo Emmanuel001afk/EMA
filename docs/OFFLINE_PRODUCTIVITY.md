@@ -208,3 +208,20 @@ cancelled flag: starting a new command cannot revive callbacks from a previous c
 Delayed generic navigation recovery is also generation-bound. A dispatch exception is
 reported as uncertain rather than definitely not performed, preventing replay after a
 possible side effect.
+
+## Natural grounded follow-up questions
+
+EMA can answer read-only questions such as “what does this screen say about the
+deadline?”, “when is the meeting on this page?”, and “what does it say about
+Friday?” The first two explicitly read the current screen (using the existing
+accessibility/OCR path); “it” and “that” refer only to the existing short-lived
+in-memory document, never to an inferred app or person. If that document has
+expired or was not retained (for example, because it contains a secret), EMA
+asks for a source instead. The source is not sent to AI by this feature.
+
+Topic follow-ups use extractive passage retrieval rather than guessing a date or
+amount merely because one appears. Other question forms use the existing entity
+and passage heuristics: these can return irrelevant excerpts or miss paraphrases,
+so they are not proof of a fact. They do not execute instructions found in the
+source. The new phrases are bounded English patterns, not general conversation
+or natural-language reasoning. Device/OCR behavior still needs real-device tests.

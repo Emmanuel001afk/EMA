@@ -141,6 +141,7 @@ class EmaCommandRouter(
 
     /** Cancel delayed multi-step work when the Android voice session disappears. */
     fun shutdown() {
+        activeCompletion.set(true)
         activePlan?.cancel()
         activePlan = null
         suppressSpeech = false
@@ -272,6 +273,26 @@ class EmaCommandRouter(
             finishAssistantResponse("I didn't receive a command.", done)
             return
         }
+        // Explicit comparisons and analysis are read-only: contents never reach a planner.
+        if (depth == 0) {
+            EmaSentenceComparison.parse(command)?.let { sentences ->
+                finishAssistantResponse(EmaSentenceComparison.respond(sentences), done)
+                return
+            }
+            EmaSentenceAnalysis.parse(command)?.let { sentence ->
+                finishAssistantResponse(EmaSentenceAnalysis.respond(sentence), done)
+                return
+            }
+        }
+        // A reasoning problem is explicitly introduced as data, not an action.
+        // Handle it before negative-instruction assessment or planning so words
+        // inside premises can never be dispatched as device commands.
+        if (depth == 0) {
+            EmaSentenceLogic.parse(command)?.let { problem ->
+                finishAssistantResponse(EmaSentenceLogic.respond(problem), done)
+                return
+            }
+        }
         if (depth == 0 && isCloseAssistantCommand(command.lowercase(Locale.getDefault()))) {
             val message = "Closing EMA."
             speak(message)
@@ -301,6 +322,84 @@ class EmaCommandRouter(
             pendingTask = null
 
             command = assessment.canonical
+            EmaWebSearchRouting.parse(command, installedApps())?.let { request ->
+                val pref = context.getSharedPreferences("ema_live", Context.MODE_PRIVATE).getString("search_provider", null)
+                val provider = request.override ?: EmaWebSearchRouting.Provider.fromKey(pref)
+                searchWebWithChoice(request.query, provider, done, request.forceSearchEngine)
+                return
+            }
+            if (EmaWeather.parse(command) != null) {
+                val pref = context.getSharedPreferences("ema_live", Context.MODE_PRIVATE).getString("search_provider", null)
+                searchWebWithChoice(command, EmaWebSearchRouting.Provider.fromKey(pref), done)
+                return
+            }
+            EmaLiveInformation.parse(command)?.let { request ->
+                if (request is EmaLiveInformation.Request.Invalid) {
+                    finishAssistantResponse(request.reason, done)
+                    return
+                }
+                if (assistantMode() == EmaAssistantMode.NATIVE_ONLY) {
+                    finishAssistantResponse("Live search and feeds are disabled in native-only mode. Your offline dictionary remains available.", done)
+                    return
+                }
+                val livePrefs = context.getSharedPreferences("ema_live", Context.MODE_PRIVATE)
+                val url = when (request) {
+                    is EmaLiveInformation.Request.Search -> EmaLiveInformation.searchUrl(
+                        livePrefs.getString("searxng_url", "").orEmpty(), request.query)
+                    EmaLiveInformation.Request.Feed -> livePrefs.getString("feed_url", "").orEmpty()
+                        .takeIf { EmaLiveInformation.validConfiguredUrl(it, false) }
+                    is EmaLiveInformation.Request.Invalid -> null
+                }
+                if (url == null) {
+                    finishAssistantResponse("Configure the appropriate HTTPS SearXNG or feed address in EMA settings first.", done)
+                    return
+                }
+                val generation = activeCompletion
+                kotlin.concurrent.thread(name = "EMA-live-information") {
+                    val bytes = EmaLiveInformation.fetch(url)
+                    val results = bytes?.let {
+                        when (request) {
+                            is EmaLiveInformation.Request.Search -> EmaLiveInformation.parseSearch(it.toString(Charsets.UTF_8))
+                            EmaLiveInformation.Request.Feed -> EmaLiveInformation.parseFeed(it)
+                            is EmaLiveInformation.Request.Invalid -> null
+                        }
+                    }
+                    val label = if (request is EmaLiveInformation.Request.Search) "SearXNG results" else "Feed items"
+                    val answer = EmaLiveInformation.format(results, label)
+                    commandHandler.post {
+                        if (activeCompletion === generation && !generation.get()) {
+                            val reply = if (assistantMode() == EmaAssistantMode.NATIVE_ONLY)
+                                "Native-only mode is now on. I discarded the live results; the earlier request may already have reached the provider."
+                            else answer
+                            finishAssistantResponse(reply, done) {
+                                activeCompletion === generation && !generation.get()
+                            }
+                        }
+                    }
+                }
+                return
+            }
+            // The user must explicitly request this network lookup. The article
+            // is data only and its contents are never routed back as commands.
+            EmaWikipediaLookup.parse(command)?.let { request ->
+                when (request) {
+                    is EmaWikipediaLookup.Request.Invalid -> finishAssistantResponse(request.message, done)
+                    is EmaWikipediaLookup.Request.Lookup -> {
+                        val generation = activeCompletion
+                        kotlin.concurrent.thread(name = "EMA-Wikipedia-lookup") {
+                            val result = EmaWikipediaLookup.format(EmaWikipediaLookup.lookup(request.title))
+                            commandHandler.post {
+                                if (activeCompletion === generation && !generation.get()) {
+                                    finishAssistantResponse(result, done) {
+                                        activeCompletion === generation && !generation.get()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
             if (handleDeviceKnowledge(command, done)) return
             val appExplanation = EmaApplicationKnowledge.answerQuestion(command, appEngine.installedApps())
                 ?: EmaApplicationKnowledge.explainTerm(command)
@@ -308,8 +407,62 @@ class EmaCommandRouter(
                 finishAssistantResponse(appExplanation, done)
                 return
             }
+            EmaLanguageReference.parse(command)?.let { request ->
+                if (request is EmaLanguageReference.Request.Define || request is EmaLanguageReference.Request.SenseInSentence) {
+                    val generation = activeCompletion
+                    kotlin.concurrent.thread(name = "EMA-offline-dictionary") {
+                        val result = runCatching {
+                            val open: (String) -> java.io.InputStream = { bucket ->
+                                context.assets.open("wordnet/$bucket.tsv.gz")
+                            }
+                            when (request) {
+                                is EmaLanguageReference.Request.Define -> {
+                                    val entries = EmaLanguageReference.find(request.term, open)
+                                    val forms = EmaLanguageReference.possibleForms(request.term, open)
+                                    EmaLanguageReference.formatWithForms(request.term, entries, forms)
+                                }
+                                is EmaLanguageReference.Request.SenseInSentence ->
+                                    EmaLanguageReference.formatInSentence(request.term, request.sentence, EmaLanguageReference.find(request.term, open))
+                                else -> "I couldn't interpret that dictionary request."
+                            }
+                        }.getOrElse { "The offline dictionary is unavailable. No lookup was sent online." }
+                        commandHandler.post {
+                            if (activeCompletion === generation && !generation.get()) {
+                                finishAssistantResponse(result, done) {
+                                    activeCompletion === generation && !generation.get()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    finishAssistantResponse(EmaLanguageReference.localAnswer(request).orEmpty(), done)
+                }
+                return
+            }
+            // Explicit grounded questions must reach the read-only document/screen
+            // engine before generic instruction-question handling. Never acquire a
+            // screen for an ordinary question with no explicit screen reference.
+            EmaGroundedQuestion.parse(command)?.let { request ->
+                val productivity = EmaProductivityEngine(context)
+                if (request.source == EmaGroundedQuestion.Source.SCREEN) {
+                    if (productivity.answerScreenRequest(command) { finishAssistantResponse(it, done) }) return
+                } else {
+                    productivity.answer(command)?.let { answer ->
+                        finishAssistantResponse(answer, done)
+                        return
+                    }
+                }
+            }
             if (assessment.act == EmaLanguageUnderstanding.Act.QUESTION) {
-                finishAssistantResponse(EmaInstructionKnowledge.explain(command), done)
+                when (val decision = EmaQuestionPolicy.decide(command, assistantMode(),
+                    CentralHubClient.isConfigured(context), EmaDialogueState.snapshot().quantity?.value)) {
+                    is EmaQuestionPolicy.Decision.Local -> {
+                        decision.value?.let { EmaDialogueState.recordQuantity(it) }
+                        finishAssistantResponse(decision.answer, done)
+                    }
+                    EmaQuestionPolicy.Decision.AskAi -> askAi(command, done, allowActions = false)
+                    EmaQuestionPolicy.Decision.Unavailable -> finishAssistantResponse(EmaQuestionPolicy.unavailableMessage(), done)
+                }
                 return
             }
 
@@ -801,6 +954,7 @@ class EmaCommandRouter(
      * real situation is that it did not understand the wording.
      */
     private fun nativeOnlyExplanation(command: String, mode: EmaAssistantMode): String {
+        if (EmaQuestionPolicy.looksLikeQuestion(command)) return EmaQuestionPolicy.unavailableMessage()
         if (EmaKnowledge.needsExternalInformation(command) && !(mode.allowsAi && CentralHubClient.isConfigured(context))) {
             return "That needs up-to-date information from outside this phone, and the optional online AI is " +
                 (if (mode == EmaAssistantMode.NATIVE_ONLY) "switched off" else "not set up") +
@@ -2985,6 +3139,122 @@ class EmaCommandRouter(
         }
     }
 
+    private fun searchWebWithChoice(query: String, provider: EmaWebSearchRouting.Provider, done: (String) -> Unit, forceSearchEngine: Boolean = false) {
+        if (provider == EmaWebSearchRouting.Provider.GOOGLE) {
+            googleSearch(query, done)
+            return
+        }
+        if (assistantMode() == EmaAssistantMode.NATIVE_ONLY) {
+            finishAssistantResponse("EMA live search is disabled in native-only mode. Choose Google explicitly or switch modes; the offline dictionary remains available.", done)
+            return
+        }
+        val googleNote = if (provider == EmaWebSearchRouting.Provider.BOTH) {
+            val uri = Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))
+            if (runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess)
+                "I opened Google search separately. " else "I couldn't open Google search. "
+        } else ""
+        if (!forceSearchEngine) {
+            EmaWeather.parse(query)?.let { weather ->
+                fetchWeather(weather, googleNote, done)
+                return
+            }
+        }
+        val base = context.getSharedPreferences("ema_live", Context.MODE_PRIVATE).getString("searxng_url", "").orEmpty()
+        val url = EmaLiveInformation.searchUrl(base, query)
+        if (url == null) {
+            finishAssistantResponse(googleNote + "Set an HTTPS SearXNG address in Optional live information to use EMA search.", done)
+            return
+        }
+        val generation = activeCompletion
+        kotlin.concurrent.thread(name = "EMA-web-search") {
+            val bytes = EmaLiveInformation.fetch(url)
+            val items = bytes?.let { EmaLiveInformation.parseSearch(it.toString(Charsets.UTF_8)) }
+            val sources = EmaLiveInformation.format(items, "EMA search sources", includeDetails = false)
+            commandHandler.post {
+                if (activeCompletion !== generation || generation.get()) return@post
+                if (assistantMode() == EmaAssistantMode.NATIVE_ONLY) {
+                    finishAssistantResponse("Native-only mode is now on. I discarded the live results; the earlier request may already have reached the provider.", done) {
+                        activeCompletion === generation && !generation.get()
+                    }
+                    return@post
+                }
+                if (items.isNullOrEmpty()) {
+                    finishAssistantResponse(googleNote + sources, done) { activeCompletion === generation && !generation.get() }
+                    return@post
+                }
+                val summaryMode = EmaLiveInformation.Summarizer.fromKey(
+                    context.getSharedPreferences("ema_live", Context.MODE_PRIVATE).getString("search_summary", null)
+                )
+                if (summaryMode == EmaLiveInformation.Summarizer.LOCAL || !CentralHubClient.isConfigured(context)) {
+                    val note = if (summaryMode == EmaLiveInformation.Summarizer.AI) "AI is not configured; using on-device snippets instead.\n" else ""
+                    val reply = googleNote + note + EmaLiveInformation.localSummary(items) + "\n\n" + sources
+                    finishAssistantResponse(reply, done) { activeCompletion === generation && !generation.get() }
+                    return@post
+                }
+                // No command interpretation or action execution occurs on this
+                // answer-only path. Search results are untrusted external text.
+                CentralHubClient(context).ask(EmaLiveInformation.synthesisPrompt(query, items)) { answer ->
+                    if (activeCompletion === generation && !generation.get()) {
+                        val reply = if (assistantMode() == EmaAssistantMode.NATIVE_ONLY)
+                            "Native-only mode is now on. I discarded the live answer; requests already sent may have reached their providers."
+                        else googleNote + "AI summary of search snippets (may be wrong; check the sources):\n" + answer + "\n\n" + sources
+                        finishAssistantResponse(reply, done) { activeCompletion === generation && !generation.get() }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun fetchWeather(request: EmaWeather.Request, googleNote: String, done: (String) -> Unit) {
+        when (request) {
+            EmaWeather.Request.MissingLocation -> { finishAssistantResponse(googleNote + "Which city? Say weather in Lagos, Nigeria.", done); return }
+            EmaWeather.Request.Invalid -> { finishAssistantResponse(googleNote + "Give me a city and optionally a region or country, such as weather in Lagos, Nigeria.", done); return }
+            EmaWeather.Request.UnsupportedPeriod -> { finishAssistantResponse(googleNote + "I can check current weather or the daily forecast for today or tomorrow. Please specify one of those.", done); return }
+            is EmaWeather.Request.Current, is EmaWeather.Request.Daily -> Unit
+        }
+        val current = when (request) {
+            is EmaWeather.Request.Current -> request
+            is EmaWeather.Request.Daily -> request.location
+            else -> return
+        }
+        val generation = activeCompletion
+        kotlin.concurrent.thread(name = "EMA-current-weather") {
+            val result = runCatching {
+                val rawPlaces = EmaLiveInformation.fetch(EmaWeather.geocodingUrl(current.city))
+                    ?: return@runCatching "I couldn't reach Open-Meteo to look up the location. Check your connection."
+                if (generation.get() || assistantMode() == EmaAssistantMode.NATIVE_ONLY)
+                    return@runCatching "Native-only mode is now on. I stopped the weather lookup."
+                when (val found = EmaWeather.parsePlaces(rawPlaces.toString(Charsets.UTF_8), current)) {
+                    EmaWeather.Places.Failed -> "I couldn't interpret the Open-Meteo location response."
+                    EmaWeather.Places.None -> "I couldn't find an exact location match. Try the city and country, such as Lagos, Nigeria."
+                    is EmaWeather.Places.Ambiguous -> "I found more than one location: " +
+                        found.options.joinToString("; ") { it.label() } + ". Please repeat the weather request with city, region and country separated by commas."
+                    is EmaWeather.Places.One -> {
+                        if (request is EmaWeather.Request.Daily) {
+                            val response = EmaLiveInformation.fetch(EmaWeather.dailyUrl(found.place))
+                            val forecast = response?.let { EmaWeather.parseDaily(it.toString(Charsets.UTF_8), request.dayOffset) }
+                            if (forecast == null) "I couldn't retrieve a usable daily forecast for ${found.place.label()}. Check your connection and device clock."
+                            else EmaWeather.formatDaily(found.place, forecast)
+                        } else {
+                            val response = EmaLiveInformation.fetch(EmaWeather.weatherUrl(found.place))
+                            val reading = response?.let { EmaWeather.parseReading(it.toString(Charsets.UTF_8)) }
+                            if (reading == null) "I couldn't retrieve a usable current weather reading for ${found.place.label()}."
+                            else EmaWeather.format(found.place, reading)
+                        }
+                    }
+                }
+            }.getOrElse { "I couldn't complete the weather lookup. No weather reading was verified." }
+            commandHandler.post {
+                if (activeCompletion === generation && !generation.get()) {
+                    val reply = if (assistantMode() == EmaAssistantMode.NATIVE_ONLY)
+                        "Native-only mode is now on. I discarded the weather results; a request may already have reached Open-Meteo."
+                    else googleNote + result
+                    finishAssistantResponse(reply, done) { activeCompletion === generation && !generation.get() }
+                }
+            }
+        }
+    }
+
     private fun googleSearch(query: String, done: (String) -> Unit) {
         if (query.isBlank()) {
             val result = "Tell me what to search for."
@@ -3189,7 +3459,7 @@ class EmaCommandRouter(
      * never authorises them. Only an explicitly action-oriented user command may
      * cross into execution, and execution still happens on the device.
      */
-    private fun askAi(command: String, done: (String) -> Unit) {
+    private fun askAi(command: String, done: (String) -> Unit, allowActions: Boolean = true) {
         executionStage = "planning"
         val prompt = runCatching {
             EmaAiCommandInterpreter.buildPrompt(context, command)
@@ -3208,7 +3478,7 @@ class EmaCommandRouter(
                                 parsed.answer.ifBlank { "I could not determine what you wanted EMA to do." },
                                 done
                             )
-                        } else if (!hasExplicitDeviceActionIntent(command)) {
+                        } else if (!allowActions || !hasExplicitDeviceActionIntent(command)) {
                             deliverAiAnswer(
                                 parsed.answer.ifBlank { "I could not determine a safe action for that request." },
                                 done
@@ -3296,10 +3566,12 @@ class EmaCommandRouter(
         }
     }
 
-    private fun finishAssistantResponse(raw: String, done: (String) -> Unit) {
+    private fun finishAssistantResponse(raw: String, done: (String) -> Unit, stillCurrent: (() -> Boolean)? = null) {
+        if (stillCurrent != null && !stillCurrent()) return
         val answer = raw.trim().ifBlank { "I could not answer that right now. Please try again." }
         EmaDialogueState.recordReply(answer)
         Handler(Looper.getMainLooper()).post {
+            if (stillCurrent != null && !stillCurrent()) return@post
             runCatching { EmaConversationStore.add(context, "assistant", answer) }
                 .onFailure { android.util.Log.e("EMA", "Could not store assistant response", it) }
             runCatching { speak(answer) }

@@ -97,6 +97,23 @@ class EmaNativeFallbackInterpreterTest {
     }
 
     @Test
+    fun noInstalledAppsDoesNotDisableAppIndependentActions() {
+        val play = EmaNativeFallbackInterpreter.interpret("play something relaxing", emptyList())
+        assertTrue(play?.command is EmaCommand.PlayMedia)
+        val search = EmaNativeFallbackInterpreter.interpret("look for nearby pharmacies", emptyList())
+        assertTrue(search?.command is EmaCommand.SearchInApp)
+        assertNull(EmaNativeFallbackInterpreter.interpret("open Spotify", emptyList()))
+    }
+
+    @Test
+    fun appMentionDoesNotTurnUnknownIntentOrNegationIntoLaunch() {
+        assertNull(run("don't open Spotify"))
+        assertNull(run("Spotify is broken"))
+        assertNull(run("Spotify premium price"))
+        assertEquals(EmaCommand.OpenApp("Spotify"), run("Spotify please")?.command)
+    }
+
+    @Test
     fun uninstalledAppIsNotInvented() {
         // Nothing is installed under this name, and there is no device verb,
         // so the layer must decline rather than fabricate an app.

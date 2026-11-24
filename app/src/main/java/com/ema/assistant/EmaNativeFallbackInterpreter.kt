@@ -35,7 +35,7 @@ object EmaNativeFallbackInterpreter {
      */
     fun interpret(utterance: String, installed: List<EmaAppResolver.App>): Result? {
         val text = EmaCommandGrammar.normalize(utterance)
-        if (text.isBlank() || installed.isEmpty()) return null
+        if (text.isBlank()) return null
 
         // Knowledge questions are rejected before any app grounding happens.
         // Otherwise a question that merely mentions an installed application -
@@ -127,9 +127,10 @@ object EmaNativeFallbackInterpreter {
                 }
             }
 
-            // The app was named with no recognisable verb: "spotify" alone,
-            // "spotify please". Opening it is the correct, safe interpretation.
-            actionText.isBlank() || actionText.split(Regex("\\s+")).size <= 3 ->
+            // A bare app name (optionally polite) can request an open. Other
+            // words may express a question, negation, or an unsupported goal;
+            // do not silently turn those into a launch.
+            actionText.isBlank() || actionText.matches(Regex("(?i)^(?:please|please thanks|thanks|thank you)$")) ->
                 Result(EmaCommand.OpenApp(app.label), "app-mention")
 
             else -> null
