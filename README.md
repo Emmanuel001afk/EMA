@@ -162,25 +162,45 @@ The repository has no Gradle wrapper; CI provisions Gradle 8.9.
 
 ### Getting a build
 
-CI attaches both APKs to the rolling release
-[`apk-latest`](../../releases/tag/apk-latest):
+Download EMA directly from the GitHub rolling release
+[`apk-latest`](../../releases/tag/apk-latest); no app store is needed. The APK is
+large because the offline wake model is bundled, so a connection with enough
+data and storage is needed. CI publishes:
 
-- **`ema-debug.apk`** — debug-signed, installs directly. Use this one.
-- **`app-release-unsigned.apk`** — minified and resource-shrunk, but unsigned;
-  it needs a signing key before it can be installed.
+- **`ema-release-signed.apk`** — installable release, available only when a
+  persistent release signing key is configured and signing succeeds.
+- **`ema-debug.apk`** — debug-signed for testing; CI may use a different debug
+  key on a later run, so updates over an existing installation may fail.
+The raw Gradle release output is unsigned and is not distributed on the rolling
+release. It cannot be installed without signing.
 
 They are published as release assets rather than run artifacts because GitHub
 Actions artifact storage is quota-limited, and a quota failure silently drops the
 upload. Release assets use separate storage.
 
-### AEM Store publication
+### Release signing
 
-Publishing to the AEM Store is currently **paused** because the Supabase quota is
-exhausted. The step is gated and skips cleanly, so it cannot fail a build.
+To publish an update-compatible release APK, configure a persistent release
+signing key in GitHub Actions secrets:
 
-To resume, set the repository variable `EMA_PUBLISH_AEM` to `true`
-(Settings → Secrets and variables → Actions → Variables), or tick `publish_aem`
-on a manual run. No code change is needed.
+- `EMA_SIGNING_KEYSTORE_BASE64`: base64 of the private release keystore.
+- `EMA_SIGNING_STORE_PASSWORD`: keystore password.
+- `EMA_SIGNING_KEY_ALIAS`: release key alias.
+- `EMA_SIGNING_KEY_PASSWORD`: key password.
+
+Configure these privately in GitHub; never commit the key or paste secrets into
+chat. Use and securely back up the **same** release key for future updates.
+A different signing certificate cannot normally update the existing app; do not
+uninstall an existing app without backing up its data first. CI aligns and signs
+the release APK and verifies its signature before distributing it on GitHub.
+If secrets are missing there is no signed release; partial settings or a failed
+signature stop the build. Pull-request builds never publish release assets.
+
+The build no longer publishes to AEM Store. Already downloaded unsigned APKs are
+not repaired by this change. `INSTALL_PARSE_FAILED_NO_CERTIFICATES` can indicate
+an unsigned, corrupted or incorrectly packaged APK; verify the exact downloaded
+file using `apksigner verify --verbose --print-certs`. A successful signature
+check alone does not guarantee compatibility with an installed version or device.
 
 ---
 
